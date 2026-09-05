@@ -1,32 +1,81 @@
-```html
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube AI</title>
+    <title>YouTube AI Stats</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        h1 { color: #282c34; }
+        input { padding: 12px; width: 70%; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 12px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        #result { margin-top: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; }
+        .error { color: #dc3545; }
+        .loading { color: #6c757d; }
+    </style>
 </head>
 <body>
 
-    <h1>YouTube AI</h1>
-    <p>Интеллектуальный анализ YouTube-каналов</p>
+    <h1>YouTube AI Stats</h1>
+    <p>Введите ID канала YouTube для получения статистики.</p>
 
-    <input
-        type="text"
-        id="query"
-        placeholder="Введите ваш запрос"
-        style="width: 400px; padding: 10px;"
-    >
+    <div style="display: flex; align-items: center; gap: 10px;">
+        <input
+            type="text"
+            id="query"
+            placeholder="Например: UC_x5XG1OV2P6uZZ5FSM9Ttw"
+        >
+        <button id="sendButton">🔍 Анализировать</button>
+    </div>
 
-    <button
-        id="sendButton"
-        style="padding: 10px 20px; margin-left: 5px;"
-    >
-        🔍 Анализировать
-    </button>
+    <div id="result"></div>
 
-    <div id="result" style="margin-top: 20px;"></div>
+    <script>
+        const button = document.getElementById("sendButton");
+        const input = document.getElementById("query");
+        const resultDiv = document.getElementById("result");
+
+        button.addEventListener("click", async () => {
+            const channelId = input.value.trim();
+
+            if (!channelId) {
+                resultDiv.innerHTML = '<p class="error">Пожалуйста, введите ID канала</p>';
+                return;
+            }
+
+            resultDiv.innerHTML = '<p class="loading">Загружаю данные с YouTube...</p>';
+
+            try {
+                // Запрос идет на тот же домен (наш FastAPI сервер)
+                const response = await fetch(`/analyze?channel_id=\${encodeURIComponent(channelId)}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.result || "Неизвестная ошибка сервера");
+                }
+
+                // Ответ от MCP приходит как JSON-строка внутри текста, парсим её
+                const stats = JSON.parse(data.result);
+
+                if (stats.error) {
+                    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка от YouTube API: \${stats.error}</p>`;
+                    return;
+                }
+
+                resultDiv.innerHTML = `
+                    <h3>\${stats.title}</h3>
+                    <p><strong>Дата создания:</strong> \${stats.published_at}</p>
+                    <p><strong>Подписчики:</strong> \${stats.subscribers.toLocaleString()}</p>
+                    <p><strong>Просмотры:</strong> \${stats.views.toLocaleString()}</p>
+                    <p><strong>Видео:</strong> \${stats.videos}</p>
+                    <p><strong>Описание:</strong> \${stats.description || "Нет описания"}</p>
+                `;
+            } catch (e) {
+                resultDiv.innerHTML = `<p class="error">❌ Ошибка: \${e.message}</p>`;
+            }
+        });
+    </script>
 
 </body>
 </html>
-```

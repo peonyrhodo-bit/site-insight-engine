@@ -72,7 +72,8 @@
                     <p><strong>Описание:</strong> \${stats.description || "Нет описания"}</p>
                 `;
             } catch (e) {
-                resultDiv.innerHTML = `<p class="error">❌ Ошибка: \${e.message}</p>`;
+                resultDiv.innerHTML = `<p class="error">❌ Ошибка: ${e.message}</p>`;
+
             }
         });
     </script>

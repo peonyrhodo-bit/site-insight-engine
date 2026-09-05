@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import aiofiles
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,14 +22,15 @@ app.add_middleware(
 MCP_URL = "https://youtube-mcp-u39z.onrender.com/mcp"
 
 @app.get("/")
-def home():
-    # Пытаемся прочитать index.html из той же папки, где лежит server.py
+async def home():
     try:
         html_path = Path(__file__).parent / "index.html"
-        html = html_path.read_text(encoding="utf-8")
+        async with aiofiles.open(html_path, mode="r", encoding="utf-8") as f:
+            html = await f.read()
         return HTMLResponse(html)
     except FileNotFoundError:
-        return JSONResponse({"error": "Файл index.html не найден. Проверьте структуру репозитория."}, status_code=500)
+        return {"error": "Файл index.html не найден"}, 500
+
 
 @app.get("/analyze")
 async def analyze(channel_id: str):

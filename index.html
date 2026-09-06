@@ -21,11 +21,7 @@
     <p>Введите ID канала YouTube для получения статистики.</p>
 
     <div style="display: flex; align-items: center; gap: 10px;">
-        <input
-            type="text"
-            id="query"
-            placeholder="Например: UC_x5XG1OV2P6uZZ5FSM9Ttw"
-        >
+        <input type="text" id="query" placeholder="Например: UCa8_n5y06b8jNKKz7Z4_w7A">
         <button id="sendButton">🔍 Анализировать</button>
     </div>
 
@@ -47,33 +43,26 @@
             resultDiv.innerHTML = '<p class="loading">Загружаю данные с YouTube...</p>';
 
             try {
-                // Запрос идет на тот же домен (наш FastAPI сервер)
-                const response = await fetch(`/analyze?channel_id=\${encodeURIComponent(channelId)}`);
+                const response = await fetch(`/analyze?channel_id=${encodeURIComponent(channelId)}`);
                 const data = await response.json();
 
-                if (!response.ok) {
-                    throw new Error(data.result || "Неизвестная ошибка сервера");
-                }
-
-                // Ответ от MCP приходит как JSON-строка внутри текста, парсим её
-                const stats = JSON.parse(data.result);
+                const stats = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
 
                 if (stats.error) {
-    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка от YouTube API: ${stats.error}</p>`;
-    return;
-}
+                    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка: ${stats.error}</p>`;
+                    return;
+                }
 
                 resultDiv.innerHTML = `
-                    <h3>\${stats.title}</h3>
-                    <p><strong>Дата создания:</strong> \${stats.published_at}</p>
-                    <p><strong>Подписчики:</strong> \${stats.subscribers.toLocaleString()}</p>
-                    <p><strong>Просмотры:</strong> \${stats.views.toLocaleString()}</p>
-                    <p><strong>Видео:</strong> \${stats.videos}</p>
-                    <p><strong>Описание:</strong> \${stats.description || "Нет описания"}</p>
+                    <h3>${stats.title}</h3>
+                    <p><strong>Дата создания:</strong> ${stats.published_at}</p>
+                    <p><strong>Подписчики:</strong> ${Number(stats.subscribers).toLocaleString()}</p>
+                    <p><strong>Просмотры:</strong> ${Number(stats.views).toLocaleString()}</p>
+                    <p><strong>Видео:</strong> ${stats.videos}</p>
+                    <p><strong>Описание:</strong> ${stats.description || "Нет описания"}</p>
                 `;
             } catch (e) {
                 resultDiv.innerHTML = `<p class="error">❌ Ошибка: ${e.message}</p>`;
-
             }
         });
     </script>

@@ -53,7 +53,11 @@ async def analyze(channel_id: str):
 
                 return JSONResponse({"result": stats})
 
-    except Exception as e:
+        except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+
         return JSONResponse(
             {"result": {"error": str(e)}},
             status_code=500,

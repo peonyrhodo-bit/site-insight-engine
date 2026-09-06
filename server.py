@@ -45,7 +45,7 @@ async def analyze(channel_id: str):
                 )
 
                 # result.content - это список объектов, берем первый и его текст
-                return JSONResponse({"result": result.content.text})
+                return JSONResponse({"result": result.content[0].text})
     except Exception as e:
         return JSONResponse({"result": f"Ошибка при запросе к агенту: {str(e)}"}, status_code=500)
 

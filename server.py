@@ -59,36 +59,43 @@ async def mcp_tools():
 
 @app.get("/analyze")
 async def analyze(channel_id: str):
-    try:
-        async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "get_channel_stats",
-                    {"channel_id": channel_id},
+try:
+async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
+async with ClientSession(read_stream, write_stream) as session:
+await session.initialize()
+result = await session.call_tool(
+"get_channel_stats",
+{"channel_id": channel_id},
+)
+
+```
+            content_text = result.content[0].text
+
+            try:
+                stats = json.loads(content_text)
+            except json.JSONDecodeError:
+                return JSONResponse(
+                    {"result": {"error": f"MCP вернул не JSON: {content_text}"}},
+                    status_code=500,
                 )
 
-                content_text = result.content[0].text
+            return JSONResponse({"result": stats})
 
-                try:
-                    stats = json.loads(content_text)
-                except json.JSONDecodeError:
-                    return JSONResponse(
-                        {"result": {"error": f"MCP вернул не JSON: {content_text}"}},
-                        status_code=500,
-                    )
+except Exception as e:
+    import traceback
 
-                return JSONResponse({"result": stats})
+    traceback.print_exc()
 
-        except Exception as e:
-        import traceback
+    return JSONResponse(
+        {"result": {"error": str(e)}},
+        status_code=500,
+    )
+```
 
-        traceback.print_exc()
-
-        return JSONResponse(
-            {"result": {"error": str(e)}},
-            status_code=500,
-        )
+if **name** == "**main**":
+import uvicorn
+port = int(os.environ.get("PORT", "10000"))
+uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

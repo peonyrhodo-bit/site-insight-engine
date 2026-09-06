@@ -29,6 +29,33 @@ async def home():
         html = await f.read()
     return HTMLResponse(html)
 
+@app.get("/mcp-tools")
+async def mcp_tools():
+    try:
+        async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                tools = await session.list_tools()
+
+                return {
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                        }
+                        for tool in tools.tools
+                    ]
+                }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500,
+        )
 
 @app.get("/analyze")
 async def analyze(channel_id: str):

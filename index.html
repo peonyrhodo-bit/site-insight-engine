@@ -59,9 +59,9 @@
                 const stats = JSON.parse(data.result);
 
                 if (stats.error) {
-                    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка от YouTube API: \${stats.error}</p>`;
-                    return;
-                }
+    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка от YouTube API: ${stats.error}</p>`;
+    return;
+}
 
                 resultDiv.innerHTML = `
                     <h3>\${stats.title}</h3>

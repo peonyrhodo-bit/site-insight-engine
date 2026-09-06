@@ -3,68 +3,375 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>Аналитика для Дашули</title>
+
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
-        h1 { color: #282c34; }
-        input { padding: 12px; width: 70%; border: 1px solid #ccc; border-radius: 4px; }
-        button { padding: 12px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background-color: #0056b3; }
-        #result { margin-top: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; }
-        .error { color: #dc3545; }
-        .loading { color: #6c757d; }
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1100px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #f7f7f7;
+            color: #222;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 25px;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        input {
+            flex: 1;
+            padding: 14px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+
+        button {
+            padding: 14px 24px;
+            font-size: 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #999;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin: 15px 0;
+        }
+
+        .loading {
+            color: #666;
+        }
+
+        .error {
+            color: #c62828;
+            background: #ffebee;
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        .summary {
+            margin: 20px 0;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 14px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+
+        th {
+            background: #f0f0f0;
+            font-weight: bold;
+        }
+
+        tr:hover {
+            background: #fafafa;
+        }
+
+        .number {
+            width: 50px;
+            text-align: center;
+        }
+
+        .channel-title {
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .channel-id {
+            color: #888;
+            font-size: 12px;
+            margin-top: 5px;
+            word-break: break-all;
+        }
+
+        .description {
+            color: #555;
+            line-height: 1.4;
+        }
+
+        .date {
+            white-space: nowrap;
+        }
+
+        @media (max-width: 700px) {
+            .search-box {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+            }
+
+            th,
+            td {
+                padding: 10px;
+            }
+        }
     </style>
 </head>
+
 <body>
 
     <h1>Аналитика для Дашули</h1>
-    <p>Введите ID канала YouTube для получения статистики.</p>
 
-    <div style="display: flex; align-items: center; gap: 10px;">
-        <input type="text" id="query" placeholder="Например: UCa8_n5y06b8jNKKz7Z4_w7A">
-        <button id="sendButton">🔍 Анализировать</button>
+    <p class="subtitle">
+        Найдите YouTube-каналы по любой теме, ключевому слову или запросу.
+    </p>
+
+    <div class="search-box">
+        <input
+            type="text"
+            id="query"
+            placeholder="Например: панды, дорамы, AI, финансы..."
+        >
+
+        <button id="searchButton">
+            🔍 Найти каналы
+        </button>
     </div>
 
-    <div id="result"></div>
+    <div id="status"></div>
+
+    <div id="summary"></div>
+
+    <div id="results"></div>
+
 
     <script>
-        const button = document.getElementById("sendButton");
+
         const input = document.getElementById("query");
-        const resultDiv = document.getElementById("result");
+        const button = document.getElementById("searchButton");
+        const status = document.getElementById("status");
+        const summary = document.getElementById("summary");
+        const results = document.getElementById("results");
 
-        button.addEventListener("click", async () => {
-            const channelId = input.value.trim();
 
-            if (!channelId) {
-                resultDiv.innerHTML = '<p class="error">Пожалуйста, введите ID канала</p>';
+        async function searchChannels() {
+
+            const query = input.value.trim();
+
+            if (!query) {
+                status.innerHTML =
+                    '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
+
+                summary.innerHTML = "";
+                results.innerHTML = "";
+
                 return;
             }
 
-            resultDiv.innerHTML = '<p class="loading">Загружаю данные с YouTube...</p>';
+
+            button.disabled = true;
+
+            status.innerHTML =
+                '<div class="loading">🔄 Ищу каналы на YouTube...</div>';
+
+            summary.innerHTML = "";
+            results.innerHTML = "";
+
 
             try {
-                const response = await fetch(`/analyze?channel_id=${encodeURIComponent(channelId)}`);
+
+                const response = await fetch(
+                    `/search-channels?query=${encodeURIComponent(query)}`
+                );
+
+
                 const data = await response.json();
 
-                const stats = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
 
-                if (stats.error) {
-                    resultDiv.innerHTML = `<p class="error">⚠️ Ошибка: ${stats.error}</p>`;
-                    return;
+                if (!response.ok) {
+
+                    throw new Error(
+                        data.error || "Ошибка при поиске каналов"
+                    );
+
                 }
 
-                resultDiv.innerHTML = `
-                    <h3>${stats.title}</h3>
-                    <p><strong>Дата создания:</strong> ${stats.published_at}</p>
-                    <p><strong>Подписчики:</strong> ${Number(stats.subscribers).toLocaleString()}</p>
-                    <p><strong>Просмотры:</strong> ${Number(stats.views).toLocaleString()}</p>
-                    <p><strong>Видео:</strong> ${stats.videos}</p>
-                    <p><strong>Описание:</strong> ${stats.description || "Нет описания"}</p>
+
+                if (data.error) {
+
+                    throw new Error(data.error);
+
+                }
+
+
+                status.innerHTML = "";
+
+
+                summary.innerHTML =
+                    `Найдено каналов: ${data.count}`;
+
+
+                if (!data.channels || data.channels.length === 0) {
+
+                    results.innerHTML =
+                        "<p>По вашему запросу каналы не найдены.</p>";
+
+                    return;
+
+                }
+
+
+                let tableHTML = `
+
+                    <div class="table-container">
+
+                        <table>
+
+                            <thead>
+
+                                <tr>
+                                    <th class="number">№</th>
+                                    <th>Канал</th>
+                                    <th>Описание</th>
+                                    <th>Дата создания</th>
+                                </tr>
+
+                            </thead>
+
+                            <tbody>
+
                 `;
-            } catch (e) {
-                resultDiv.innerHTML = `<p class="error">❌ Ошибка: ${e.message}</p>`;
+
+
+                data.channels.forEach((channel, index) => {
+
+                    const number = index + 1;
+
+                    const title =
+                        channel.title || "Без названия";
+
+                    const description =
+                        channel.description || "Нет описания";
+
+                    const publishedAt =
+                        channel.published_at
+                            ? new Date(channel.published_at).toLocaleDateString("ru-RU")
+                            : "Неизвестно";
+
+
+                    tableHTML += `
+
+                        <tr>
+
+                            <td class="number">
+                                ${number}
+                            </td>
+
+                            <td>
+
+                                <div class="channel-title">
+                                    ${title}
+                                </div>
+
+                                <div class="channel-id">
+                                    ${channel.channel_id || ""}
+                                </div>
+
+                            </td>
+
+                            <td>
+
+                                <div class="description">
+                                    ${description}
+                                </div>
+
+                            </td>
+
+                            <td class="date">
+                                ${publishedAt}
+                            </td>
+
+                        </tr>
+
+                    `;
+
+                });
+
+
+                tableHTML += `
+
+                            </tbody>
+
+                        </table>
+
+                    </div>
+
+                `;
+
+
+                results.innerHTML = tableHTML;
+
+
+            } catch (error) {
+
+                status.innerHTML =
+                    `<div class="error">❌ ${error.message}</div>`;
+
+            } finally {
+
+                button.disabled = false;
+
             }
+
+        }
+
+
+        button.addEventListener("click", searchChannels);
+
+
+        input.addEventListener("keydown", (event) => {
+
+            if (event.key === "Enter") {
+
+                searchChannels();
+
+            }
+
         });
+
     </script>
 
 </body>

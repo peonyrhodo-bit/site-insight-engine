@@ -1,12 +1,16 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
+
     <meta charset="UTF-8">
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <title>Аналитика для Дашули</title>
 
     <style>
+
         body {
             font-family: Arial, sans-serif;
             max-width: 1200px;
@@ -62,6 +66,7 @@
             display: flex;
             gap: 10px;
             margin-bottom: 25px;
+            flex-wrap: wrap;
         }
 
         .mode-button {
@@ -76,6 +81,42 @@
         .mode-button.active {
             background: #007bff;
             color: white;
+        }
+
+        .radar-controls {
+            display: none;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .radar-controls.active {
+            display: flex;
+        }
+
+        .radar-controls label {
+            font-weight: bold;
+        }
+
+        .radar-controls select {
+            padding: 10px 14px;
+            font-size: 15px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: white;
+        }
+
+        .radar-button {
+            background: #28a745;
+        }
+
+        .radar-button:hover {
+            background: #218838;
         }
 
         #status {
@@ -150,6 +191,16 @@
             font-size: 15px;
         }
 
+        .video-title a {
+            color: #222;
+            text-decoration: none;
+        }
+
+        .video-title a:hover {
+            color: #007bff;
+            text-decoration: underline;
+        }
+
         .video-id {
             color: #888;
             font-size: 12px;
@@ -171,7 +222,17 @@
             font-weight: bold;
         }
 
+        .growth-value {
+            white-space: nowrap;
+            font-weight: bold;
+        }
+
+        .age-value {
+            white-space: nowrap;
+        }
+
         @media (max-width: 700px) {
+
             .search-box {
                 flex-direction: column;
             }
@@ -184,12 +245,24 @@
                 flex-direction: column;
             }
 
+            .radar-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .radar-controls select,
+            .radar-controls button {
+                width: 100%;
+            }
+
             th,
             td {
                 padding: 10px;
             }
         }
+
     </style>
+
 </head>
 
 <body>
@@ -212,13 +285,13 @@
         >
 
         <button id="searchButton">
-            🔍 Найти
+            🔍 Найти каналы
         </button>
 
     </div>
 
 
-    <!-- РЕЖИМ ПОИСКА -->
+    <!-- РЕЖИМЫ -->
 
     <div class="mode-buttons">
 
@@ -236,6 +309,80 @@
             🎬 Видео
         </button>
 
+        <button
+            id="radarMode"
+            class="mode-button"
+        >
+            🚀 Радар роста
+        </button>
+
+    </div>
+
+
+    <!-- НАСТРОЙКИ РАДАРА -->
+
+    <div
+        id="radarControls"
+        class="radar-controls"
+    >
+
+        <label for="regionSelect">
+            Регион:
+        </label>
+
+        <select id="regionSelect">
+
+            <option value="US">
+                🇺🇸 США
+            </option>
+
+            <option value="RU">
+                🇷🇺 Россия
+            </option>
+
+            <option value="IN">
+                🇮🇳 Индия
+            </option>
+
+            <option value="ZA">
+                🇿🇦 ЮАР
+            </option>
+
+            <option value="CN">
+                🇨🇳 Китай
+            </option>
+
+        </select>
+
+
+        <label for="hoursSelect">
+            Период:
+        </label>
+
+        <select id="hoursSelect">
+
+            <option value="24">
+                Последние 24 часа
+            </option>
+
+            <option value="48">
+                Последние 48 часов
+            </option>
+
+            <option value="72" selected>
+                Последние 72 часа
+            </option>
+
+        </select>
+
+
+        <button
+            id="radarButton"
+            class="radar-button"
+        >
+            🚀 Запустить радар
+        </button>
+
     </div>
 
 
@@ -248,15 +395,32 @@
 
     <script>
 
-        const input = document.getElementById("query");
+        const input =
+            document.getElementById("query");
 
-        const button = document.getElementById("searchButton");
+        const button =
+            document.getElementById("searchButton");
 
         const channelsMode =
             document.getElementById("channelsMode");
 
         const videosMode =
             document.getElementById("videosMode");
+
+        const radarMode =
+            document.getElementById("radarMode");
+
+        const radarControls =
+            document.getElementById("radarControls");
+
+        const radarButton =
+            document.getElementById("radarButton");
+
+        const regionSelect =
+            document.getElementById("regionSelect");
+
+        const hoursSelect =
+            document.getElementById("hoursSelect");
 
         const status =
             document.getElementById("status");
@@ -280,15 +444,26 @@
             currentMode = "channels";
 
             channelsMode.classList.add("active");
+
             videosMode.classList.remove("active");
 
+            radarMode.classList.remove("active");
+
+            radarControls.classList.remove("active");
+
+            button.style.display = "block";
+
             button.innerText = "🔍 Найти каналы";
+
+            input.style.display = "block";
 
             input.placeholder =
                 "Например: панды, дорамы, AI, финансы...";
 
             status.innerHTML = "";
+
             summary.innerHTML = "";
+
             results.innerHTML = "";
 
         });
@@ -299,15 +474,51 @@
             currentMode = "videos";
 
             videosMode.classList.add("active");
+
             channelsMode.classList.remove("active");
 
+            radarMode.classList.remove("active");
+
+            radarControls.classList.remove("active");
+
+            button.style.display = "block";
+
             button.innerText = "🔍 Найти видео";
+
+            input.style.display = "block";
 
             input.placeholder =
                 "Например: pandas, AI tools, finance...";
 
             status.innerHTML = "";
+
             summary.innerHTML = "";
+
+            results.innerHTML = "";
+
+        });
+
+
+        radarMode.addEventListener("click", () => {
+
+            currentMode = "radar";
+
+            radarMode.classList.add("active");
+
+            channelsMode.classList.remove("active");
+
+            videosMode.classList.remove("active");
+
+            radarControls.classList.add("active");
+
+            button.style.display = "none";
+
+            input.style.display = "none";
+
+            status.innerHTML = "";
+
+            summary.innerHTML = "";
+
             results.innerHTML = "";
 
         });
@@ -323,7 +534,7 @@
 
                 await searchChannels();
 
-            } else {
+            } else if (currentMode === "videos") {
 
                 await searchVideos();
 
@@ -347,6 +558,7 @@
                     '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
 
                 summary.innerHTML = "";
+
                 results.innerHTML = "";
 
                 return;
@@ -361,6 +573,7 @@
                 '<div class="loading">🔄 Ищу каналы на YouTube...</div>';
 
             summary.innerHTML = "";
+
             results.innerHTML = "";
 
 
@@ -397,8 +610,10 @@
                     `Найдено каналов: ${data.count}`;
 
 
-                if (!data.channels ||
-                    data.channels.length === 0) {
+                if (
+                    !data.channels ||
+                    data.channels.length === 0
+                ) {
 
                     results.innerHTML =
                         "<p>По вашему запросу каналы не найдены.</p>";
@@ -417,10 +632,15 @@
                             <thead>
 
                                 <tr>
+
                                     <th class="number">№</th>
+
                                     <th>Канал</th>
+
                                     <th>Описание</th>
+
                                     <th>Дата создания</th>
+
                                 </tr>
 
                             </thead>
@@ -530,6 +750,7 @@
                     '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
 
                 summary.innerHTML = "";
+
                 results.innerHTML = "";
 
                 return;
@@ -544,6 +765,7 @@
                 '<div class="loading">🔄 Ищу видео на YouTube...</div>';
 
             summary.innerHTML = "";
+
             results.innerHTML = "";
 
 
@@ -580,8 +802,10 @@
                     `Найдено видео: ${data.count}`;
 
 
-                if (!data.videos ||
-                    data.videos.length === 0) {
+                if (
+                    !data.videos ||
+                    data.videos.length === 0
+                ) {
 
                     results.innerHTML =
                         "<p>По вашему запросу видео не найдены.</p>";
@@ -600,14 +824,23 @@
                             <thead>
 
                                 <tr>
+
                                     <th class="number">№</th>
+
                                     <th>Видео</th>
+
                                     <th>Канал</th>
+
                                     <th>Просмотры</th>
+
                                     <th>Лайки</th>
+
                                     <th>Комментарии</th>
+
                                     <th>Дата</th>
+
                                     <th>Длительность</th>
+
                                 </tr>
 
                             </thead>
@@ -659,7 +892,15 @@
                             <td>
 
                                 <div class="video-title">
-                                    ${title}
+
+                                    <a
+                                        href="https://www.youtube.com/watch?v=${video.video_id}"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                    >
+                                        ${title}
+                                    </a>
+
                                 </div>
 
                                 <div class="video-id">
@@ -742,13 +983,262 @@
 
 
         // =========================================================
+        // РАДАР РОСТА
+        // =========================================================
+
+        radarButton.addEventListener(
+            "click",
+            runRadar
+        );
+
+
+        async function runRadar() {
+
+            const region =
+                regionSelect.value;
+
+            const hours =
+                hoursSelect.value;
+
+
+            radarButton.disabled = true;
+
+
+            status.innerHTML =
+                '<div class="loading">🚀 Сканирую свежие быстрорастущие видео...</div>';
+
+            summary.innerHTML = "";
+
+            results.innerHTML = "";
+
+
+            try {
+
+                const response = await fetch(
+                    `/radar-videos?max_results=50&region_code=${encodeURIComponent(region)}&hours_back=${encodeURIComponent(hours)}`
+                );
+
+
+                const data = await response.json();
+
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        data.error || "Ошибка радара"
+                    );
+
+                }
+
+
+                if (data.error) {
+
+                    throw new Error(data.error);
+
+                }
+
+
+                status.innerHTML = "";
+
+
+                summary.innerHTML =
+                    `🚀 Радар: ${data.count} видео за последние ${data.hours_back} ч. | регион: ${data.region_code}`;
+
+
+                if (
+                    !data.videos ||
+                    data.videos.length === 0
+                ) {
+
+                    results.innerHTML =
+                        "<p>Радар не нашёл подходящих видео.</p>";
+
+                    return;
+
+                }
+
+
+                let tableHTML = `
+
+                    <div class="table-container">
+
+                        <table>
+
+                            <thead>
+
+                                <tr>
+
+                                    <th class="number">№</th>
+
+                                    <th>Видео</th>
+
+                                    <th>Канал</th>
+
+                                    <th>Возраст</th>
+
+                                    <th>Просмотры</th>
+
+                                    <th>Просм./час</th>
+
+                                    <th>Эквивалент 24ч</th>
+
+                                    <th>Дата</th>
+
+                                </tr>
+
+                            </thead>
+
+                            <tbody>
+
+                `;
+
+
+                data.videos.forEach((video, index) => {
+
+                    const number =
+                        index + 1;
+
+                    const title =
+                        video.title || "Без названия";
+
+                    const channelTitle =
+                        video.channel_title || "Неизвестный канал";
+
+                    const views =
+                        formatNumber(video.views);
+
+                    const viewsPerHour =
+                        formatNumber(video.views_per_hour);
+
+                    const viewsPer24h =
+                        formatNumber(video.views_per_24h);
+
+                    const ageHours =
+                        video.age_hours;
+
+                    const publishedAt =
+                        video.published_at
+                            ? new Date(
+                                video.published_at
+                            ).toLocaleString(
+                                "ru-RU"
+                            )
+                            : "Неизвестно";
+
+
+                    tableHTML += `
+
+                        <tr>
+
+                            <td class="number">
+                                ${number}
+                            </td>
+
+
+                            <td>
+
+                                <div class="video-title">
+
+                                    <a
+                                        href="https://www.youtube.com/watch?v=${video.video_id}"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                    >
+                                        ${title}
+                                    </a>
+
+                                </div>
+
+                                <div class="video-id">
+                                    ${video.video_id || ""}
+                                </div>
+
+                            </td>
+
+
+                            <td>
+
+                                <div class="channel-title">
+                                    ${channelTitle}
+                                </div>
+
+                                <div class="channel-id">
+                                    ${video.channel_id || ""}
+                                </div>
+
+                            </td>
+
+
+                            <td class="age-value">
+                                ${ageHours} ч.
+                            </td>
+
+
+                            <td class="number-value">
+                                ${views}
+                            </td>
+
+
+                            <td class="growth-value">
+                                ${viewsPerHour}
+                            </td>
+
+
+                            <td class="growth-value">
+                                ${viewsPer24h}
+                            </td>
+
+
+                            <td class="date">
+                                ${publishedAt}
+                            </td>
+
+                        </tr>
+
+                    `;
+
+                });
+
+
+                tableHTML += `
+
+                            </tbody>
+
+                        </table>
+
+                    </div>
+
+                `;
+
+
+                results.innerHTML =
+                    tableHTML;
+
+
+            } catch (error) {
+
+                status.innerHTML =
+                    `<div class="error">❌ ${error.message}</div>`;
+
+            } finally {
+
+                radarButton.disabled = false;
+
+            }
+
+        }
+
+
+        // =========================================================
         // ФОРМАТИРОВАНИЕ ЧИСЕЛ
         // =========================================================
 
         function formatNumber(value) {
 
-            if (value === null ||
-                value === undefined) {
+            if (
+                value === null ||
+                value === undefined
+            ) {
 
                 return "—";
 
@@ -844,4 +1334,5 @@
     </script>
 
 </body>
+
 </html>

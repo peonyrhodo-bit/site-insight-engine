@@ -738,6 +738,85 @@ async def radar_history(limit: int = 100):
             "error": str(e)
         }
 
+@app.post("/refresh-radar")
+async def refresh_radar():
+    try:
+        # 1. Берём последние сохранённые видео из базы
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute("""
+            SELECT video_id
+            FROM videos
+            ORDER BY first_seen_at DESC
+            LIMIT 50
+        """).fetchall()
+
+        conn.close()
+
+        video_ids = [row["video_id"] for row in rows]
+
+        if not video_ids:
+            return {
+                "error": "В базе пока нет сохранённых видео"
+            }
+
+        # 2. Запрашиваем свежую статистику через MCP
+        result = await call_mcp_tool(
+            "get_video_stats",
+            {
+                "video_ids": video_ids
+            }
+        )
+
+        videos = result.get("videos", [])
+
+        # 3. Сохраняем новый snapshot
+        observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        conn = sqlite3.connect(DB_PATH)
+
+        saved_count = 0
+
+        for video in videos:
+            conn.execute("""
+                INSERT INTO video_snapshots (
+                    video_id,
+                    observed_at,
+                    views,
+                    likes,
+                    comments,
+                    age_hours,
+                    views_per_hour
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                video["video_id"],
+                observed_at,
+                video.get("views", 0),
+                video.get("likes", 0),
+                video.get("comments", 0),
+                None,
+                None
+            ))
+
+            saved_count += 1
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "success": True,
+            "saved_count": saved_count,
+            "observed_at": observed_at,
+            "videos": videos
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e)
+        }
+
 @app.get("/analyze")
 async def analyze(
     channel_id: str,

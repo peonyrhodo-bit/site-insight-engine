@@ -9,7 +9,7 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 1100px;
+            max-width: 1200px;
             margin: 40px auto;
             padding: 0 20px;
             background: #f7f7f7;
@@ -28,7 +28,7 @@
         .search-box {
             display: flex;
             gap: 10px;
-            margin-bottom: 25px;
+            margin-bottom: 15px;
         }
 
         input {
@@ -56,6 +56,26 @@
         button:disabled {
             background: #999;
             cursor: not-allowed;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        .mode-button {
+            background: #e9ecef;
+            color: #333;
+        }
+
+        .mode-button:hover {
+            background: #d6d9dc;
+        }
+
+        .mode-button.active {
+            background: #007bff;
+            color: white;
         }
 
         #status {
@@ -125,6 +145,18 @@
             word-break: break-all;
         }
 
+        .video-title {
+            font-weight: bold;
+            font-size: 15px;
+        }
+
+        .video-id {
+            color: #888;
+            font-size: 12px;
+            margin-top: 5px;
+            word-break: break-all;
+        }
+
         .description {
             color: #555;
             line-height: 1.4;
@@ -134,6 +166,11 @@
             white-space: nowrap;
         }
 
+        .number-value {
+            white-space: nowrap;
+            font-weight: bold;
+        }
+
         @media (max-width: 700px) {
             .search-box {
                 flex-direction: column;
@@ -141,6 +178,10 @@
 
             button {
                 width: 100%;
+            }
+
+            .mode-buttons {
+                flex-direction: column;
             }
 
             th,
@@ -156,10 +197,14 @@
     <h1>Аналитика для Дашули</h1>
 
     <p class="subtitle">
-        Найдите YouTube-каналы по любой теме, ключевому слову или запросу.
+        Исследуйте YouTube: каналы, видео, темы и интересы аудитории.
     </p>
 
+
+    <!-- ПОИСК -->
+
     <div class="search-box">
+
         <input
             type="text"
             id="query"
@@ -167,9 +212,32 @@
         >
 
         <button id="searchButton">
-            🔍 Найти каналы
+            🔍 Найти
         </button>
+
     </div>
+
+
+    <!-- РЕЖИМ ПОИСКА -->
+
+    <div class="mode-buttons">
+
+        <button
+            id="channelsMode"
+            class="mode-button active"
+        >
+            📺 Каналы
+        </button>
+
+        <button
+            id="videosMode"
+            class="mode-button"
+        >
+            🎬 Видео
+        </button>
+
+    </div>
+
 
     <div id="status"></div>
 
@@ -181,17 +249,100 @@
     <script>
 
         const input = document.getElementById("query");
-        const button = document.getElementById("searchButton");
-        const status = document.getElementById("status");
-        const summary = document.getElementById("summary");
-        const results = document.getElementById("results");
 
+        const button = document.getElementById("searchButton");
+
+        const channelsMode =
+            document.getElementById("channelsMode");
+
+        const videosMode =
+            document.getElementById("videosMode");
+
+        const status =
+            document.getElementById("status");
+
+        const summary =
+            document.getElementById("summary");
+
+        const results =
+            document.getElementById("results");
+
+
+        let currentMode = "channels";
+
+
+        // =========================================================
+        // ПЕРЕКЛЮЧЕНИЕ РЕЖИМА
+        // =========================================================
+
+        channelsMode.addEventListener("click", () => {
+
+            currentMode = "channels";
+
+            channelsMode.classList.add("active");
+            videosMode.classList.remove("active");
+
+            button.innerText = "🔍 Найти каналы";
+
+            input.placeholder =
+                "Например: панды, дорамы, AI, финансы...";
+
+            status.innerHTML = "";
+            summary.innerHTML = "";
+            results.innerHTML = "";
+
+        });
+
+
+        videosMode.addEventListener("click", () => {
+
+            currentMode = "videos";
+
+            videosMode.classList.add("active");
+            channelsMode.classList.remove("active");
+
+            button.innerText = "🔍 Найти видео";
+
+            input.placeholder =
+                "Например: pandas, AI tools, finance...";
+
+            status.innerHTML = "";
+            summary.innerHTML = "";
+            results.innerHTML = "";
+
+        });
+
+
+        // =========================================================
+        // ОСНОВНОЙ ПОИСК
+        // =========================================================
+
+        async function search() {
+
+            if (currentMode === "channels") {
+
+                await searchChannels();
+
+            } else {
+
+                await searchVideos();
+
+            }
+
+        }
+
+
+        // =========================================================
+        // ПОИСК КАНАЛОВ
+        // =========================================================
 
         async function searchChannels() {
 
             const query = input.value.trim();
 
+
             if (!query) {
+
                 status.innerHTML =
                     '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
 
@@ -199,10 +350,12 @@
                 results.innerHTML = "";
 
                 return;
+
             }
 
 
             button.disabled = true;
+
 
             status.innerHTML =
                 '<div class="loading">🔄 Ищу каналы на YouTube...</div>';
@@ -244,7 +397,8 @@
                     `Найдено каналов: ${data.count}`;
 
 
-                if (!data.channels || data.channels.length === 0) {
+                if (!data.channels ||
+                    data.channels.length === 0) {
 
                     results.innerHTML =
                         "<p>По вашему запросу каналы не найдены.</p>";
@@ -288,7 +442,9 @@
 
                     const publishedAt =
                         channel.published_at
-                            ? new Date(channel.published_at).toLocaleDateString("ru-RU")
+                            ? new Date(
+                                channel.published_at
+                            ).toLocaleDateString("ru-RU")
                             : "Неизвестно";
 
 
@@ -359,18 +515,331 @@
         }
 
 
-        button.addEventListener("click", searchChannels);
+        // =========================================================
+        // ПОИСК ВИДЕО
+        // =========================================================
+
+        async function searchVideos() {
+
+            const query = input.value.trim();
 
 
-        input.addEventListener("keydown", (event) => {
+            if (!query) {
 
-            if (event.key === "Enter") {
+                status.innerHTML =
+                    '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
 
-                searchChannels();
+                summary.innerHTML = "";
+                results.innerHTML = "";
+
+                return;
 
             }
 
-        });
+
+            button.disabled = true;
+
+
+            status.innerHTML =
+                '<div class="loading">🔄 Ищу видео на YouTube...</div>';
+
+            summary.innerHTML = "";
+            results.innerHTML = "";
+
+
+            try {
+
+                const response = await fetch(
+                    `/search-videos?query=${encodeURIComponent(query)}&max_results=20`
+                );
+
+
+                const data = await response.json();
+
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        data.error || "Ошибка при поиске видео"
+                    );
+
+                }
+
+
+                if (data.error) {
+
+                    throw new Error(data.error);
+
+                }
+
+
+                status.innerHTML = "";
+
+
+                summary.innerHTML =
+                    `Найдено видео: ${data.count}`;
+
+
+                if (!data.videos ||
+                    data.videos.length === 0) {
+
+                    results.innerHTML =
+                        "<p>По вашему запросу видео не найдены.</p>";
+
+                    return;
+
+                }
+
+
+                let tableHTML = `
+
+                    <div class="table-container">
+
+                        <table>
+
+                            <thead>
+
+                                <tr>
+                                    <th class="number">№</th>
+                                    <th>Видео</th>
+                                    <th>Канал</th>
+                                    <th>Просмотры</th>
+                                    <th>Лайки</th>
+                                    <th>Комментарии</th>
+                                    <th>Дата</th>
+                                    <th>Длительность</th>
+                                </tr>
+
+                            </thead>
+
+                            <tbody>
+
+                `;
+
+
+                data.videos.forEach((video, index) => {
+
+                    const number = index + 1;
+
+                    const title =
+                        video.title || "Без названия";
+
+                    const channelTitle =
+                        video.channel_title || "Неизвестный канал";
+
+                    const views =
+                        formatNumber(video.views);
+
+                    const likes =
+                        formatNumber(video.likes);
+
+                    const comments =
+                        formatNumber(video.comments);
+
+                    const publishedAt =
+                        video.published_at
+                            ? new Date(
+                                video.published_at
+                            ).toLocaleDateString("ru-RU")
+                            : "Неизвестно";
+
+                    const duration =
+                        formatDuration(video.duration);
+
+
+                    tableHTML += `
+
+                        <tr>
+
+                            <td class="number">
+                                ${number}
+                            </td>
+
+
+                            <td>
+
+                                <div class="video-title">
+                                    ${title}
+                                </div>
+
+                                <div class="video-id">
+                                    ${video.video_id || ""}
+                                </div>
+
+                            </td>
+
+
+                            <td>
+
+                                <div class="channel-title">
+                                    ${channelTitle}
+                                </div>
+
+                                <div class="channel-id">
+                                    ${video.channel_id || ""}
+                                </div>
+
+                            </td>
+
+
+                            <td class="number-value">
+                                ${views}
+                            </td>
+
+
+                            <td class="number-value">
+                                ${likes}
+                            </td>
+
+
+                            <td class="number-value">
+                                ${comments}
+                            </td>
+
+
+                            <td class="date">
+                                ${publishedAt}
+                            </td>
+
+
+                            <td class="date">
+                                ${duration}
+                            </td>
+
+                        </tr>
+
+                    `;
+
+                });
+
+
+                tableHTML += `
+
+                            </tbody>
+
+                        </table>
+
+                    </div>
+
+                `;
+
+
+                results.innerHTML = tableHTML;
+
+
+            } catch (error) {
+
+                status.innerHTML =
+                    `<div class="error">❌ ${error.message}</div>`;
+
+            } finally {
+
+                button.disabled = false;
+
+            }
+
+        }
+
+
+        // =========================================================
+        // ФОРМАТИРОВАНИЕ ЧИСЕЛ
+        // =========================================================
+
+        function formatNumber(value) {
+
+            if (value === null ||
+                value === undefined) {
+
+                return "—";
+
+            }
+
+
+            return Number(value).toLocaleString("ru-RU");
+
+        }
+
+
+        // =========================================================
+        // ФОРМАТИРОВАНИЕ ДЛИТЕЛЬНОСТИ
+        // =========================================================
+
+        function formatDuration(duration) {
+
+            if (!duration) {
+
+                return "—";
+
+            }
+
+
+            const match =
+                duration.match(
+                    /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/
+                );
+
+
+            if (!match) {
+
+                return duration;
+
+            }
+
+
+            const hours =
+                parseInt(match[1] || "0");
+
+            const minutes =
+                parseInt(match[2] || "0");
+
+            const seconds =
+                parseInt(match[3] || "0");
+
+
+            if (hours > 0) {
+
+                return (
+                    hours +
+                    ":" +
+                    String(minutes).padStart(2, "0") +
+                    ":" +
+                    String(seconds).padStart(2, "0")
+                );
+
+            }
+
+
+            return (
+                minutes +
+                ":" +
+                String(seconds).padStart(2, "0")
+            );
+
+        }
+
+
+        // =========================================================
+        // КНОПКА И ENTER
+        // =========================================================
+
+        button.addEventListener(
+            "click",
+            search
+        );
+
+
+        input.addEventListener(
+            "keydown",
+            (event) => {
+
+                if (event.key === "Enter") {
+
+                    search();
+
+                }
+
+            }
+        );
 
     </script>
 

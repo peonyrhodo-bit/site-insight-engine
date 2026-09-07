@@ -701,6 +701,43 @@ async def database_status():
 # CHANNEL ANALYSIS
 # ============================================================
 
+@app.get("/radar-history")
+async def radar_history(limit: int = 100):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute("""
+            SELECT
+                v.video_id,
+                v.title,
+                v.channel_title,
+                v.published_at,
+                v.language,
+                s.observed_at,
+                s.views,
+                s.likes,
+                s.comments,
+                s.age_hours,
+                s.views_per_hour
+            FROM video_snapshots s
+            JOIN videos v ON v.video_id = s.video_id
+            ORDER BY s.observed_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        conn.close()
+
+        return {
+            "count": len(rows),
+            "snapshots": [dict(row) for row in rows]
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e)
+        }
+
 @app.get("/analyze")
 async def analyze(
     channel_id: str,

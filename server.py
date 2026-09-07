@@ -291,6 +291,83 @@ async def trending_videos(
             status_code=500,
         )
 
+@app.get("/radar-videos")
+async def radar_videos(
+    max_results: int = 50,
+    region_code: str = "US",
+    hours_back: int = 72,
+):
+    try:
+        async with streamablehttp_client(MCP_URL) as (
+            read_stream,
+            write_stream,
+            _,
+        ):
+            async with ClientSession(
+                read_stream,
+                write_stream
+            ) as session:
+
+                await session.initialize()
+
+                result = await session.call_tool(
+                    "search_radar_videos",
+                    {
+                        "max_results": max_results,
+                        "region_code": region_code,
+                        "hours_back": hours_back,
+                    },
+                )
+
+                if not result.content:
+                    return JSONResponse(
+                        {
+                            "error": "MCP вернул пустой ответ"
+                        },
+                        status_code=500,
+                    )
+
+                content = result.content[0]
+
+                if not hasattr(content, "text"):
+                    return JSONResponse(
+                        {
+                            "error": (
+                                "MCP вернул контент "
+                                "не текстового типа"
+                            )
+                        },
+                        status_code=500,
+                    )
+
+                try:
+                    data = json.loads(content.text)
+
+                except json.JSONDecodeError:
+                    return JSONResponse(
+                        {
+                            "error": (
+                                f"MCP вернул не JSON: "
+                                f"{content.text}"
+                            )
+                        },
+                        status_code=500,
+                    )
+
+                return JSONResponse(data)
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+
+        return JSONResponse(
+            {
+                "error": str(e)
+            },
+            status_code=500,
+        )
+
 @app.get("/analyze")
 async def analyze(channel_id: str):
     try:

@@ -853,6 +853,10 @@ async def analyze(
 # START SERVER
 # ============================================================
 
+@app.get("/refresh-radar-test")
+async def refresh_radar_test():
+    return await refresh_radar()
+
 if __name__ == "__main__":
 
     import uvicorn

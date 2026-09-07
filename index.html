@@ -594,7 +594,7 @@ YouTube chart.
 // =========================================================
 
 let searchMode = "channels";
-
+let lastRadarData = null;
 
 // =========================================================
 // HELPERS
@@ -1197,6 +1197,14 @@ async function runRadar() {
         const data =
             await response.json();
 
+        lastRadarData = data;
+
+document.getElementById(
+    "saveRadarButton"
+).disabled = (
+    !data.videos ||
+    data.videos.length === 0
+);
 
         if (data.error) {
 
@@ -1710,6 +1718,105 @@ function escapeHtml(value) {
         );
 }
 
+    // =========================================================
+// SAVE RADAR SNAPSHOT
+// =========================================================
+
+async function saveRadarSnapshot() {
+
+    if (
+        !lastRadarData ||
+        !lastRadarData.videos ||
+        lastRadarData.videos.length === 0
+    ) {
+
+        alert(
+            "Сначала запусти радар."
+        );
+
+        return;
+    }
+
+
+    const button =
+        document.getElementById(
+            "saveRadarButton"
+        );
+
+
+    const status =
+        document.getElementById(
+            "radarStatus"
+        );
+
+
+    button.disabled = true;
+
+    button.textContent =
+        "⏳ Сохраняем...";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/radar-save",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        language:
+                            lastRadarData.language,
+
+                        videos:
+                            lastRadarData.videos
+                    })
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (data.error) {
+
+            throw new Error(
+                data.error
+            );
+        }
+
+
+        status.textContent =
+            "✅ Наблюдение сохранено: "
+            + data.saved_count
+            + " видео";
+
+
+        button.textContent =
+            "💾 Сохранить ещё раз";
+
+        button.disabled = false;
+
+
+    } catch (error) {
+
+        status.textContent =
+            "❌ Ошибка сохранения: "
+            + error.message;
+
+
+        button.textContent =
+            "💾 Сохранить наблюдение";
+
+        button.disabled = false;
+    }
+}
 
 </script>
 

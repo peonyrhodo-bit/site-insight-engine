@@ -1,539 +1,306 @@
 <!DOCTYPE html>
+
 <html lang="ru">
 
 <head>
 
-    <meta charset="UTF-8">
+<meta charset="UTF-8">
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
 
-    <title>Аналитика для Дашули</title>
+<title>Аналитика для Дашули</title>
 
 
-    <style>
+<style>
 
-        body {
+* {
+    box-sizing: border-box;
+}
 
-            font-family: Arial, sans-serif;
+body {
 
-            max-width: 1200px;
+    margin: 0;
 
-            margin: 40px auto;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 
-            padding: 0 20px;
+    background: #f5f6fa;
 
-            background: #f7f7f7;
+    color: #222;
+}
 
-            color: #222;
 
-        }
+.container {
 
+    max-width: 1400px;
 
-        h1 {
+    margin: 0 auto;
 
-            margin-bottom: 10px;
+    padding: 30px;
+}
 
-        }
 
+h1 {
 
-        .subtitle {
+    margin-top: 0;
 
-            color: #666;
+    margin-bottom: 8px;
+}
 
-            margin-bottom: 25px;
 
-        }
+.subtitle {
 
+    color: #777;
 
-        .search-box {
+    margin-bottom: 30px;
+}
 
-            display: flex;
 
-            gap: 10px;
+.card {
 
-            margin-bottom: 15px;
+    background: white;
 
-        }
+    border-radius: 14px;
 
+    padding: 22px;
 
-        input {
+    margin-bottom: 25px;
 
-            flex: 1;
+    box-shadow:
+        0 4px 20px
+        rgba(0,0,0,0.06);
+}
 
-            padding: 14px;
 
-            font-size: 16px;
+.input-row {
 
-            border: 1px solid #ccc;
+    display: flex;
 
-            border-radius: 6px;
+    gap: 10px;
 
-        }
+    flex-wrap: wrap;
+}
 
 
-        button {
+input,
+select {
 
-            padding: 14px 24px;
+    padding: 12px 14px;
 
-            font-size: 16px;
+    border: 1px solid #ddd;
 
-            background: #007bff;
+    border-radius: 8px;
 
-            color: white;
+    font-size: 15px;
+}
 
-            border: none;
 
-            border-radius: 6px;
+input {
 
-            cursor: pointer;
+    flex: 1;
 
-        }
+    min-width: 300px;
+}
 
 
-        button:hover {
+button {
 
-            background: #0056b3;
+    border: none;
 
-        }
+    border-radius: 8px;
 
+    padding: 12px 18px;
 
-        button:disabled {
+    font-size: 15px;
 
-            background: #999;
+    cursor: pointer;
 
-            cursor: not-allowed;
+    background: #111;
 
-        }
+    color: white;
+}
 
 
-        .mode-buttons {
+button:hover {
 
-            display: flex;
+    opacity: 0.85;
+}
 
-            gap: 10px;
 
-            margin-bottom: 25px;
+.mode-buttons {
 
-            flex-wrap: wrap;
+    display: flex;
 
-        }
+    gap: 10px;
 
+    margin-bottom: 15px;
+}
 
-        .mode-button {
 
-            background: #e9ecef;
+.mode-button {
 
-            color: #333;
+    background: #eee;
 
-        }
+    color: #333;
+}
 
 
-        .mode-button:hover {
+.mode-button.active {
 
-            background: #d6d9dc;
+    background: #111;
 
-        }
+    color: white;
+}
 
 
-        .mode-button.active {
+.tool-buttons {
 
-            background: #007bff;
+    display: flex;
 
-            color: white;
+    gap: 10px;
 
-        }
+    flex-wrap: wrap;
 
+    margin-bottom: 20px;
+}
 
-        .radar-controls {
 
-            display: none;
+.tool-button {
 
-            gap: 10px;
+    background: #eee;
 
-            align-items: center;
+    color: #333;
+}
 
-            flex-wrap: wrap;
 
-            margin-bottom: 20px;
+.tool-button.active {
 
-            padding: 15px;
+    background: #111;
 
-            background: white;
+    color: white;
+}
 
-            border-radius: 8px;
 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+.controls {
 
-        }
+    display: flex;
 
+    gap: 10px;
 
-        .radar-controls.active {
+    flex-wrap: wrap;
 
-            display: flex;
+    align-items: center;
+}
 
-        }
 
+.status {
 
-        .radar-controls label {
+    margin-top: 15px;
 
-            font-weight: bold;
+    color: #666;
+}
 
-        }
 
+.summary {
 
-        .radar-controls select {
+    margin-top: 15px;
 
-            padding: 10px 14px;
+    font-size: 14px;
 
-            font-size: 15px;
+    color: #666;
+}
 
-            border: 1px solid #ccc;
 
-            border-radius: 6px;
+.table-wrapper {
 
-            background: white;
+    overflow-x: auto;
 
-        }
+    margin-top: 20px;
+}
 
 
-        .radar-button {
+table {
 
-            background: #28a745;
+    width: 100%;
 
-        }
+    border-collapse: collapse;
 
+    min-width: 900px;
+}
 
-        .radar-button:hover {
 
-            background: #218838;
+th,
+td {
 
-        }
+    padding: 12px;
 
+    border-bottom:
+        1px solid #eee;
 
-        .trend-controls {
+    text-align: left;
 
-            display: none;
+    vertical-align: top;
+}
 
-            gap: 10px;
 
-            align-items: center;
+th {
 
-            flex-wrap: wrap;
+    background: #fafafa;
 
-            margin-bottom: 20px;
+    font-weight: 600;
+}
 
-            padding: 15px;
 
-            background: white;
+td a {
 
-            border-radius: 8px;
+    color: #111;
 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    text-decoration: none;
 
-        }
+    font-weight: 500;
+}
 
 
-        .trend-controls.active {
+td a:hover {
 
-            display: flex;
+    text-decoration: underline;
+}
 
-        }
 
+.number {
 
-        .trend-controls label {
+    white-space: nowrap;
 
-            font-weight: bold;
+    font-variant-numeric:
+        tabular-nums;
+}
 
-        }
 
+.hidden {
 
-        .trend-controls select {
+    display: none;
+}
 
-            padding: 10px 14px;
 
-            font-size: 15px;
+.badge {
 
-            border: 1px solid #ccc;
+    display: inline-block;
 
-            border-radius: 6px;
+    padding: 5px 8px;
 
-            background: white;
+    border-radius: 6px;
 
-        }
+    background: #f0f0f0;
 
+    font-size: 12px;
+}
 
-        .trend-button {
-
-            background: #ff9800;
-
-        }
-
-
-        .trend-button:hover {
-
-            background: #e68900;
-
-        }
-
-
-        #status {
-
-            margin: 15px 0;
-
-        }
-
-
-        .loading {
-
-            color: #666;
-
-        }
-
-
-        .error {
-
-            color: #c62828;
-
-            background: #ffebee;
-
-            padding: 12px;
-
-            border-radius: 6px;
-
-        }
-
-
-        .summary {
-
-            margin: 20px 0;
-
-            font-size: 18px;
-
-            font-weight: bold;
-
-        }
-
-
-        .table-container {
-
-            overflow-x: auto;
-
-            background: white;
-
-            border-radius: 8px;
-
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-
-        }
-
-
-        table {
-
-            width: 100%;
-
-            border-collapse: collapse;
-
-        }
-
-
-        th,
-        td {
-
-            padding: 14px;
-
-            text-align: left;
-
-            border-bottom: 1px solid #eee;
-
-            vertical-align: top;
-
-        }
-
-
-        th {
-
-            background: #f0f0f0;
-
-            font-weight: bold;
-
-        }
-
-
-        tr:hover {
-
-            background: #fafafa;
-
-        }
-
-
-        .number {
-
-            width: 50px;
-
-            text-align: center;
-
-        }
-
-
-        .channel-title {
-
-            font-weight: bold;
-
-            font-size: 16px;
-
-        }
-
-
-        .channel-id {
-
-            color: #888;
-
-            font-size: 12px;
-
-            margin-top: 5px;
-
-            word-break: break-all;
-
-        }
-
-
-        .video-title {
-
-            font-weight: bold;
-
-            font-size: 15px;
-
-        }
-
-
-        .video-title a {
-
-            color: #222;
-
-            text-decoration: none;
-
-        }
-
-
-        .video-title a:hover {
-
-            color: #007bff;
-
-            text-decoration: underline;
-
-        }
-
-
-        .video-id {
-
-            color: #888;
-
-            font-size: 12px;
-
-            margin-top: 5px;
-
-            word-break: break-all;
-
-        }
-
-
-        .description {
-
-            color: #555;
-
-            line-height: 1.4;
-
-        }
-
-
-        .date {
-
-            white-space: nowrap;
-
-        }
-
-
-        .number-value {
-
-            white-space: nowrap;
-
-            font-weight: bold;
-
-        }
-
-
-        .growth-value {
-
-            white-space: nowrap;
-
-            font-weight: bold;
-
-        }
-
-
-        .age-value {
-
-            white-space: nowrap;
-
-        }
-
-
-        @media (max-width: 700px) {
-
-            .search-box {
-
-                flex-direction: column;
-
-            }
-
-
-            button {
-
-                width: 100%;
-
-            }
-
-
-            .mode-buttons {
-
-                flex-direction: column;
-
-            }
-
-
-            .radar-controls,
-            .trend-controls {
-
-                flex-direction: column;
-
-                align-items: stretch;
-
-            }
-
-
-            .radar-controls select,
-            .radar-controls button,
-            .trend-controls select,
-            .trend-controls button {
-
-                width: 100%;
-
-            }
-
-
-            th,
-            td {
-
-                padding: 10px;
-
-            }
-
-        }
-
-    </style>
+</style>
 
 </head>
 
@@ -541,1777 +308,1404 @@
 <body>
 
 
-    <h1>
-        Аналитика для Дашули
-    </h1>
+<div class="container">
 
 
-    <p class="subtitle">
+<h1>📊 Аналитика для Дашули</h1>
 
-        Исследуйте YouTube:
-        каналы, видео, темы и интересы аудитории.
+<div class="subtitle">
 
-    </p>
+Инструмент для исследования YouTube,
+поиска каналов и обнаружения быстрорастущих видео.
 
+</div>
 
-    <!-- ===================================================== -->
-    <!-- ПОИСК -->
-    <!-- ===================================================== -->
 
-    <div
-        class="search-box"
-        id="searchBox"
-    >
+<!-- ===================================================== -->
+<!-- SEARCH -->
+<!-- ===================================================== -->
 
-        <input
-            type="text"
-            id="query"
-            placeholder="Например: панды, дорамы, AI, финансы..."
-        >
+<div class="card">
 
-        <button id="searchButton">
+<h2>🔎 Поиск</h2>
 
-            🔍 Найти каналы
 
-        </button>
+<div class="mode-buttons">
 
-    </div>
+<button
+    id="channelsMode"
+    class="mode-button active"
+    onclick="setSearchMode('channels')"
+>
+    📺 Каналы
+</button>
 
 
-    <!-- ===================================================== -->
-    <!-- РЕЖИМЫ -->
-    <!-- ===================================================== -->
+<button
+    id="videosMode"
+    class="mode-button"
+    onclick="setSearchMode('videos')"
+>
+    🎬 Видео
+</button>
 
-    <div class="mode-buttons">
+</div>
 
 
-        <button
-            id="channelsMode"
-            class="mode-button active"
-        >
+<div class="input-row">
 
-            📺 Каналы
+<input
+    id="searchInput"
+    type="text"
+    placeholder="Например: pandas, AI, fitness, технологии..."
+    onkeydown="if(event.key === 'Enter') search()"
+>
 
-        </button>
 
+<button onclick="search()">
 
-        <button
-            id="videosMode"
-            class="mode-button"
-        >
+🔎 Найти
 
-            🎬 Видео
+</button>
 
-        </button>
+</div>
 
 
-        <button
-            id="trendsMode"
-            class="mode-button"
-        >
+<div
+    id="searchStatus"
+    class="status"
+></div>
 
-            🔥 Тренды YouTube
 
-        </button>
+<div
+    id="searchResults"
+></div>
 
+</div>
 
-        <button
-            id="radarMode"
-            class="mode-button"
-        >
 
-            🚀 Радар роста
+<!-- ===================================================== -->
+<!-- TOOLS -->
+<!-- ===================================================== -->
 
-        </button>
+<div class="card">
 
+<h2>🧠 Инструменты исследования</h2>
 
-    </div>
 
+<div class="tool-buttons">
 
-    <!-- ===================================================== -->
-    <!-- НАСТРОЙКИ ТРЕНДОВ -->
-    <!-- ===================================================== -->
+<button
+    id="radarButton"
+    class="tool-button active"
+    onclick="showTool('radar')"
+>
+    🚀 Радар роста
+</button>
 
-    <div
-        id="trendControls"
-        class="trend-controls"
-    >
 
-        <label for="trendRegionSelect">
+<button
+    id="trendsButton"
+    class="tool-button"
+    onclick="showTool('trends')"
+>
+    🔥 Тренды YouTube
+</button>
 
-            Регион:
+</div>
 
-        </label>
 
+<!-- ===================================================== -->
+<!-- RADAR -->
+<!-- ===================================================== -->
 
-        <select id="trendRegionSelect">
+<div id="radarTool">
 
-            <option value="US">
-                🇺🇸 США
-            </option>
+<h3>🚀 Радар роста</h3>
 
-            <option value="RU">
-                🇷🇺 Россия
-            </option>
+<p>
 
-            <option value="IN">
-                🇮🇳 Индия
-            </option>
+Ищем свежие видео по выбранному языку
+и сортируем их по текущей скорости набора просмотров.
 
-            <option value="ZA">
-                🇿🇦 ЮАР
-            </option>
+</p>
 
-            <option value="CN">
-                🇨🇳 Китай
-            </option>
 
-        </select>
+<div class="controls">
 
 
-        <button
-            id="trendButton"
-            class="trend-button"
-        >
+<select id="radarLanguage">
 
-            🔥 Показать тренды
+<option value="ru">
+    🇷🇺 Русский
+</option>
 
-        </button>
+<option value="en">
+    🇺🇸 English
+</option>
 
-    </div>
+<option value="hi">
+    🇮🇳 हिन्दी
+</option>
 
+<option value="zh-Hans">
+    🇨🇳 中文
+</option>
 
-    <!-- ===================================================== -->
-    <!-- НАСТРОЙКИ РАДАРА -->
-    <!-- ===================================================== -->
+</select>
 
-    <div
-        id="radarControls"
-        class="radar-controls"
-    >
 
-        <label for="regionSelect">
+<select id="radarHours">
 
-            Регион:
+<option value="24">
+    Последние 24 часа
+</option>
 
-        </label>
+<option value="48">
+    Последние 48 часов
+</option>
 
+<option value="72" selected>
+    Последние 72 часа
+</option>
 
-        <select id="regionSelect">
+<option value="168">
+    Последние 7 дней
+</option>
 
-            <option value="US">
-                🇺🇸 США
-            </option>
+</select>
 
-            <option value="RU">
-                🇷🇺 Россия
-            </option>
 
-            <option value="IN">
-                🇮🇳 Индия
-            </option>
+<button onclick="runRadar()">
 
-            <option value="ZA">
-                🇿🇦 ЮАР
-            </option>
+🚀 Запустить радар
 
-            <option value="CN">
-                🇨🇳 Китай
-            </option>
+</button>
 
-        </select>
 
+</div>
 
-        <label for="hoursSelect">
 
-            Период:
+<div
+    id="radarStatus"
+    class="status"
+></div>
 
-        </label>
 
+<div
+    id="radarSummary"
+    class="summary"
+></div>
 
-        <select id="hoursSelect">
 
-            <option value="24">
-                Последние 24 часа
-            </option>
+<div
+    id="radarResults"
+></div>
 
-            <option value="48">
-                Последние 48 часов
-            </option>
+</div>
 
-            <option value="72" selected>
-                Последние 72 часа
-            </option>
 
-        </select>
+<!-- ===================================================== -->
+<!-- TRENDS -->
+<!-- ===================================================== -->
 
+<div
+    id="trendsTool"
+    class="hidden"
+>
 
-        <button
-            id="radarButton"
-            class="radar-button"
-        >
+<h3>🔥 Тренды YouTube</h3>
 
-            🚀 Запустить радар
+<p>
 
-        </button>
+Это официальный региональный
+YouTube chart.
 
-    </div>
+</p>
 
 
-    <div id="status"></div>
+<div class="controls">
 
-    <div id="summary"></div>
 
-    <div id="results"></div>
+<select id="trendRegion">
 
+<option value="RU">
+    🇷🇺 Россия
+</option>
 
-    <script>
+<option value="US">
+    🇺🇸 США
+</option>
 
+<option value="IN">
+    🇮🇳 Индия
+</option>
 
-        // =====================================================
-        // ЭЛЕМЕНТЫ
-        // =====================================================
+<option value="ZA">
+    🇿🇦 Южная Африка
+</option>
 
-        const input =
-            document.getElementById("query");
+<option value="CN">
+    🇨🇳 Китай
+</option>
 
+</select>
 
-        const button =
-            document.getElementById("searchButton");
 
+<button onclick="runTrends()">
 
-        const searchBox =
-            document.getElementById("searchBox");
+🔥 Показать тренды
 
+</button>
 
-        const channelsMode =
-            document.getElementById("channelsMode");
 
+</div>
 
-        const videosMode =
-            document.getElementById("videosMode");
 
+<div
+    id="trendStatus"
+    class="status"
+></div>
 
-        const trendsMode =
-            document.getElementById("trendsMode");
 
+<div
+    id="trendResults"
+></div>
 
-        const radarMode =
-            document.getElementById("radarMode");
+</div>
 
+</div>
 
-        const trendControls =
-            document.getElementById("trendControls");
+</div>
 
 
-        const radarControls =
-            document.getElementById("radarControls");
+<script>
 
 
-        const trendButton =
-            document.getElementById("trendButton");
+// =========================================================
+// STATE
+// =========================================================
 
+let searchMode = "channels";
 
-        const radarButton =
-            document.getElementById("radarButton");
 
+// =========================================================
+// HELPERS
+// =========================================================
 
-        const trendRegionSelect =
-            document.getElementById(
-                "trendRegionSelect"
+function formatNumber(value) {
+
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return "—";
+    }
+
+    return Number(value).toLocaleString(
+        "ru-RU"
+    );
+}
+
+
+function formatDate(value) {
+
+    if (!value) {
+        return "—";
+    }
+
+    const date = new Date(value);
+
+    return date.toLocaleString(
+        "ru-RU"
+    );
+}
+
+
+function formatDuration(duration) {
+
+    if (!duration) {
+        return "—";
+    }
+
+    const match = duration.match(
+        /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/
+    );
+
+    if (!match) {
+        return duration;
+    }
+
+    const hours =
+        Number(match[1] || 0);
+
+    const minutes =
+        Number(match[2] || 0);
+
+    const seconds =
+        Number(match[3] || 0);
+
+
+    let result = "";
+
+    if (hours > 0) {
+        result += hours + " ч ";
+    }
+
+    if (
+        minutes > 0 ||
+        hours > 0
+    ) {
+        result += minutes + " мин ";
+    }
+
+    result += seconds + " сек";
+
+    return result.trim();
+}
+
+
+function formatAge(hours) {
+
+    if (
+        hours === null ||
+        hours === undefined
+    ) {
+        return "—";
+    }
+
+    if (hours < 1) {
+
+        return Math.round(
+            hours * 60
+        ) + " мин";
+
+    }
+
+
+    if (hours < 24) {
+
+        const h =
+            Math.floor(hours);
+
+        const m =
+            Math.round(
+                (hours - h) * 60
             );
 
-
-        const regionSelect =
-            document.getElementById(
-                "regionSelect"
-            );
-
-
-        const hoursSelect =
-            document.getElementById(
-                "hoursSelect"
-            );
+        return (
+            h +
+            " ч " +
+            m +
+            " мин"
+        );
+    }
 
 
-        const status =
-            document.getElementById("status");
+    const days =
+        Math.floor(
+            hours / 24
+        );
+
+    const remainingHours =
+        Math.round(
+            hours % 24
+        );
+
+    return (
+        days +
+        " д " +
+        remainingHours +
+        " ч"
+    );
+}
 
 
-        const summary =
-            document.getElementById("summary");
+function videoUrl(videoId) {
+
+    return (
+        "https://www.youtube.com/watch?v="
+        + videoId
+    );
+}
 
 
-        const results =
-            document.getElementById("results");
+function channelUrl(channelId) {
+
+    return (
+        "https://www.youtube.com/channel/"
+        + channelId
+    );
+}
 
 
-        let currentMode = "channels";
+// =========================================================
+// SEARCH MODE
+// =========================================================
+
+function setSearchMode(mode) {
+
+    searchMode = mode;
 
 
-        // =====================================================
-        // ОЧИСТКА
-        // =====================================================
-
-        function clearResults() {
-
-            status.innerHTML = "";
-
-            summary.innerHTML = "";
-
-            results.innerHTML = "";
-
-        }
-
-
-        // =====================================================
-        // РЕЖИМ КАНАЛОВ
-        // =====================================================
-
-        channelsMode.addEventListener(
-            "click",
-            () => {
-
-                currentMode = "channels";
-
-
-                channelsMode.classList.add(
-                    "active"
-                );
-
-                videosMode.classList.remove(
-                    "active"
-                );
-
-                trendsMode.classList.remove(
-                    "active"
-                );
-
-                radarMode.classList.remove(
-                    "active"
-                );
-
-
-                searchBox.style.display =
-                    "flex";
-
-
-                trendControls.classList.remove(
-                    "active"
-                );
-
-                radarControls.classList.remove(
-                    "active"
-                );
-
-
-                input.style.display =
-                    "block";
-
-
-                button.style.display =
-                    "block";
-
-
-                button.innerText =
-                    "🔍 Найти каналы";
-
-
-                input.placeholder =
-                    "Например: панды, дорамы, AI, финансы...";
-
-
-                clearResults();
-
-            }
+    document
+        .getElementById("channelsMode")
+        .classList.toggle(
+            "active",
+            mode === "channels"
         );
 
 
-        // =====================================================
-        // РЕЖИМ ВИДЕО
-        // =====================================================
-
-        videosMode.addEventListener(
-            "click",
-            () => {
-
-                currentMode = "videos";
+    document
+        .getElementById("videosMode")
+        .classList.toggle(
+            "active",
+            mode === "videos"
+        );
+}
 
 
-                channelsMode.classList.remove(
-                    "active"
-                );
+// =========================================================
+// SEARCH
+// =========================================================
 
-                videosMode.classList.add(
-                    "active"
-                );
+async function search() {
 
-                trendsMode.classList.remove(
-                    "active"
-                );
-
-                radarMode.classList.remove(
-                    "active"
-                );
+    const query =
+        document
+            .getElementById(
+                "searchInput"
+            )
+            .value
+            .trim();
 
 
-                searchBox.style.display =
-                    "flex";
+    if (!query) {
+
+        alert(
+            "Введите поисковый запрос"
+        );
+
+        return;
+    }
 
 
-                trendControls.classList.remove(
-                    "active"
-                );
-
-                radarControls.classList.remove(
-                    "active"
-                );
-
-
-                input.style.display =
-                    "block";
-
-
-                button.style.display =
-                    "block";
-
-
-                button.innerText =
-                    "🔍 Найти видео";
-
-
-                input.placeholder =
-                    "Например: pandas, AI tools, finance...";
-
-
-                clearResults();
-
-            }
+    const status =
+        document.getElementById(
+            "searchStatus"
         );
 
 
-        // =====================================================
-        // РЕЖИМ ТРЕНДОВ
-        // =====================================================
-
-        trendsMode.addEventListener(
-            "click",
-            () => {
-
-                currentMode = "trends";
-
-
-                channelsMode.classList.remove(
-                    "active"
-                );
-
-                videosMode.classList.remove(
-                    "active"
-                );
-
-                trendsMode.classList.add(
-                    "active"
-                );
-
-                radarMode.classList.remove(
-                    "active"
-                );
-
-
-                searchBox.style.display =
-                    "none";
-
-
-                trendControls.classList.add(
-                    "active"
-                );
-
-                radarControls.classList.remove(
-                    "active"
-                );
-
-
-                clearResults();
-
-            }
+    const results =
+        document.getElementById(
+            "searchResults"
         );
 
 
-        // =====================================================
-        // РЕЖИМ РАДАРА
-        // =====================================================
+    status.textContent =
+        "⏳ Ищем...";
 
-        radarMode.addEventListener(
-            "click",
-            () => {
+    results.innerHTML = "";
 
-                currentMode = "radar";
 
+    try {
 
-                channelsMode.classList.remove(
-                    "active"
-                );
-
-                videosMode.classList.remove(
-                    "active"
-                );
-
-                trendsMode.classList.remove(
-                    "active"
-                );
-
-                radarMode.classList.add(
-                    "active"
-                );
-
-
-                searchBox.style.display =
-                    "none";
-
-
-                trendControls.classList.remove(
-                    "active"
-                );
-
-                radarControls.classList.add(
-                    "active"
-                );
-
-
-                clearResults();
-
-            }
-        );
-
-
-        // =====================================================
-        // ПОИСК
-        // =====================================================
-
-        async function search() {
-
-            if (
-                currentMode ===
-                "channels"
-            ) {
-
-                await searchChannels();
-
-            }
-
-
-            else if (
-                currentMode ===
-                "videos"
-            ) {
-
-                await searchVideos();
-
-            }
-
-        }
-
-
-        // =====================================================
-        // КАНАЛЫ
-        // =====================================================
-
-        async function searchChannels() {
-
-            const query =
-                input.value.trim();
-
-
-            if (!query) {
-
-                status.innerHTML =
-                    '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
-
-                summary.innerHTML =
-                    "";
-
-                results.innerHTML =
-                    "";
-
-                return;
-
-            }
-
-
-            button.disabled =
-                true;
-
-
-            status.innerHTML =
-                '<div class="loading">🔄 Ищу каналы на YouTube...</div>';
-
-
-            summary.innerHTML =
-                "";
-
-            results.innerHTML =
-                "";
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        `/search-channels?query=${encodeURIComponent(query)}`
-                    );
-
-
-                const data =
-                    await response.json();
-
-
-                if (!response.ok) {
-
-                    throw new Error(
-                        data.error ||
-                        "Ошибка при поиске каналов"
-                    );
-
-                }
-
-
-                status.innerHTML =
-                    "";
-
-
-                summary.innerHTML =
-                    `Найдено каналов: ${data.count}`;
-
-
-                if (
-                    !data.channels ||
-                    data.channels.length === 0
-                ) {
-
-                    results.innerHTML =
-                        "<p>По вашему запросу каналы не найдены.</p>";
-
-                    return;
-
-                }
-
-
-                let tableHTML = `
-
-                    <div class="table-container">
-
-                        <table>
-
-                            <thead>
-
-                                <tr>
-
-                                    <th class="number">
-                                        №
-                                    </th>
-
-                                    <th>
-                                        Канал
-                                    </th>
-
-                                    <th>
-                                        Описание
-                                    </th>
-
-                                    <th>
-                                        Дата создания
-                                    </th>
-
-                                </tr>
-
-                            </thead>
-
-                            <tbody>
-
-                `;
-
-
-                data.channels.forEach(
-                    (channel, index) => {
-
-                        const number =
-                            index + 1;
-
-
-                        const title =
-                            channel.title ||
-                            "Без названия";
-
-
-                        const description =
-                            channel.description ||
-                            "Нет описания";
-
-
-                        const publishedAt =
-                            channel.published_at
-                                ? new Date(
-                                    channel.published_at
-                                ).toLocaleDateString(
-                                    "ru-RU"
-                                )
-                                : "Неизвестно";
-
-
-                        tableHTML += `
-
-                            <tr>
-
-                                <td class="number">
-                                    ${number}
-                                </td>
-
-                                <td>
-
-                                    <div class="channel-title">
-                                        ${title}
-                                    </div>
-
-                                    <div class="channel-id">
-                                        ${channel.channel_id || ""}
-                                    </div>
-
-                                </td>
-
-                                <td>
-
-                                    <div class="description">
-                                        ${description}
-                                    </div>
-
-                                </td>
-
-                                <td class="date">
-                                    ${publishedAt}
-                                </td>
-
-                            </tr>
-
-                        `;
-
-                    }
-                );
-
-
-                tableHTML += `
-
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
-                `;
-
-
-                results.innerHTML =
-                    tableHTML;
-
-
-            }
-
-
-            catch (error) {
-
-                status.innerHTML =
-                    `<div class="error">❌ ${error.message}</div>`;
-
-            }
-
-
-            finally {
-
-                button.disabled =
-                    false;
-
-            }
-
-        }
-
-
-        // =====================================================
-        // ВИДЕО
-        // =====================================================
-
-        async function searchVideos() {
-
-            const query =
-                input.value.trim();
-
-
-            if (!query) {
-
-                status.innerHTML =
-                    '<div class="error">Пожалуйста, введите поисковый запрос.</div>';
-
-                summary.innerHTML =
-                    "";
-
-                results.innerHTML =
-                    "";
-
-                return;
-
-            }
-
-
-            button.disabled =
-                true;
-
-
-            status.innerHTML =
-                '<div class="loading">🔄 Ищу видео на YouTube...</div>';
-
-
-            summary.innerHTML =
-                "";
-
-            results.innerHTML =
-                "";
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        `/search-videos?query=${encodeURIComponent(query)}&max_results=20`
-                    );
-
-
-                const data =
-                    await response.json();
-
-
-                if (!response.ok) {
-
-                    throw new Error(
-                        data.error ||
-                        "Ошибка при поиске видео"
-                    );
-
-                }
-
-
-                status.innerHTML =
-                    "";
-
-
-                summary.innerHTML =
-                    `Найдено видео: ${data.count}`;
-
-
-                if (
-                    !data.videos ||
-                    data.videos.length === 0
-                ) {
-
-                    results.innerHTML =
-                        "<p>По вашему запросу видео не найдены.</p>";
-
-                    return;
-
-                }
-
-
-                let tableHTML = `
-
-                    <div class="table-container">
-
-                        <table>
-
-                            <thead>
-
-                                <tr>
-
-                                    <th class="number">
-                                        №
-                                    </th>
-
-                                    <th>
-                                        Видео
-                                    </th>
-
-                                    <th>
-                                        Канал
-                                    </th>
-
-                                    <th>
-                                        Просмотры
-                                    </th>
-
-                                    <th>
-                                        Лайки
-                                    </th>
-
-                                    <th>
-                                        Комментарии
-                                    </th>
-
-                                    <th>
-                                        Дата
-                                    </th>
-
-                                    <th>
-                                        Длительность
-                                    </th>
-
-                                </tr>
-
-                            </thead>
-
-                            <tbody>
-
-                `;
-
-
-                data.videos.forEach(
-                    (video, index) => {
-
-                        const number =
-                            index + 1;
-
-
-                        const title =
-                            video.title ||
-                            "Без названия";
-
-
-                        const channelTitle =
-                            video.channel_title ||
-                            "Неизвестный канал";
-
-
-                        const views =
-                            formatNumber(
-                                video.views
-                            );
-
-
-                        const likes =
-                            formatNumber(
-                                video.likes
-                            );
-
-
-                        const comments =
-                            formatNumber(
-                                video.comments
-                            );
-
-
-                        const publishedAt =
-                            video.published_at
-                                ? new Date(
-                                    video.published_at
-                                ).toLocaleDateString(
-                                    "ru-RU"
-                                )
-                                : "Неизвестно";
-
-
-                        const duration =
-                            formatDuration(
-                                video.duration
-                            );
-
-
-                        tableHTML += `
-
-                            <tr>
-
-                                <td class="number">
-                                    ${number}
-                                </td>
-
-                                <td>
-
-                                    <div class="video-title">
-
-                                        <a
-                                            href="https://www.youtube.com/watch?v=${video.video_id}"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                        >
-                                            ${title}
-                                        </a>
-
-                                    </div>
-
-                                    <div class="video-id">
-                                        ${video.video_id || ""}
-                                    </div>
-
-                                </td>
-
-                                <td>
-
-                                    <div class="channel-title">
-                                        ${channelTitle}
-                                    </div>
-
-                                    <div class="channel-id">
-                                        ${video.channel_id || ""}
-                                    </div>
-
-                                </td>
-
-                                <td class="number-value">
-                                    ${views}
-                                </td>
-
-                                <td class="number-value">
-                                    ${likes}
-                                </td>
-
-                                <td class="number-value">
-                                    ${comments}
-                                </td>
-
-                                <td class="date">
-                                    ${publishedAt}
-                                </td>
-
-                                <td class="date">
-                                    ${duration}
-                                </td>
-
-                            </tr>
-
-                        `;
-
-                    }
-                );
-
-
-                tableHTML += `
-
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
-                `;
-
-
-                results.innerHTML =
-                    tableHTML;
-
-
-            }
-
-
-            catch (error) {
-
-                status.innerHTML =
-                    `<div class="error">❌ ${error.message}</div>`;
-
-            }
-
-
-            finally {
-
-                button.disabled =
-                    false;
-
-            }
-
-        }
-
-
-        // =====================================================
-        // 🔥 ТРЕНДЫ
-        // =====================================================
-
-        trendButton.addEventListener(
-            "click",
-            runTrends
-        );
-
-
-        async function runTrends() {
-
-            const region =
-                trendRegionSelect.value;
-
-
-            trendButton.disabled =
-                true;
-
-
-            status.innerHTML =
-                '<div class="loading">🔥 Загружаю тренды YouTube...</div>';
-
-
-            summary.innerHTML =
-                "";
-
-            results.innerHTML =
-                "";
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        `/trending-videos?max_results=50&region_code=${encodeURIComponent(region)}`
-                    );
-
-
-                const data =
-                    await response.json();
-
-
-                if (!response.ok) {
-
-                    throw new Error(
-                        data.error ||
-                        "Ошибка загрузки трендов"
-                    );
-
-                }
-
-
-                status.innerHTML =
-                    "";
-
-
-                summary.innerHTML =
-                    `🔥 Тренды YouTube | Регион: ${data.region_code} | Видео: ${data.count}`;
-
-
-                if (
-                    !data.videos ||
-                    data.videos.length === 0
-                ) {
-
-                    results.innerHTML =
-                        "<p>Тренды не найдены.</p>";
-
-                    return;
-
-                }
-
-
-                let tableHTML = `
-
-                    <div class="table-container">
-
-                        <table>
-
-                            <thead>
-
-                                <tr>
-
-                                    <th class="number">
-                                        №
-                                    </th>
-
-                                    <th>
-                                        Видео
-                                    </th>
-
-                                    <th>
-                                        Канал
-                                    </th>
-
-                                    <th>
-                                        Просмотры
-                                    </th>
-
-                                    <th>
-                                        Лайки
-                                    </th>
-
-                                    <th>
-                                        Комментарии
-                                    </th>
-
-                                    <th>
-                                        Дата
-                                    </th>
-
-                                    <th>
-                                        Длительность
-                                    </th>
-
-                                </tr>
-
-                            </thead>
-
-                            <tbody>
-
-                `;
-
-
-                data.videos.forEach(
-                    (video, index) => {
-
-                        const number =
-                            index + 1;
-
-
-                        const title =
-                            video.title ||
-                            "Без названия";
-
-
-                        const channelTitle =
-                            video.channel_title ||
-                            "Неизвестный канал";
-
-
-                        const views =
-                            formatNumber(
-                                video.views
-                            );
-
-
-                        const likes =
-                            formatNumber(
-                                video.likes
-                            );
-
-
-                        const comments =
-                            formatNumber(
-                                video.comments
-                            );
-
-
-                        const publishedAt =
-                            video.published_at
-                                ? new Date(
-                                    video.published_at
-                                ).toLocaleString(
-                                    "ru-RU"
-                                )
-                                : "Неизвестно";
-
-
-                        const duration =
-                            formatDuration(
-                                video.duration
-                            );
-
-
-                        tableHTML += `
-
-                            <tr>
-
-                                <td class="number">
-                                    ${number}
-                                </td>
-
-                                <td>
-
-                                    <div class="video-title">
-
-                                        <a
-                                            href="https://www.youtube.com/watch?v=${video.video_id}"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                        >
-                                            ${title}
-                                        </a>
-
-                                    </div>
-
-                                </td>
-
-                                <td>
-
-                                    <div class="channel-title">
-                                        ${channelTitle}
-                                    </div>
-
-                                </td>
-
-                                <td class="number-value">
-                                    ${views}
-                                </td>
-
-                                <td class="number-value">
-                                    ${likes}
-                                </td>
-
-                                <td class="number-value">
-                                    ${comments}
-                                </td>
-
-                                <td class="date">
-                                    ${publishedAt}
-                                </td>
-
-                                <td class="date">
-                                    ${duration}
-                                </td>
-
-                            </tr>
-
-                        `;
-
-                    }
-                );
-
-
-                tableHTML += `
-
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
-                `;
-
-
-                results.innerHTML =
-                    tableHTML;
-
-
-            }
-
-
-            catch (error) {
-
-                status.innerHTML =
-                    `<div class="error">❌ ${error.message}</div>`;
-
-            }
-
-
-            finally {
-
-                trendButton.disabled =
-                    false;
-
-            }
-
-        }
-
-
-        // =====================================================
-        // 🚀 РАДАР
-        // =====================================================
-
-        radarButton.addEventListener(
-            "click",
-            runRadar
-        );
-
-
-        async function runRadar() {
-
-            const region =
-                regionSelect.value;
-
-
-            const hours =
-                hoursSelect.value;
-
-
-            radarButton.disabled =
-                true;
-
-
-            status.innerHTML =
-                '<div class="loading">🚀 Сканирую свежие быстрорастущие видео...</div>';
-
-
-            summary.innerHTML =
-                "";
-
-            results.innerHTML =
-                "";
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        `/radar-videos?max_results=50&region_code=${encodeURIComponent(region)}&hours_back=${encodeURIComponent(hours)}`
-                    );
-
-
-                const data =
-                    await response.json();
-
-
-                if (!response.ok) {
-
-                    throw new Error(
-                        data.error ||
-                        "Ошибка радара"
-                    );
-
-                }
-
-
-                status.innerHTML =
-                    "";
-
-
-                summary.innerHTML =
-                    `🚀 Радар роста | Регион: ${data.region_code} | Период: ${data.hours_back} ч. | Видео: ${data.count}`;
-
-
-                if (
-                    !data.videos ||
-                    data.videos.length === 0
-                ) {
-
-                    results.innerHTML =
-                        "<p>Радар не нашёл подходящих видео.</p>";
-
-                    return;
-
-                }
-
-
-                let tableHTML = `
-
-                    <div class="table-container">
-
-                        <table>
-
-                            <thead>
-
-                                <tr>
-
-                                    <th class="number">
-                                        №
-                                    </th>
-
-                                    <th>
-                                        Видео
-                                    </th>
-
-                                    <th>
-                                        Канал
-                                    </th>
-
-                                    <th>
-                                        Возраст
-                                    </th>
-
-                                    <th>
-                                        Просмотры
-                                    </th>
-
-                                    <th>
-                                        Просмотров/час
-                                    </th>
-
-                                    <th>
-                                        Лайки
-                                    </th>
-
-                                    <th>
-                                        Дата публикации
-                                    </th>
-
-                                </tr>
-
-                            </thead>
-
-                            <tbody>
-
-                `;
-
-
-                data.videos.forEach(
-                    (video, index) => {
-
-                        const number =
-                            index + 1;
-
-
-                        const title =
-                            video.title ||
-                            "Без названия";
-
-
-                        const channelTitle =
-                            video.channel_title ||
-                            "Неизвестный канал";
-
-
-                        const views =
-                            formatNumber(
-                                video.views
-                            );
-
-
-                        const viewsPerHour =
-                            formatNumber(
-                                video.views_per_hour
-                            );
-
-
-                        const likes =
-                            formatNumber(
-                                video.likes
-                            );
-
-
-                        const ageHours =
-                            video.age_hours;
-
-
-                        const publishedAt =
-                            video.published_at
-                                ? new Date(
-                                    video.published_at
-                                ).toLocaleString(
-                                    "ru-RU"
-                                )
-                                : "Неизвестно";
-
-
-                        tableHTML += `
-
-                            <tr>
-
-                                <td class="number">
-                                    ${number}
-                                </td>
-
-
-                                <td>
-
-                                    <div class="video-title">
-
-                                        <a
-                                            href="https://www.youtube.com/watch?v=${video.video_id}"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                        >
-                                            ${title}
-                                        </a>
-
-                                    </div>
-
-                                </td>
-
-
-                                <td>
-
-                                    <div class="channel-title">
-                                        ${channelTitle}
-                                    </div>
-
-                                </td>
-
-
-                                <td class="age-value">
-                                    ${ageHours} ч.
-                                </td>
-
-
-                                <td class="number-value">
-                                    ${views}
-                                </td>
-
-
-                                <td class="growth-value">
-                                    ${viewsPerHour}
-                                </td>
-
-
-                                <td class="number-value">
-                                    ${likes}
-                                </td>
-
-
-                                <td class="date">
-                                    ${publishedAt}
-                                </td>
-
-                            </tr>
-
-                        `;
-
-                    }
-                );
-
-
-                tableHTML += `
-
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
-                `;
-
-
-                results.innerHTML =
-                    tableHTML;
-
-
-            }
-
-
-            catch (error) {
-
-                status.innerHTML =
-                    `<div class="error">❌ ${error.message}</div>`;
-
-            }
-
-
-            finally {
-
-                radarButton.disabled =
-                    false;
-
-            }
-
-        }
-
-
-        // =====================================================
-        // ФОРМАТИРОВАНИЕ ЧИСЕЛ
-        // =====================================================
-
-        function formatNumber(value) {
-
-            if (
-                value === null ||
-                value === undefined
-            ) {
-
-                return "—";
-
-            }
-
-
-            return Number(
-                value
-            ).toLocaleString(
-                "ru-RU"
-            );
-
-        }
-
-
-        // =====================================================
-        // ФОРМАТИРОВАНИЕ ДЛИТЕЛЬНОСТИ
-        // =====================================================
-
-        function formatDuration(
-            duration
+        if (
+            searchMode ===
+            "channels"
         ) {
 
-            if (!duration) {
+            await searchChannels(
+                query
+            );
 
-                return "—";
+        } else {
 
-            }
-
-
-            const match =
-                duration.match(
-                    /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/
-                );
-
-
-            if (!match) {
-
-                return duration;
-
-            }
-
-
-            const hours =
-                parseInt(
-                    match[1] || "0"
-                );
-
-
-            const minutes =
-                parseInt(
-                    match[2] || "0"
-                );
-
-
-            const seconds =
-                parseInt(
-                    match[3] || "0"
-                );
-
-
-            if (hours > 0) {
-
-                return (
-                    hours +
-                    ":" +
-                    String(
-                        minutes
-                    ).padStart(
-                        2,
-                        "0"
-                    ) +
-                    ":" +
-                    String(
-                        seconds
-                    ).padStart(
-                        2,
-                        "0"
-                    )
-                );
-
-            }
-
-
-            return (
-                minutes +
-                ":" +
-                String(
-                    seconds
-                ).padStart(
-                    2,
-                    "0"
-                )
+            await searchVideos(
+                query
             );
 
         }
 
+    } catch (error) {
 
-        // =====================================================
-        // КНОПКА И ENTER
-        // =====================================================
+        status.textContent =
+            "❌ Ошибка: "
+            + error.message;
 
-        button.addEventListener(
-            "click",
-            search
+    }
+}
+
+
+// =========================================================
+// SEARCH CHANNELS
+// =========================================================
+
+async function searchChannels(
+    query
+) {
+
+    const response =
+        await fetch(
+            "/search-channels?query="
+            + encodeURIComponent(query)
+            + "&max_results=20"
         );
 
 
-        input.addEventListener(
-            "keydown",
-            (event) => {
+    const data =
+        await response.json();
 
-                if (
-                    event.key ===
-                    "Enter"
-                ) {
 
-                    search();
+    if (data.error) {
 
-                }
+        throw new Error(
+            data.error
+        );
+    }
 
+
+    document.getElementById(
+        "searchStatus"
+    ).textContent =
+        "Найдено каналов: "
+        + data.count;
+
+
+    let html = `
+
+        <div class="table-wrapper">
+
+        <table>
+
+        <thead>
+
+        <tr>
+
+            <th>№</th>
+
+            <th>Канал</th>
+
+            <th>Описание</th>
+
+            <th>Дата создания</th>
+
+        </tr>
+
+        </thead>
+
+        <tbody>
+    `;
+
+
+    data.channels.forEach(
+        (channel, index) => {
+
+            html += `
+
+            <tr>
+
+                <td>
+                    ${index + 1}
+                </td>
+
+                <td>
+
+                    <a
+                        href="${channelUrl(
+                            channel.channel_id
+                        )}"
+                        target="_blank"
+                    >
+                        ${escapeHtml(
+                            channel.title
+                        )}
+                    </a>
+
+                </td>
+
+                <td>
+                    ${escapeHtml(
+                        channel.description || ""
+                    )}
+                </td>
+
+                <td>
+                    ${formatDate(
+                        channel.published_at
+                    )}
+                </td>
+
+            </tr>
+
+            `;
+        }
+    );
+
+
+    html += `
+
+        </tbody>
+
+        </table>
+
+        </div>
+
+    `;
+
+
+    document.getElementById(
+        "searchResults"
+    ).innerHTML = html;
+}
+
+
+// =========================================================
+// SEARCH VIDEOS
+// =========================================================
+
+async function searchVideos(
+    query
+) {
+
+    const response =
+        await fetch(
+            "/search-videos?query="
+            + encodeURIComponent(query)
+            + "&max_results=20"
+            + "&order=viewCount"
+        );
+
+
+    const data =
+        await response.json();
+
+
+    if (data.error) {
+
+        throw new Error(
+            data.error
+        );
+    }
+
+
+    document.getElementById(
+        "searchStatus"
+    ).textContent =
+        "Найдено видео: "
+        + data.count;
+
+
+    let html = `
+
+        <div class="table-wrapper">
+
+        <table>
+
+        <thead>
+
+        <tr>
+
+            <th>№</th>
+
+            <th>Видео</th>
+
+            <th>Канал</th>
+
+            <th>Просмотры</th>
+
+            <th>Лайки</th>
+
+            <th>Комментарии</th>
+
+            <th>Дата</th>
+
+            <th>Длительность</th>
+
+        </tr>
+
+        </thead>
+
+        <tbody>
+    `;
+
+
+    data.videos.forEach(
+        (video, index) => {
+
+            html += `
+
+            <tr>
+
+                <td>
+                    ${index + 1}
+                </td>
+
+                <td>
+
+                    <a
+                        href="${videoUrl(
+                            video.video_id
+                        )}"
+                        target="_blank"
+                    >
+                        ${escapeHtml(
+                            video.title
+                        )}
+                    </a>
+
+                </td>
+
+                <td>
+
+                    <a
+                        href="${channelUrl(
+                            video.channel_id
+                        )}"
+                        target="_blank"
+                    >
+                        ${escapeHtml(
+                            video.channel_title
+                        )}
+                    </a>
+
+                </td>
+
+                <td class="number">
+                    ${formatNumber(
+                        video.views
+                    )}
+                </td>
+
+                <td class="number">
+                    ${formatNumber(
+                        video.likes
+                    )}
+                </td>
+
+                <td class="number">
+                    ${formatNumber(
+                        video.comments
+                    )}
+                </td>
+
+                <td>
+                    ${formatDate(
+                        video.published_at
+                    )}
+                </td>
+
+                <td>
+                    ${formatDuration(
+                        video.duration
+                    )}
+                </td>
+
+            </tr>
+
+            `;
+        }
+    );
+
+
+    html += `
+
+        </tbody>
+
+        </table>
+
+        </div>
+
+    `;
+
+
+    document.getElementById(
+        "searchResults"
+    ).innerHTML = html;
+}
+
+
+// =========================================================
+// RADAR
+// =========================================================
+
+async function runRadar() {
+
+    const language =
+        document.getElementById(
+            "radarLanguage"
+        ).value;
+
+
+    const hours =
+        document.getElementById(
+            "radarHours"
+        ).value;
+
+
+    const status =
+        document.getElementById(
+            "radarStatus"
+        );
+
+
+    const summary =
+        document.getElementById(
+            "radarSummary"
+        );
+
+
+    const results =
+        document.getElementById(
+            "radarResults"
+        );
+
+
+    status.textContent =
+        "⏳ Запускаем радар...";
+
+    summary.textContent = "";
+
+    results.innerHTML = "";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/radar-videos"
+                + "?language="
+                + encodeURIComponent(
+                    language
+                )
+                + "&hours_back="
+                + encodeURIComponent(
+                    hours
+                )
+                + "&max_results=50"
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (data.error) {
+
+            throw new Error(
+                data.error
+            );
+        }
+
+
+        status.textContent =
+            "✅ Радар завершён";
+
+
+        summary.innerHTML = `
+
+            <span class="badge">
+
+                Язык:
+                ${escapeHtml(
+                    data.language_label
+                )}
+
+            </span>
+
+            &nbsp;
+
+            <span class="badge">
+
+                Период:
+                ${data.hours_back}
+                ч
+
+            </span>
+
+            &nbsp;
+
+            <span class="badge">
+
+                Найдено:
+                ${data.count}
+
+            </span>
+
+        `;
+
+
+        let html = `
+
+            <div class="table-wrapper">
+
+            <table>
+
+            <thead>
+
+            <tr>
+
+                <th>№</th>
+
+                <th>Видео</th>
+
+                <th>Канал</th>
+
+                <th>Возраст</th>
+
+                <th>Просмотры</th>
+
+                <th>Просм./час</th>
+
+                <th>Лайки</th>
+
+                <th>Дата добавления</th>
+
+            </tr>
+
+            </thead>
+
+            <tbody>
+
+        `;
+
+
+        data.videos.forEach(
+            (video, index) => {
+
+                html += `
+
+                <tr>
+
+                    <td>
+                        ${index + 1}
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="${videoUrl(
+                                video.video_id
+                            )}"
+                            target="_blank"
+                        >
+                            ${escapeHtml(
+                                video.title
+                            )}
+                        </a>
+
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="${channelUrl(
+                                video.channel_id
+                            )}"
+                            target="_blank"
+                        >
+                            ${escapeHtml(
+                                video.channel_title
+                            )}
+                        </a>
+
+                    </td>
+
+                    <td>
+
+                        ${formatAge(
+                            video.age_hours
+                        )}
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.views
+                        )}
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.views_per_hour
+                        )}
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.likes
+                        )}
+
+                    </td>
+
+                    <td>
+
+                        ${formatDate(
+                            video.published_at
+                        )}
+
+                    </td>
+
+                </tr>
+
+                `;
             }
         );
 
-    </script>
+
+        html += `
+
+            </tbody>
+
+            </table>
+
+            </div>
+
+        `;
+
+
+        results.innerHTML =
+            html;
+
+
+    } catch (error) {
+
+        status.textContent =
+            "❌ Ошибка: "
+            + error.message;
+
+    }
+}
+
+
+// =========================================================
+// YOUTUBE TRENDS
+// =========================================================
+
+async function runTrends() {
+
+    const region =
+        document.getElementById(
+            "trendRegion"
+        ).value;
+
+
+    const status =
+        document.getElementById(
+            "trendStatus"
+        );
+
+
+    const results =
+        document.getElementById(
+            "trendResults"
+        );
+
+
+    status.textContent =
+        "⏳ Загружаем тренды...";
+
+    results.innerHTML = "";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/trending-videos"
+                + "?region_code="
+                + encodeURIComponent(
+                    region
+                )
+                + "&max_results=50"
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (data.error) {
+
+            throw new Error(
+                data.error
+            );
+        }
+
+
+        status.textContent =
+            "✅ Загружено трендов: "
+            + data.count;
+
+
+        let html = `
+
+            <div class="table-wrapper">
+
+            <table>
+
+            <thead>
+
+            <tr>
+
+                <th>№</th>
+
+                <th>Видео</th>
+
+                <th>Канал</th>
+
+                <th>Просмотры</th>
+
+                <th>Лайки</th>
+
+                <th>Комментарии</th>
+
+                <th>Дата</th>
+
+                <th>Длительность</th>
+
+            </tr>
+
+            </thead>
+
+            <tbody>
+
+        `;
+
+
+        data.videos.forEach(
+            (video, index) => {
+
+                html += `
+
+                <tr>
+
+                    <td>
+                        ${index + 1}
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="${videoUrl(
+                                video.video_id
+                            )}"
+                            target="_blank"
+                        >
+                            ${escapeHtml(
+                                video.title
+                            )}
+                        </a>
+
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="${channelUrl(
+                                video.channel_id
+                            )}"
+                            target="_blank"
+                        >
+                            ${escapeHtml(
+                                video.channel_title
+                            )}
+                        </a>
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.views
+                        )}
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.likes
+                        )}
+
+                    </td>
+
+                    <td class="number">
+
+                        ${formatNumber(
+                            video.comments
+                        )}
+
+                    </td>
+
+                    <td>
+
+                        ${formatDate(
+                            video.published_at
+                        )}
+
+                    </td>
+
+                    <td>
+
+                        ${formatDuration(
+                            video.duration
+                        )}
+
+                    </td>
+
+                </tr>
+
+                `;
+            }
+        );
+
+
+        html += `
+
+            </tbody>
+
+            </table>
+
+            </div>
+
+        `;
+
+
+        results.innerHTML =
+            html;
+
+
+    } catch (error) {
+
+        status.textContent =
+            "❌ Ошибка: "
+            + error.message;
+
+    }
+}
+
+
+// =========================================================
+// SWITCH TOOLS
+// =========================================================
+
+function showTool(tool) {
+
+    const radar =
+        document.getElementById(
+            "radarTool"
+        );
+
+
+    const trends =
+        document.getElementById(
+            "trendsTool"
+        );
+
+
+    const radarButton =
+        document.getElementById(
+            "radarButton"
+        );
+
+
+    const trendsButton =
+        document.getElementById(
+            "trendsButton"
+        );
+
+
+    if (tool === "radar") {
+
+        radar.classList.remove(
+            "hidden"
+        );
+
+        trends.classList.add(
+            "hidden"
+        );
+
+        radarButton.classList.add(
+            "active"
+        );
+
+        trendsButton.classList.remove(
+            "active"
+        );
+
+    } else {
+
+        radar.classList.add(
+            "hidden"
+        );
+
+        trends.classList.remove(
+            "hidden"
+        );
+
+        radarButton.classList.remove(
+            "active"
+        );
+
+        trendsButton.classList.add(
+            "active"
+        );
+    }
+}
+
+
+// =========================================================
+// HTML ESCAPE
+// =========================================================
+
+function escapeHtml(value) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return "";
+    }
+
+
+    return String(value)
+
+        .replace(
+            /&/g,
+            "&amp;"
+        )
+
+        .replace(
+            /</g,
+            "&lt;"
+        )
+
+        .replace(
+            />/g,
+            "&gt;"
+        )
+
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+
+        .replace(
+            /'/g,
+            "&#039;"
+        );
+}
+
+
+</script>
+
 
 </body>
 

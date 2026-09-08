@@ -9,7 +9,9 @@ import aiofiles
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from mcp import Client
+
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 
 # ============================================================
@@ -136,60 +138,73 @@ init_db()
 
 async def mcp_call(name, args):
     """
-    Call a tool on the YouTube MCP server.
+    MCP 1.x client.
 
-    MCP 2.x uses the high-level Client API.
-    The URL automatically uses Streamable HTTP.
+    Совместимо с youtube-mcp, который сейчас работает
+    на mcp<2.
     """
 
-    async with Client(MCP_URL) as client:
-        result = await client.call_tool(name, args)
+    async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
 
-        # MCP 2.x may provide structured content.
-        structured = getattr(result, "structured_content", None)
+        async with ClientSession(
+            read_stream,
+            write_stream,
+        ) as session:
 
-        if structured is not None:
-            return structured
+            await session.initialize()
 
-        # Compatibility with MCP servers that return
-        # JSON inside TextContent.
-        content = getattr(result, "content", None)
+            result = await session.call_tool(
+                name,
+                arguments=args,
+            )
 
-        if not content:
-            raise RuntimeError("MCP вернул пустой ответ")
+            if not result.content:
+                raise RuntimeError(
+                    "MCP вернул пустой ответ"
+                )
 
-        for item in content:
-            text = getattr(item, "text", None)
+            # Ищем текстовый JSON-ответ.
+            for item in result.content:
 
-            if text is None:
-                continue
+                text = getattr(
+                    item,
+                    "text",
+                    None,
+                )
 
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return text
+                if text is None:
+                    continue
 
-        raise RuntimeError("MCP не вернул распознаваемый ответ")
+                try:
+                    return json.loads(text)
+
+                except json.JSONDecodeError:
+
+                    # Иногда MCP может вернуть обычный текст.
+                    return text
+
+            raise RuntimeError(
+                "MCP вернул ответ без распознаваемого текста"
+            )
 
 
 # ============================================================
-# DATA NORMALIZATION
+# RESPONSE NORMALIZATION
 # ============================================================
 
 def extract_items(data):
     """
-    Normalize different MCP response formats.
+    Приводит разные варианты MCP-ответа к списку.
 
-    Our youtube-mcp currently returns plain lists for:
-    search_radar_videos
-    search_trending_videos
-    search_channels
-    search_videos
+    Наш youtube-mcp сейчас возвращает обычные списки:
+        [...]
 
-    But future versions may return:
-    {"videos": [...]}
-    {"channels": [...]}
-    or another structured object.
+    Но если позже MCP начнёт возвращать:
+        {"videos": [...]}
+    или
+        {"items": [...]}
+
+    сайт тоже продолжит работать.
     """
 
     if data is None:
@@ -199,6 +214,7 @@ def extract_items(data):
         return data
 
     if isinstance(data, dict):
+
         for key in (
             "videos",
             "channels",
@@ -206,21 +222,18 @@ def extract_items(data):
             "items",
             "data",
         ):
+
             value = data.get(key)
 
             if isinstance(value, list):
                 return value
-
-        return []
 
     return []
 
 
 def extract_object(data):
     """
-    Normalize a single-object response.
-
-    Useful for channel statistics and future MCP tools.
+    Приводит ответ с одним объектом к dict.
     """
 
     if data is None:
@@ -230,6 +243,7 @@ def extract_object(data):
         return data
 
     if isinstance(data, list) and data:
+
         if isinstance(data[0], dict):
             return data[0]
 
@@ -241,6 +255,7 @@ def extract_object(data):
 # ============================================================
 
 def event(kind, message, data=None):
+
     connection = db()
 
     connection.execute(
@@ -259,7 +274,7 @@ def event(kind, message, data=None):
             message,
             json.dumps(
                 data or {},
-                ensure_ascii=False
+                ensure_ascii=False,
             ),
         ),
     )
@@ -273,9 +288,11 @@ def event(kind, message, data=None):
 # ============================================================
 
 def save_snapshot(videos, language):
+
     observed_at = now()
 
     connection = db()
+
     saved_count = 0
 
     for video in videos:
@@ -348,14 +365,26 @@ def save_snapshot(videos, language):
 
 
 # ============================================================
-# DIRECTOR SCORING
+# DIRECTOR SCORE
 # ============================================================
 
 def score(video):
-    views = float(video.get("views") or 0)
-    speed = float(video.get("views_per_hour") or 0)
-    likes = float(video.get("likes") or 0)
-    comments = float(video.get("comments") or 0)
+
+    views = float(
+        video.get("views") or 0
+    )
+
+    speed = float(
+        video.get("views_per_hour") or 0
+    )
+
+    likes = float(
+        video.get("likes") or 0
+    )
+
+    comments = float(
+        video.get("comments") or 0
+    )
 
     engagement = (
         (likes + comments * 3) / views
@@ -370,7 +399,12 @@ def score(video):
     )
 
 
-def make_hypothesis(videos, language, region):
+def make_hypothesis(
+    videos,
+    language,
+    region,
+):
+
     ranked = sorted(
         videos,
         key=score,
@@ -378,8 +412,11 @@ def make_hypothesis(videos, language, region):
     )[:10]
 
     if not ranked:
+
         return {
-            "hypothesis": "Недостаточно данных для гипотезы.",
+            "hypothesis": (
+                "Недостаточно данных для гипотезы."
+            ),
             "reasoning": (
                 "Радар не вернул подходящих видео."
             ),
@@ -412,11 +449,14 @@ def make_hypothesis(videos, language, region):
     top_videos = []
 
     for video in ranked:
+
         item = dict(video)
+
         item["director_score"] = round(
             score(video),
             4,
         )
+
         top_videos.append(item)
 
     return {
@@ -427,23 +467,34 @@ def make_hypothesis(videos, language, region):
 
 
 # ============================================================
-# BASIC ROUTES
+# HOME
 # ============================================================
 
 @app.get("/")
 async def home():
-    index_path = Path(__file__).parent / "index.html"
+
+    index_path = (
+        Path(__file__).parent / "index.html"
+    )
 
     async with aiofiles.open(
         index_path,
         "r",
         encoding="utf-8",
     ) as file:
-        return HTMLResponse(await file.read())
 
+        return HTMLResponse(
+            await file.read()
+        )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/health")
 def health():
+
     return {
         "status": "ok",
         "free_mode": FREE_MODE,
@@ -452,11 +503,17 @@ def health():
     }
 
 
+# ============================================================
+# SYSTEM STATUS
+# ============================================================
+
 @app.get("/system/status")
 def status():
+
     return {
         "system": "AI Full-Cycle YouTube System",
         "phase": "free-working-model",
+
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
 
@@ -470,7 +527,7 @@ def status():
 
 
 # ============================================================
-# SEARCH
+# SEARCH CHANNELS
 # ============================================================
 
 @app.get("/search-channels")
@@ -478,7 +535,9 @@ async def search_channels(
     query: str,
     max_results: int = 20,
 ):
+
     try:
+
         result = await mcp_call(
             "search_channels",
             {
@@ -493,6 +552,7 @@ async def search_channels(
         return extract_items(result)
 
     except Exception as error:
+
         event(
             "search_channels_error",
             str(error),
@@ -506,6 +566,10 @@ async def search_channels(
         )
 
 
+# ============================================================
+# SEARCH VIDEOS
+# ============================================================
+
 @app.get("/search-videos")
 async def search_videos(
     query: str,
@@ -516,7 +580,9 @@ async def search_videos(
     relevance_language: str | None = None,
     order: str = "viewCount",
 ):
+
     try:
+
         result = await mcp_call(
             "search_videos",
             {
@@ -536,6 +602,7 @@ async def search_videos(
         return extract_items(result)
 
     except Exception as error:
+
         event(
             "search_videos_error",
             str(error),
@@ -558,7 +625,9 @@ async def trending_videos(
     max_results: int = 50,
     region_code: str = "US",
 ):
+
     try:
+
         result = await mcp_call(
             "search_trending_videos",
             {
@@ -573,6 +642,7 @@ async def trending_videos(
         return extract_items(result)
 
     except Exception as error:
+
         event(
             "trending_error",
             str(error),
@@ -596,7 +666,9 @@ async def radar_videos(
     language: str = "ru",
     hours_back: int = 72,
 ):
+
     try:
+
         result = await mcp_call(
             "search_radar_videos",
             {
@@ -615,6 +687,7 @@ async def radar_videos(
         return extract_items(result)
 
     except Exception as error:
+
         event(
             "radar_error",
             str(error),
@@ -628,11 +701,20 @@ async def radar_videos(
         )
 
 
+# ============================================================
+# SAVE RADAR
+# ============================================================
+
 @app.post("/radar-save")
 async def radar_save(payload: dict):
-    videos = payload.get("videos", [])
+
+    videos = payload.get(
+        "videos",
+        [],
+    )
 
     if not videos:
+
         return JSONResponse(
             {
                 "error": "Нет видео для сохранения",
@@ -642,7 +724,10 @@ async def radar_save(payload: dict):
 
     result = save_snapshot(
         videos,
-        payload.get("language", "unknown"),
+        payload.get(
+            "language",
+            "unknown",
+        ),
     )
 
     event(
@@ -657,8 +742,15 @@ async def radar_save(payload: dict):
     }
 
 
+# ============================================================
+# RADAR HISTORY
+# ============================================================
+
 @app.get("/radar-history")
-def radar_history(limit: int = 100):
+def radar_history(
+    limit: int = 100,
+):
+
     connection = db()
 
     rows = connection.execute(
@@ -701,22 +793,29 @@ def radar_history(limit: int = 100):
 
 
 # ============================================================
-# DATABASE
+# DATABASE STATUS
 # ============================================================
 
 @app.get("/database-status")
 def database_status():
+
     connection = db()
 
     result = {
         "status": "ok",
-        "database": str(DB_PATH),
+
+        "database": str(
+            DB_PATH
+        ),
+
         "videos": connection.execute(
             "SELECT COUNT(*) FROM videos"
         ).fetchone()[0],
+
         "snapshots": connection.execute(
             "SELECT COUNT(*) FROM video_snapshots"
         ).fetchone()[0],
+
         "director_runs": connection.execute(
             "SELECT COUNT(*) FROM director_runs"
         ).fetchone()[0],
@@ -732,8 +831,12 @@ def database_status():
 # ============================================================
 
 @app.get("/analyze")
-async def analyze(channel_id: str):
+async def analyze(
+    channel_id: str,
+):
+
     try:
+
         result = await mcp_call(
             "get_channel_stats",
             {
@@ -744,6 +847,7 @@ async def analyze(channel_id: str):
         return extract_object(result)
 
     except Exception as error:
+
         event(
             "channel_analysis_error",
             str(error),
@@ -758,7 +862,7 @@ async def analyze(channel_id: str):
 
 
 # ============================================================
-# AI DIRECTOR
+# DIRECTOR RUN
 # ============================================================
 
 @app.post("/director/run")
@@ -768,6 +872,7 @@ async def director_run(
     hours_back: int = 72,
     max_results: int = 50,
 ):
+
     try:
 
         # ----------------------------------------------------
@@ -789,7 +894,9 @@ async def director_run(
             },
         )
 
-        videos = extract_items(radar_result)
+        videos = extract_items(
+            radar_result
+        )
 
         # ----------------------------------------------------
         # 2. Save observation
@@ -812,10 +919,12 @@ async def director_run(
             },
         )
 
-        trends = extract_items(trends_result)
+        trends = extract_items(
+            trends_result
+        )
 
         # ----------------------------------------------------
-        # 4. Build hypothesis
+        # 4. Hypothesis
         # ----------------------------------------------------
 
         hypothesis = make_hypothesis(
@@ -825,7 +934,7 @@ async def director_run(
         )
 
         # ----------------------------------------------------
-        # 5. Save Director run
+        # 5. Save run
         # ----------------------------------------------------
 
         connection = db()
@@ -854,8 +963,12 @@ async def director_run(
                 hypothesis["reasoning"],
                 json.dumps(
                     {
-                        "radar_count": len(videos),
-                        "trends_count": len(trends),
+                        "radar_count": len(
+                            videos
+                        ),
+                        "trends_count": len(
+                            trends
+                        ),
                         "snapshot": snapshot_result,
                         "top_videos": hypothesis[
                             "top_videos"
@@ -890,17 +1003,22 @@ async def director_run(
         # ----------------------------------------------------
 
         if AUTONOMOUS:
+
             next_action = (
                 "Сформировать контент по гипотезе"
             )
+
         else:
+
             next_action = (
                 "Ожидается решение пользователя"
             )
 
         return {
             "status": "completed",
+
             "run_id": run_id,
+
             "mode": "FREE_ONLY",
 
             "hypothesis": hypothesis[
@@ -941,7 +1059,10 @@ async def director_run(
 # ============================================================
 
 @app.get("/director/history")
-def director_history(limit: int = 20):
+def director_history(
+    limit: int = 20,
+):
+
     connection = db()
 
     rows = connection.execute(
@@ -979,13 +1100,17 @@ def director_history(limit: int = 20):
 
 
 # ============================================================
-# DIRECTOR DECISIONS
+# DIRECTOR DECISION
 # ============================================================
 
 @app.post("/director/decision")
-def director_decision(payload: dict):
+def director_decision(
+    payload: dict,
+):
 
-    decision = payload.get("decision")
+    decision = payload.get(
+        "decision"
+    )
 
     allowed_decisions = {
         "approve",
@@ -994,6 +1119,7 @@ def director_decision(payload: dict):
     }
 
     if decision not in allowed_decisions:
+
         return JSONResponse(
             {
                 "error": "Недопустимое решение",
@@ -1043,11 +1169,14 @@ def director_decision(payload: dict):
 
 
 # ============================================================
-# SYSTEM EVENTS
+# EVENTS
 # ============================================================
 
 @app.get("/events")
-def events(limit: int = 50):
+def events(
+    limit: int = 50,
+):
+
     connection = db()
 
     rows = connection.execute(
@@ -1085,6 +1214,7 @@ def events(limit: int = 50):
 # ============================================================
 
 if __name__ == "__main__":
+
     import uvicorn
 
     uvicorn.run(

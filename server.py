@@ -9,36 +9,14 @@ import aiofiles
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-
-from mcp.client.mcp_client import MCPClient
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-APP_TITLE = "AI Full-Cycle YouTube System"
-
-MCP_URL = os.environ.get(
-    "MCP_URL",
-    "https://youtube-mcp-u39z.onrender.com/mcp",
-)
-
-FREE_MODE = os.environ.get("FREE_MODE", "true").lower() == "true"
-AUTONOMOUS = os.environ.get("AUTONOMOUS", "false").lower() == "true"
-
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DB_PATH = DATA_DIR / "youtube.db"
+from mcp import Client
 
 
 # ============================================================
-# FASTAPI
+# APP
 # ============================================================
 
-app = FastAPI(title=APP_TITLE)
+app = FastAPI(title="AI Full-Cycle YouTube System")
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,8 +28,27 @@ app.add_middleware(
 
 
 # ============================================================
-# TIME / DATABASE
+# CONFIG
 # ============================================================
+
+MCP_URL = os.environ.get(
+    "MCP_URL",
+    "https://youtube-mcp-u39z.onrender.com/mcp",
+)
+
+FREE_MODE = os.environ.get("FREE_MODE", "true").lower() == "true"
+AUTONOMOUS = os.environ.get("AUTONOMOUS", "false").lower() == "true"
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = DATA_DIR / "youtube.db"
+
 
 def now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -68,7 +65,7 @@ def init_db():
 
     connection.executescript(
         """
-        CREATE TABLE IF NOT EXISTS videos (
+        CREATE TABLE IF NOT EXISTS videos(
             video_id TEXT PRIMARY KEY,
             channel_id TEXT,
             title TEXT,
@@ -78,7 +75,7 @@ def init_db():
             first_seen_at TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS video_snapshots (
+        CREATE TABLE IF NOT EXISTS video_snapshots(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             video_id TEXT NOT NULL,
             observed_at TEXT NOT NULL,
@@ -95,7 +92,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_snap_time
         ON video_snapshots(observed_at);
 
-        CREATE TABLE IF NOT EXISTS director_runs (
+        CREATE TABLE IF NOT EXISTS director_runs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
             language TEXT,
@@ -107,7 +104,7 @@ def init_db():
             data_json TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS decisions (
+        CREATE TABLE IF NOT EXISTS decisions(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
             run_id INTEGER,
@@ -116,7 +113,7 @@ def init_db():
             user_note TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS system_events (
+        CREATE TABLE IF NOT EXISTS system_events(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
             event_type TEXT,
@@ -137,92 +134,106 @@ init_db()
 # MCP CLIENT
 # ============================================================
 
-async def mcp_call(name, arguments):
+async def mcp_call(name, args):
     """
-    Call a tool on youtube-mcp.
+    Call a tool on the YouTube MCP server.
 
-    This function accepts both:
-    - direct list results
-    - dictionary/object results
-    - MCP structured content
-    - MCP text content containing JSON
+    MCP 2.x uses the high-level Client API.
+    The URL automatically uses Streamable HTTP.
     """
 
-    try:
-        client = MCPClient(MCP_URL)
+    async with Client(MCP_URL) as client:
+        result = await client.call_tool(name, args)
 
-        await client.initialize()
+        # MCP 2.x may provide structured content.
+        structured = getattr(result, "structured_content", None)
 
-        result = await client.call_tool(
-            name,
-            arguments,
-        )
+        if structured is not None:
+            return structured
 
-        return parse_mcp_result(result)
+        # Compatibility with MCP servers that return
+        # JSON inside TextContent.
+        content = getattr(result, "content", None)
 
-    except Exception as exc:
-        raise RuntimeError(
-            f"MCP call failed: {name}: {exc}"
-        ) from exc
+        if not content:
+            raise RuntimeError("MCP вернул пустой ответ")
 
-
-def parse_mcp_result(result):
-    """
-    Convert MCP result into normal Python data.
-    """
-
-    if result is None:
-        raise RuntimeError("MCP returned empty result")
-
-    # Already a Python structure
-    if isinstance(result, (dict, list)):
-        return result
-
-    # Objects containing content
-    content = getattr(result, "content", None)
-
-    if content is not None:
         for item in content:
-            structured = getattr(item, "structuredContent", None)
-
-            if structured is not None:
-                return structured
-
-            structured = getattr(item, "structured_content", None)
-
-            if structured is not None:
-                return structured
-
             text = getattr(item, "text", None)
 
-            if text:
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    return text
+            if text is None:
+                continue
 
-    # Generic object
-    structured = getattr(result, "structuredContent", None)
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
 
-    if structured is not None:
-        return structured
+        raise RuntimeError("MCP не вернул распознаваемый ответ")
 
-    structured = getattr(result, "structured_content", None)
 
-    if structured is not None:
-        return structured
+# ============================================================
+# DATA NORMALIZATION
+# ============================================================
 
-    text = getattr(result, "text", None)
+def extract_items(data):
+    """
+    Normalize different MCP response formats.
 
-    if text:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return text
+    Our youtube-mcp currently returns plain lists for:
+    search_radar_videos
+    search_trending_videos
+    search_channels
+    search_videos
 
-    raise RuntimeError(
-        f"Unsupported MCP response type: {type(result).__name__}"
-    )
+    But future versions may return:
+    {"videos": [...]}
+    {"channels": [...]}
+    or another structured object.
+    """
+
+    if data is None:
+        return []
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in (
+            "videos",
+            "channels",
+            "results",
+            "items",
+            "data",
+        ):
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return value
+
+        return []
+
+    return []
+
+
+def extract_object(data):
+    """
+    Normalize a single-object response.
+
+    Useful for channel statistics and future MCP tools.
+    """
+
+    if data is None:
+        return {}
+
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(data, list) and data:
+        if isinstance(data[0], dict):
+            return data[0]
+
+    return {}
 
 
 # ============================================================
@@ -248,7 +259,7 @@ def event(kind, message, data=None):
             message,
             json.dumps(
                 data or {},
-                ensure_ascii=False,
+                ensure_ascii=False
             ),
         ),
     )
@@ -262,18 +273,13 @@ def event(kind, message, data=None):
 # ============================================================
 
 def save_snapshot(videos, language):
-    if not isinstance(videos, list):
-        return {
-            "saved_count": 0,
-            "observed_at": now(),
-        }
-
-    timestamp = now()
+    observed_at = now()
 
     connection = db()
-    saved = 0
+    saved_count = 0
 
     for video in videos:
+
         if not isinstance(video, dict):
             continue
 
@@ -302,7 +308,7 @@ def save_snapshot(videos, language):
                 video.get("channel_title"),
                 video.get("published_at"),
                 language,
-                timestamp,
+                observed_at,
             ),
         )
 
@@ -321,7 +327,7 @@ def save_snapshot(videos, language):
             """,
             (
                 video_id,
-                timestamp,
+                observed_at,
                 int(video.get("views") or 0),
                 int(video.get("likes") or 0),
                 int(video.get("comments") or 0),
@@ -330,14 +336,14 @@ def save_snapshot(videos, language):
             ),
         )
 
-        saved += 1
+        saved_count += 1
 
     connection.commit()
     connection.close()
 
     return {
-        "saved_count": saved,
-        "observed_at": timestamp,
+        "saved_count": saved_count,
+        "observed_at": observed_at,
     }
 
 
@@ -351,10 +357,11 @@ def score(video):
     likes = float(video.get("likes") or 0)
     comments = float(video.get("comments") or 0)
 
-    engagement = 0
-
-    if views > 0:
-        engagement = (likes + comments * 3) / views
+    engagement = (
+        (likes + comments * 3) / views
+        if views
+        else 0
+    )
 
     return (
         math.log1p(speed) * 0.65
@@ -364,9 +371,6 @@ def score(video):
 
 
 def make_hypothesis(videos, language, region):
-    if not isinstance(videos, list):
-        videos = []
-
     ranked = sorted(
         videos,
         key=score,
@@ -387,31 +391,38 @@ def make_hypothesis(videos, language, region):
         for video in ranked[:5]
     ]
 
+    hypothesis = (
+        f"В сегменте {language} стоит проверить "
+        "темы и форматы, представленные "
+        "наиболее быстрорастущими видео."
+    )
+
+    reasoning = (
+        f"Проанализировано {len(videos)} видео. "
+        "Ранжирование учитывает скорость просмотров, "
+        "общий объём просмотров и относительную "
+        "вовлечённость. "
+        "Это гипотеза для эксперимента, "
+        "а не прогноз успеха. "
+        f"Регион: {region}. "
+        "Сильнейшие сигналы: "
+        + "; ".join(names)
+    )
+
+    top_videos = []
+
+    for video in ranked:
+        item = dict(video)
+        item["director_score"] = round(
+            score(video),
+            4,
+        )
+        top_videos.append(item)
+
     return {
-        "hypothesis": (
-            f"В сегменте {language} стоит проверить "
-            "темы и форматы, представленные "
-            "наиболее быстрорастущими видео."
-        ),
-        "reasoning": (
-            f"Проанализировано {len(videos)} видео. "
-            "Ранжирование учитывает скорость просмотров, "
-            "общий объём просмотров и относительную "
-            f"вовлечённость. Это гипотеза для эксперимента, "
-            "а не прогноз успеха. Регион: {region}. "
-            "Сильнейшие сигналы: "
-            + "; ".join(names)
-        ),
-        "top_videos": [
-            {
-                **video,
-                "director_score": round(
-                    score(video),
-                    4,
-                ),
-            }
-            for video in ranked
-        ],
+        "hypothesis": hypothesis,
+        "reasoning": reasoning,
+        "top_videos": top_videos,
     }
 
 
@@ -421,23 +432,14 @@ def make_hypothesis(videos, language, region):
 
 @app.get("/")
 async def home():
-    index_file = BASE_DIR / "index.html"
-
-    if not index_file.exists():
-        return HTMLResponse(
-            "<h1>AI Full-Cycle YouTube System</h1>"
-            "<p>index.html not found</p>",
-            status_code=200,
-        )
+    index_path = Path(__file__).parent / "index.html"
 
     async with aiofiles.open(
-        index_file,
+        index_path,
         "r",
         encoding="utf-8",
     ) as file:
-        html = await file.read()
-
-    return HTMLResponse(html)
+        return HTMLResponse(await file.read())
 
 
 @app.get("/health")
@@ -451,14 +453,16 @@ def health():
 
 
 @app.get("/system/status")
-def system_status():
+def status():
     return {
-        "system": APP_TITLE,
+        "system": "AI Full-Cycle YouTube System",
         "phase": "free-working-model",
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
+
         "wallet_balance": 0,
         "paid_tools_enabled": False,
+
         "website_code_modification_by_ai": False,
         "youtube_channel_deletion_by_ai": False,
         "published_video_deletion_by_ai": False,
@@ -466,7 +470,7 @@ def system_status():
 
 
 # ============================================================
-# YOUTUBE SEARCH
+# SEARCH
 # ============================================================
 
 @app.get("/search-channels")
@@ -486,12 +490,17 @@ async def search_channels(
             },
         )
 
-        return result
+        return extract_items(result)
 
-    except Exception as exc:
+    except Exception as error:
+        event(
+            "search_channels_error",
+            str(error),
+        )
+
         return JSONResponse(
             {
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
@@ -524,12 +533,17 @@ async def search_videos(
             },
         )
 
-        return result
+        return extract_items(result)
 
-    except Exception as exc:
+    except Exception as error:
+        event(
+            "search_videos_error",
+            str(error),
+        )
+
         return JSONResponse(
             {
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
@@ -556,19 +570,24 @@ async def trending_videos(
             },
         )
 
-        return result
+        return extract_items(result)
 
-    except Exception as exc:
+    except Exception as error:
+        event(
+            "trending_error",
+            str(error),
+        )
+
         return JSONResponse(
             {
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
 
 
 # ============================================================
-# GROWTH RADAR
+# RADAR
 # ============================================================
 
 @app.get("/radar-videos")
@@ -593,12 +612,17 @@ async def radar_videos(
             },
         )
 
-        return result
+        return extract_items(result)
 
-    except Exception as exc:
+    except Exception as error:
+        event(
+            "radar_error",
+            str(error),
+        )
+
         return JSONResponse(
             {
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
@@ -633,10 +657,6 @@ async def radar_save(payload: dict):
     }
 
 
-# ============================================================
-# RADAR HISTORY
-# ============================================================
-
 @app.get("/radar-history")
 def radar_history(limit: int = 100):
     connection = db()
@@ -662,7 +682,10 @@ def radar_history(limit: int = 100):
         LIMIT ?
         """,
         (
-            min(max(limit, 1), 500),
+            min(
+                max(limit, 1),
+                500,
+            ),
         ),
     ).fetchall()
 
@@ -678,7 +701,7 @@ def radar_history(limit: int = 100):
 
 
 # ============================================================
-# DATABASE STATUS
+# DATABASE
 # ============================================================
 
 @app.get("/database-status")
@@ -711,17 +734,24 @@ def database_status():
 @app.get("/analyze")
 async def analyze(channel_id: str):
     try:
-        return await mcp_call(
+        result = await mcp_call(
             "get_channel_stats",
             {
                 "channel_id": channel_id,
             },
         )
 
-    except Exception as exc:
+        return extract_object(result)
+
+    except Exception as error:
+        event(
+            "channel_analysis_error",
+            str(error),
+        )
+
         return JSONResponse(
             {
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
@@ -739,6 +769,11 @@ async def director_run(
     max_results: int = 50,
 ):
     try:
+
+        # ----------------------------------------------------
+        # 1. Growth Radar
+        # ----------------------------------------------------
+
         radar_result = await mcp_call(
             "search_radar_videos",
             {
@@ -754,20 +789,20 @@ async def director_run(
             },
         )
 
-        if isinstance(radar_result, list):
-            radar_videos = radar_result
-        elif isinstance(radar_result, dict):
-            radar_videos = radar_result.get(
-                "videos",
-                [],
-            )
-        else:
-            radar_videos = []
+        videos = extract_items(radar_result)
 
-        save_snapshot(
-            radar_videos,
+        # ----------------------------------------------------
+        # 2. Save observation
+        # ----------------------------------------------------
+
+        snapshot_result = save_snapshot(
+            videos,
             language,
         )
+
+        # ----------------------------------------------------
+        # 3. Trending
+        # ----------------------------------------------------
 
         trends_result = await mcp_call(
             "search_trending_videos",
@@ -777,21 +812,21 @@ async def director_run(
             },
         )
 
-        if isinstance(trends_result, list):
-            trends = trends_result
-        elif isinstance(trends_result, dict):
-            trends = trends_result.get(
-                "videos",
-                [],
-            )
-        else:
-            trends = []
+        trends = extract_items(trends_result)
+
+        # ----------------------------------------------------
+        # 4. Build hypothesis
+        # ----------------------------------------------------
 
         hypothesis = make_hypothesis(
-            radar_videos,
+            videos,
             language,
             region_code,
         )
+
+        # ----------------------------------------------------
+        # 5. Save Director run
+        # ----------------------------------------------------
 
         connection = db()
 
@@ -819,12 +854,9 @@ async def director_run(
                 hypothesis["reasoning"],
                 json.dumps(
                     {
-                        "radar_count": len(
-                            radar_videos
-                        ),
-                        "trends_count": len(
-                            trends
-                        ),
+                        "radar_count": len(videos),
+                        "trends_count": len(trends),
+                        "snapshot": snapshot_result,
                         "top_videos": hypothesis[
                             "top_videos"
                         ],
@@ -839,45 +871,66 @@ async def director_run(
         connection.commit()
         connection.close()
 
+        # ----------------------------------------------------
+        # 6. Event
+        # ----------------------------------------------------
+
         event(
             "director_run",
             "AI Director завершил аналитический цикл",
             {
                 "run_id": run_id,
+                "radar_count": len(videos),
+                "trends_count": len(trends),
             },
         )
+
+        # ----------------------------------------------------
+        # 7. Next action
+        # ----------------------------------------------------
+
+        if AUTONOMOUS:
+            next_action = (
+                "Сформировать контент по гипотезе"
+            )
+        else:
+            next_action = (
+                "Ожидается решение пользователя"
+            )
 
         return {
             "status": "completed",
             "run_id": run_id,
             "mode": "FREE_ONLY",
+
             "hypothesis": hypothesis[
                 "hypothesis"
             ],
+
             "reasoning": hypothesis[
                 "reasoning"
             ],
+
             "top_videos": hypothesis[
                 "top_videos"
             ],
+
             "trends": trends[:10],
-            "next_action": (
-                "Ожидается решение пользователя"
-                if not AUTONOMOUS
-                else "Сформировать контент по гипотезе"
-            ),
+
+            "next_action": next_action,
         }
 
-    except Exception as exc:
+    except Exception as error:
+
         event(
             "director_error",
-            str(exc),
+            str(error),
         )
 
         return JSONResponse(
             {
                 "status": "error",
-                "error": str(exc),
+                "error": str(error),
             },
             status_code=500,
         )
@@ -907,7 +960,10 @@ def director_history(limit: int = 20):
         LIMIT ?
         """,
         (
-            min(max(limit, 1), 100),
+            min(
+                max(limit, 1),
+                100,
+            ),
         ),
     ).fetchall()
 
@@ -928,15 +984,16 @@ def director_history(limit: int = 20):
 
 @app.post("/director/decision")
 def director_decision(payload: dict):
+
     decision = payload.get("decision")
 
-    allowed = {
+    allowed_decisions = {
         "approve",
         "discuss",
         "leave_as_is",
     }
 
-    if decision not in allowed:
+    if decision not in allowed_decisions:
         return JSONResponse(
             {
                 "error": "Недопустимое решение",
@@ -1006,7 +1063,10 @@ def events(limit: int = 50):
         LIMIT ?
         """,
         (
-            min(max(limit, 1), 200),
+            min(
+                max(limit, 1),
+                200,
+            ),
         ),
     ).fetchall()
 
@@ -1016,7 +1076,7 @@ def events(limit: int = 50):
         "events": [
             dict(row)
             for row in rows
-        ],
+        ]
     }
 
 

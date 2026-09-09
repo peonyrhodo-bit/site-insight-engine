@@ -1214,6 +1214,18 @@ def events(
         ]
     }
 
+# ============================================================
+# DIRECTOR TEST
+# ============================================================
+
+@app.get("/director/test")
+async def director_test():
+    return await director_run(
+        language="ru",
+        region_code="RU",
+        hours_back=72,
+        max_results=50,
+    )
 
 # ============================================================
 # LOCAL START

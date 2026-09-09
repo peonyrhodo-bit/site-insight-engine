@@ -43,15 +43,23 @@ AUTONOMOUS = (
     == "true"
 )
 
-# AI
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
+# ============================================================
+# OPENROUTER AI
+# ============================================================
+
+OPENROUTER_API_KEY = os.environ.get(
+    "OPENROUTER_API_KEY",
     "",
 ).strip()
 
-GEMINI_MODEL = os.environ.get(
-    "GEMINI_MODEL",
-    "gemini-3.7-flash",
+OPENROUTER_BASE_URL = os.environ.get(
+    "OPENROUTER_BASE_URL",
+    "https://openrouter.ai/api/v1",
+).strip()
+
+AI_MODEL = os.environ.get(
+    "AI_MODEL",
+    "openrouter/free",
 ).strip()
 
 AI_ENABLED = (
@@ -60,7 +68,7 @@ AI_ENABLED = (
         "true",
     ).lower()
     == "true"
-    and bool(GEMINI_API_KEY)
+    and bool(OPENROUTER_API_KEY)
 )
 
 
@@ -86,7 +94,6 @@ app = FastAPI(
     title="Site Insight Engine",
     version="1.0.0",
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,7 +121,6 @@ def get_db() -> sqlite3.Connection:
 
 def init_db() -> None:
     conn = get_db()
-
     cursor = conn.cursor()
 
     cursor.execute(
@@ -383,6 +389,11 @@ def save_snapshot(
             "video_id"
         ) or video.get("id")
 
+        if isinstance(video_id, dict):
+            video_id = video_id.get(
+                "videoId"
+            )
+
         if not video_id:
             continue
 
@@ -391,6 +402,21 @@ def save_snapshot(
         data_json = json_dumps(video)
 
         cursor = conn.cursor()
+
+        existing = cursor.execute(
+            """
+            SELECT first_seen
+            FROM videos
+            WHERE video_id = ?
+            """,
+            (video_id,),
+        ).fetchone()
+
+        first_seen = (
+            existing["first_seen"]
+            if existing
+            else created_at
+        )
 
         cursor.execute(
             """
@@ -409,7 +435,7 @@ def save_snapshot(
             (
                 video_id,
                 data_json,
-                created_at,
+                first_seen,
                 created_at,
             ),
         )
@@ -439,6 +465,119 @@ def save_snapshot(
 
 
 # ============================================================
+# NORMALIZED VIDEO METRICS
+# ============================================================
+
+def get_video_title(
+    video: dict[str, Any],
+) -> str:
+    snippet = video.get(
+        "snippet",
+        {},
+    )
+
+    if isinstance(snippet, dict):
+        title = snippet.get(
+            "title",
+            "",
+        )
+
+        if title:
+            return str(title)
+
+    return str(
+        video.get(
+            "title",
+            "",
+        )
+    )
+
+
+def get_video_views(
+    video: dict[str, Any],
+) -> int:
+    statistics = video.get(
+        "statistics",
+        {},
+    )
+
+    if isinstance(statistics, dict):
+        value = statistics.get(
+            "viewCount",
+            0,
+        )
+    else:
+        value = video.get(
+            "views",
+            video.get(
+                "viewCount",
+                0,
+            ),
+        )
+
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def get_video_likes(
+    video: dict[str, Any],
+) -> int:
+    statistics = video.get(
+        "statistics",
+        {},
+    )
+
+    if isinstance(statistics, dict):
+        value = statistics.get(
+            "likeCount",
+            0,
+        )
+    else:
+        value = video.get(
+            "likes",
+            video.get(
+                "likeCount",
+                0,
+            ),
+        )
+
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def get_video_comments(
+    video: dict[str, Any],
+) -> int:
+    statistics = video.get(
+        "statistics",
+        {},
+    )
+
+    if isinstance(statistics, dict):
+        value = statistics.get(
+            "commentCount",
+            0,
+        )
+    else:
+        value = video.get(
+            "comments",
+            video.get(
+                "commentCount",
+                0,
+            ),
+        )
+
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+# ============================================================
 # HEURISTIC ANALYSIS
 # ============================================================
 
@@ -446,36 +585,15 @@ def score(
     video: dict[str, Any],
 ) -> float:
     views = float(
-        video.get(
-            "views",
-            video.get(
-                "viewCount",
-                0,
-            ),
-        )
-        or 0
+        get_video_views(video)
     )
 
     likes = float(
-        video.get(
-            "likes",
-            video.get(
-                "likeCount",
-                0,
-            ),
-        )
-        or 0
+        get_video_likes(video)
     )
 
     comments = float(
-        video.get(
-            "comments",
-            video.get(
-                "commentCount",
-                0,
-            ),
-        )
-        or 0
+        get_video_comments(video)
     )
 
     return (
@@ -507,10 +625,7 @@ def make_heuristic_hypothesis(
     topics = []
 
     for video in top:
-        title = video.get(
-            "title",
-            "",
-        )
+        title = get_video_title(video)
 
         if title:
             topics.append(title)
@@ -535,10 +650,10 @@ def make_heuristic_hypothesis(
 
 
 # ============================================================
-# GEMINI AI
+# OPENROUTER AI
 # ============================================================
 
-def ai_error_message(
+def openrouter_error_message(
     response: requests.Response,
 ) -> str:
     """
@@ -554,65 +669,134 @@ def ai_error_message(
             {},
         )
 
-        message = error.get(
-            "message",
-            "",
-        )
+        if isinstance(error, dict):
+            message = error.get(
+                "message",
+                "",
+            )
 
-        return str(message)[:500]
+            if message:
+                return str(message)[:500]
 
     except Exception:
-        return (
-            f"HTTP {response.status_code}"
-        )
+        pass
+
+    return (
+        f"HTTP {response.status_code}"
+    )
 
 
-def gemini_generate_json(
+def extract_json_from_text(
+    text: str,
+) -> dict[str, Any]:
+    """
+    Parse JSON returned by the model.
+
+    Handles both plain JSON and JSON accidentally
+    wrapped in a Markdown code fence.
+    """
+
+    cleaned = text.strip()
+
+    try:
+        parsed = json.loads(cleaned)
+
+        if isinstance(parsed, dict):
+            return parsed
+
+    except json.JSONDecodeError:
+        pass
+
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+
+        if lines:
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        cleaned = "\n".join(
+            lines
+        ).strip()
+
+        try:
+            parsed = json.loads(cleaned)
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        except json.JSONDecodeError:
+            pass
+
+    # Last safe attempt: locate the outermost JSON object.
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start >= 0 and end > start:
+        candidate = cleaned[
+            start:end + 1
+        ]
+
+        try:
+            parsed = json.loads(
+                candidate
+            )
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        except json.JSONDecodeError:
+            pass
+
+    raise RuntimeError(
+        "OpenRouter returned non-JSON content"
+    )
+
+
+def openrouter_generate_json(
     system_instruction: str,
     prompt: str,
 ) -> dict[str, Any]:
     """
-    Call Gemini using the REST API.
+    Call OpenRouter using the OpenAI-compatible API.
 
-    API key is sent only in the HTTP header.
-    It is never included in logs.
+    The API key is sent only in the Authorization header.
+    It is never logged or returned to the client.
     """
 
-    if not GEMINI_API_KEY:
+    if not OPENROUTER_API_KEY:
         raise RuntimeError(
-            "GEMINI_API_KEY is not configured"
+            "OPENROUTER_API_KEY is not configured"
         )
 
     url = (
-        "https://generativelanguage.googleapis.com"
-        f"/v1beta/models/{GEMINI_MODEL}:generateContent"
+        OPENROUTER_BASE_URL.rstrip("/")
+        + "/chat/completions"
     )
 
     headers = {
+        "Authorization": (
+            f"Bearer {OPENROUTER_API_KEY}"
+        ),
         "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
     }
 
     payload = {
-        "system_instruction": {
-            "parts": [
-                {
-                    "text": system_instruction
-                }
-            ]
-        },
-        "contents": [
+        "model": AI_MODEL,
+        "messages": [
             {
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
+                "role": "system",
+                "content": system_instruction,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
         ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json",
+        "temperature": 0.2,
+        "response_format": {
+            "type": "json_object",
         },
     }
 
@@ -621,32 +805,32 @@ def gemini_generate_json(
             url,
             headers=headers,
             json=payload,
-            timeout=60,
+            timeout=90,
         )
 
     except requests.RequestException as exc:
         logger.error(
-            "AI_REQUEST_ERROR provider=gemini error_type=%s",
+            "AI_REQUEST_ERROR provider=openrouter error_type=%s",
             type(exc).__name__,
         )
 
         raise RuntimeError(
-            "Gemini request failed"
+            "OpenRouter request failed"
         ) from exc
 
     if not response.ok:
-        safe_message = ai_error_message(
+        safe_message = openrouter_error_message(
             response
         )
 
         logger.error(
-            "AI_API_ERROR provider=gemini status=%s message=%s",
+            "AI_API_ERROR provider=openrouter status=%s message=%s",
             response.status_code,
             safe_message,
         )
 
         raise RuntimeError(
-            f"Gemini API error: {safe_message}"
+            f"OpenRouter API error: {safe_message}"
         )
 
     try:
@@ -654,81 +838,71 @@ def gemini_generate_json(
 
     except ValueError as exc:
         logger.error(
-            "AI_INVALID_JSON_RESPONSE provider=gemini"
+            "AI_INVALID_JSON_RESPONSE provider=openrouter"
         )
 
         raise RuntimeError(
-            "Gemini returned invalid JSON"
+            "OpenRouter returned invalid JSON"
         ) from exc
 
-    candidates = data.get(
-        "candidates",
+    choices = data.get(
+        "choices",
         [],
     )
 
-    if not candidates:
+    if not choices:
         raise RuntimeError(
-            "Gemini returned no candidates"
+            "OpenRouter returned no choices"
         )
 
-    parts = (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [])
+    message = choices[0].get(
+        "message",
+        {},
     )
 
-    text_parts = []
+    if not isinstance(
+        message,
+        dict,
+    ):
+        raise RuntimeError(
+            "OpenRouter returned invalid message"
+        )
 
-    for part in parts:
-        text = part.get("text")
+    content = message.get(
+        "content",
+        "",
+    )
 
-        if text:
-            text_parts.append(text)
+    if isinstance(content, list):
+        text_parts = []
 
-    text = "\n".join(
-        text_parts
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get(
+                    "text"
+                )
+
+                if text:
+                    text_parts.append(
+                        str(text)
+                    )
+
+        content = "\n".join(
+            text_parts
+        )
+
+    text = str(
+        content or ""
     ).strip()
 
     if not text:
         raise RuntimeError(
-            "Gemini returned empty content"
+            "OpenRouter returned empty content"
         )
 
-    try:
-        return json.loads(text)
-
-    except json.JSONDecodeError:
-        # Try to recover JSON enclosed in markdown.
-        cleaned = text.strip()
-
-        if cleaned.startswith(
-            "```"
-        ):
-            cleaned = (
-                cleaned
-                .replace(
-                    "```json",
-                    "",
-                    1,
-                )
-                .replace(
-                    "```",
-                    "",
-                )
-                .strip()
-            )
-
-            try:
-                return json.loads(
-                    cleaned
-                )
-
-            except json.JSONDecodeError:
-                pass
-
-        raise RuntimeError(
-            "Gemini returned non-JSON content"
-        )
+    return extract_json_from_text(
+        text
+    )
 
 
 # ============================================================
@@ -742,7 +916,7 @@ def make_ai_hypothesis(
     region_code: str,
 ) -> dict[str, Any]:
     """
-    Ask Gemini to analyze the collected YouTube signals.
+    Ask OpenRouter to analyze collected YouTube signals.
 
     The AI is an analyst.
     It must not pretend to know which video will go viral.
@@ -763,39 +937,72 @@ def make_ai_hypothesis(
     compact_videos = []
 
     for video in ranked_videos:
+        snippet = video.get(
+            "snippet",
+            {},
+        )
+
+        radar = video.get(
+            "_radar",
+            {},
+        )
+
+        if not isinstance(
+            snippet,
+            dict,
+        ):
+            snippet = {}
+
+        if not isinstance(
+            radar,
+            dict,
+        ):
+            radar = {}
+
         compact_videos.append(
             {
-                "title": video.get(
-                    "title",
-                    "",
+                "title": get_video_title(
+                    video
                 ),
-                "channel": video.get(
-                    "channel_title",
-                    "",
+                "channel": snippet.get(
+                    "channelTitle",
+                    video.get(
+                        "channel_title",
+                        "",
+                    ),
                 ),
-                "views": video.get(
-                    "views",
-                    0,
+                "views": get_video_views(
+                    video
                 ),
-                "likes": video.get(
-                    "likes",
-                    0,
+                "likes": get_video_likes(
+                    video
                 ),
-                "comments": video.get(
-                    "comments",
-                    0,
+                "comments": get_video_comments(
+                    video
                 ),
-                "published_at": video.get(
-                    "published_at",
-                    "",
+                "published_at": snippet.get(
+                    "publishedAt",
+                    video.get(
+                        "published_at",
+                        "",
+                    ),
                 ),
-                "language": video.get(
-                    "language",
-                    language,
-                ),
-                "query": video.get(
+                "language": language,
+                "query": radar.get(
                     "query",
-                    "",
+                    video.get(
+                        "query",
+                        "",
+                    ),
+                ),
+                "age_hours": radar.get(
+                    "age_hours"
+                ),
+                "views_per_hour": radar.get(
+                    "views_per_hour"
+                ),
+                "engagement": radar.get(
+                    "engagement"
                 ),
             }
         )
@@ -808,19 +1015,16 @@ def make_ai_hypothesis(
             {},
         )
 
-        statistics = video.get(
-            "statistics",
-            {},
-        )
+        if not isinstance(
+            snippet,
+            dict,
+        ):
+            snippet = {}
 
         compact_trends.append(
             {
-                "title": snippet.get(
-                    "title",
-                    video.get(
-                        "title",
-                        "",
-                    ),
+                "title": get_video_title(
+                    video
                 ),
                 "channel": snippet.get(
                     "channelTitle",
@@ -829,35 +1033,14 @@ def make_ai_hypothesis(
                         "",
                     ),
                 ),
-                "views": int(
-                    statistics.get(
-                        "viewCount",
-                        video.get(
-                            "views",
-                            0,
-                        ),
-                    )
-                    or 0
+                "views": get_video_views(
+                    video
                 ),
-                "likes": int(
-                    statistics.get(
-                        "likeCount",
-                        video.get(
-                            "likes",
-                            0,
-                        ),
-                    )
-                    or 0
+                "likes": get_video_likes(
+                    video
                 ),
-                "comments": int(
-                    statistics.get(
-                        "commentCount",
-                        video.get(
-                            "comments",
-                            0,
-                        ),
-                    )
-                    or 0
+                "comments": get_video_comments(
+                    video
                 ),
             }
         )
@@ -872,7 +1055,7 @@ Important rules:
 1. Use ONLY the supplied data.
 2. Do not invent facts.
 3. Do not claim that you can predict viral success.
-4. Treat views, likes, comments and other metrics as signals.
+4. Treat views, likes, comments, views-per-hour and other metrics as signals.
 5. Look for evidence of growing or interesting demand.
 6. Prefer repeated signals over a single unusual video.
 7. Consider competition and format when evidence exists.
@@ -884,6 +1067,11 @@ Important rules:
 12. If evidence is weak, explicitly say that evidence is insufficient.
 13. Confidence means confidence in the interpretation of the supplied
     evidence, NOT probability of future viral success.
+14. Distinguish current popularity from signs of acceleration.
+15. Do not use raw view count as the only criterion.
+16. Do not treat one successful channel as proof that a topic will work
+    for another channel.
+17. Suggest experiments when evidence is promising but insufficient.
 
 Return ONLY valid JSON with this structure:
 
@@ -910,15 +1098,66 @@ Return ONLY valid JSON with this structure:
         }
     )
 
-    result = gemini_generate_json(
+    result = openrouter_generate_json(
         system_instruction=system_instruction,
         prompt=prompt,
     )
 
-    # Normalize result
+    try:
+        confidence = float(
+            result.get(
+                "confidence",
+                0.0,
+            )
+            or 0.0
+        )
+    except Exception:
+        confidence = 0.0
+
+    confidence = max(
+        0.0,
+        min(
+            confidence,
+            1.0,
+        ),
+    )
+
+    topics = result.get(
+        "topics",
+        [],
+    )
+
+    formats = result.get(
+        "formats",
+        [],
+    )
+
+    experiments = result.get(
+        "experiments",
+        [],
+    )
+
+    if not isinstance(
+        topics,
+        list,
+    ):
+        topics = []
+
+    if not isinstance(
+        formats,
+        list,
+    ):
+        formats = []
+
+    if not isinstance(
+        experiments,
+        list,
+    ):
+        experiments = []
+
     return {
-        "provider": "gemini",
-        "model": GEMINI_MODEL,
+        "provider": "openrouter",
+        "model": AI_MODEL,
         "hypothesis": str(
             result.get(
                 "hypothesis",
@@ -931,55 +1170,10 @@ Return ONLY valid JSON with this structure:
                 "",
             )
         ),
-        "topics": (
-            result.get(
-                "topics",
-                [],
-            )
-            if isinstance(
-                result.get(
-                    "topics",
-                    [],
-                ),
-                list,
-            )
-            else []
-        ),
-        "formats": (
-            result.get(
-                "formats",
-                [],
-            )
-            if isinstance(
-                result.get(
-                    "formats",
-                    [],
-                ),
-                list,
-            )
-            else []
-        ),
-        "experiments": (
-            result.get(
-                "experiments",
-                [],
-            )
-            if isinstance(
-                result.get(
-                    "experiments",
-                    [],
-                ),
-                list,
-            )
-            else []
-        ),
-        "confidence": float(
-            result.get(
-                "confidence",
-                0.0,
-            )
-            or 0.0
-        ),
+        "topics": topics[:10],
+        "formats": formats[:10],
+        "experiments": experiments[:10],
+        "confidence": confidence,
     }
 
 
@@ -990,7 +1184,7 @@ def make_hypothesis(
     trends: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
-    Use Gemini when available.
+    Use OpenRouter when available.
     Otherwise fall back to the local heuristic.
     """
 
@@ -1012,8 +1206,8 @@ def make_hypothesis(
         log_event(
             "ai_analysis_completed",
             {
-                "provider": "gemini",
-                "model": GEMINI_MODEL,
+                "provider": "openrouter",
+                "model": AI_MODEL,
             },
         )
 
@@ -1021,14 +1215,14 @@ def make_hypothesis(
 
     except Exception as exc:
         logger.error(
-            "AI_ANALYSIS_FAILED provider=gemini error_type=%s",
+            "AI_ANALYSIS_FAILED provider=openrouter error_type=%s",
             type(exc).__name__,
         )
 
         log_event(
             "ai_analysis_failed",
             {
-                "provider": "gemini",
+                "provider": "openrouter",
                 "error_type": type(exc).__name__,
             },
         )
@@ -1038,7 +1232,7 @@ def make_hypothesis(
         )
 
         fallback["ai_fallback_reason"] = (
-            "Gemini analysis was unavailable; "
+            "OpenRouter analysis was unavailable; "
             "local heuristic used."
         )
 
@@ -1073,22 +1267,30 @@ async def home():
 
 @app.get("/health")
 async def health():
+    provider = (
+        "openrouter"
+        if AI_ENABLED
+        else "heuristic"
+    )
+
     return {
         "status": "ok",
         "service": "site-insight-engine",
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
         "ai_enabled": AI_ENABLED,
-        "ai_provider": (
-            "gemini"
-            if AI_ENABLED
-            else "heuristic"
-        ),
+        "ai_provider": provider,
     }
 
 
 @app.get("/system/status")
 async def system_status():
+    provider = (
+        "openrouter"
+        if AI_ENABLED
+        else "heuristic"
+    )
+
     return {
         "status": "ok",
         "service": "site-insight-engine",
@@ -1097,12 +1299,8 @@ async def system_status():
         "autonomous": AUTONOMOUS,
         "ai": {
             "enabled": AI_ENABLED,
-            "provider": (
-                "gemini"
-                if AI_ENABLED
-                else "heuristic"
-            ),
-            "model": GEMINI_MODEL,
+            "provider": provider,
+            "model": AI_MODEL,
         },
     }
 
@@ -1113,60 +1311,68 @@ async def system_status():
 
 @app.get("/ai/status")
 async def ai_status():
+    provider = (
+        "openrouter"
+        if AI_ENABLED
+        else "heuristic"
+    )
+
     return {
         "enabled": AI_ENABLED,
-        "provider": (
-            "gemini"
-            if AI_ENABLED
-            else "heuristic"
-        ),
-        "model": GEMINI_MODEL,
+        "provider": provider,
+        "model": AI_MODEL,
         "free_mode": FREE_MODE,
         "api_key_configured": bool(
-            GEMINI_API_KEY
+            OPENROUTER_API_KEY
         ),
     }
 
 
 @app.get("/ai/test")
 async def ai_test():
-    if not AI_ENABLED:
+    if not OPENROUTER_API_KEY:
         return {
             "ok": False,
             "enabled": False,
-            "provider": "heuristic",
+            "provider": "openrouter",
             "message": (
-                "Gemini is not enabled. "
-                "Configure GEMINI_API_KEY."
+                "OpenRouter is not configured. "
+                "Configure OPENROUTER_API_KEY."
             ),
         }
 
     try:
-        result = gemini_generate_json(
+        result = openrouter_generate_json(
             system_instruction=(
                 "Return valid JSON only. "
-                "The JSON must contain one key named "
-                "\"message\"."
+                "The JSON must contain exactly one "
+                "key named message."
             ),
             prompt=(
                 "Return a JSON object with "
-                "\"message\": \"AI connection works\"."
+                "message equal to AI connection works."
             ),
         )
 
         return {
             "ok": True,
-            "provider": "gemini",
-            "model": GEMINI_MODEL,
+            "provider": "openrouter",
+            "model": AI_MODEL,
             "result": result,
         }
 
     except Exception as exc:
+        logger.error(
+            "AI_TEST_FAILED provider=openrouter error_type=%s",
+            type(exc).__name__,
+        )
+
         return JSONResponse(
             status_code=500,
             content={
                 "ok": False,
-                "provider": "gemini",
+                "provider": "openrouter",
+                "model": AI_MODEL,
                 "error": str(exc),
             },
         )
@@ -1281,24 +1487,36 @@ async def trending_videos(
 async def radar_videos(
     language: str = "ru",
     max_results_per_query: int = 10,
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     try:
         result = await mcp_call(
             "search_radar_videos",
             {
-                "language": language,
+                "languages": [
+                    language
+                ],
                 "max_results_per_query": (
                     max_results_per_query
                 ),
-                "region_code": region_code,
             },
         )
 
         return {
             "items": extract_items(
                 result
-            )
+            ),
+            "quota_exceeded": (
+                result.get(
+                    "quota_exceeded",
+                    False,
+                )
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else False
+            ),
         }
 
     except Exception as exc:
@@ -1318,17 +1536,18 @@ async def radar_videos(
 async def radar_debug(
     language: str = "ru",
     max_results_per_query: int = 10,
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     try:
         result = await mcp_call(
             "search_radar_videos",
             {
-                "language": language,
+                "languages": [
+                    language
+                ],
                 "max_results_per_query": (
                     max_results_per_query
                 ),
-                "region_code": region_code,
             },
         )
 
@@ -1339,6 +1558,17 @@ async def radar_debug(
         return {
             "ok": True,
             "count": len(items),
+            "quota_exceeded": (
+                result.get(
+                    "quota_exceeded",
+                    False,
+                )
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else False
+            ),
             "items": items[:20],
         }
 
@@ -1360,17 +1590,18 @@ async def radar_debug(
 async def radar_save(
     language: str = "ru",
     max_results_per_query: int = 10,
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     try:
         result = await mcp_call(
             "search_radar_videos",
             {
-                "language": language,
+                "languages": [
+                    language
+                ],
                 "max_results_per_query": (
                     max_results_per_query
                 ),
-                "region_code": region_code,
             },
         )
 
@@ -1386,6 +1617,17 @@ async def radar_save(
             "ok": True,
             "found": len(items),
             "saved": saved,
+            "quota_exceeded": (
+                result.get(
+                    "quota_exceeded",
+                    False,
+                )
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else False
+            ),
         }
 
     except Exception as exc:
@@ -1482,17 +1724,18 @@ async def database_status():
 async def analyze(
     language: str = "ru",
     max_results_per_query: int = 10,
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     try:
         radar_result = await mcp_call(
             "search_radar_videos",
             {
-                "language": language,
+                "languages": [
+                    language
+                ],
                 "max_results_per_query": (
                     max_results_per_query
                 ),
-                "region_code": region_code,
             },
         )
 
@@ -1530,7 +1773,7 @@ async def analyze(
 @app.get("/director-debug")
 async def director_debug(
     language: str = "ru",
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     result = {
         "radar": None,
@@ -1538,11 +1781,11 @@ async def director_debug(
         "ai": {
             "enabled": AI_ENABLED,
             "provider": (
-                "gemini"
+                "openrouter"
                 if AI_ENABLED
                 else "heuristic"
             ),
-            "model": GEMINI_MODEL,
+            "model": AI_MODEL,
         },
     }
 
@@ -1550,9 +1793,10 @@ async def director_debug(
         radar = await mcp_call(
             "search_radar_videos",
             {
-                "language": language,
+                "languages": [
+                    language
+                ],
                 "max_results_per_query": 10,
-                "region_code": region_code,
             },
         )
 
@@ -1560,6 +1804,17 @@ async def director_debug(
             "ok": True,
             "count": len(
                 extract_items(radar)
+            ),
+            "quota_exceeded": (
+                radar.get(
+                    "quota_exceeded",
+                    False,
+                )
+                if isinstance(
+                    radar,
+                    dict,
+                )
+                else False
             ),
         }
 
@@ -1602,7 +1857,7 @@ async def director_debug(
 @app.get("/director/run")
 async def director_run(
     language: str = "ru",
-    region_code: str = "US",
+    region_code: str = "RU",
 ):
     started_at = now_iso()
 
@@ -1621,14 +1876,27 @@ async def director_run(
     radar_result = await mcp_call(
         "search_radar_videos",
         {
-            "language": language,
+            "languages": [
+                language
+            ],
             "max_results_per_query": 10,
-            "region_code": region_code,
         },
     )
 
     radar_videos = extract_items(
         radar_result
+    )
+
+    quota_exceeded = (
+        radar_result.get(
+            "quota_exceeded",
+            False,
+        )
+        if isinstance(
+            radar_result,
+            dict,
+        )
+        else False
     )
 
     # --------------------------------------------------------
@@ -1643,17 +1911,33 @@ async def director_run(
     # 3. TRENDING
     # --------------------------------------------------------
 
-    trending_result = await mcp_call(
-        "search_trending_videos",
-        {
-            "max_results": 30,
-            "region_code": region_code,
-        },
-    )
+    trending_videos = []
 
-    trending_videos = extract_items(
-        trending_result
-    )
+    try:
+        trending_result = await mcp_call(
+            "search_trending_videos",
+            {
+                "max_results": 30,
+                "region_code": region_code,
+            },
+        )
+
+        trending_videos = extract_items(
+            trending_result
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "TRENDING_FAILED error_type=%s",
+            type(exc).__name__,
+        )
+
+        log_event(
+            "trending_collection_failed",
+            {
+                "error_type": type(exc).__name__,
+            },
+        )
 
     # --------------------------------------------------------
     # 4. AI ANALYSIS
@@ -1691,6 +1975,7 @@ async def director_run(
         "radar_count": len(
             radar_videos
         ),
+        "radar_quota_exceeded": quota_exceeded,
         "saved_count": saved_count,
         "trending_count": len(
             trending_videos
@@ -1745,6 +2030,7 @@ async def director_run(
                 radar_videos
             ),
             "saved": saved_count,
+            "quota_exceeded": quota_exceeded,
         },
         "trending": {
             "count": len(
@@ -1925,8 +2211,9 @@ async def director_test():
         "autonomous": AUTONOMOUS,
         "ai_enabled": AI_ENABLED,
         "ai_provider": (
-            "gemini"
+            "openrouter"
             if AI_ENABLED
             else "heuristic"
         ),
+        "ai_model": AI_MODEL,
     }

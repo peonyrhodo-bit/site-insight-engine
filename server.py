@@ -706,6 +706,56 @@ async def radar_videos(
             status_code=500,
         )
 
+# ============================================================
+# RADAR DEBUG
+# ============================================================
+
+@app.get("/radar-debug")
+async def radar_debug(
+    max_results: int = 10,
+    language: str = "ru",
+    hours_back: int = 72,
+):
+
+    try:
+
+        result = await mcp_call(
+            "search_radar_videos",
+            {
+                "max_results": min(
+                    max(max_results, 1),
+                    50,
+                ),
+                "language": language,
+                "hours_back": min(
+                    max(hours_back, 1),
+                    168,
+                ),
+            },
+        )
+
+        return {
+            "raw_type": type(result).__name__,
+            "raw_result": result,
+            "extracted_count": len(
+                extract_items(result)
+            ),
+            "extracted_items": extract_items(result),
+        }
+
+    except Exception as error:
+
+        event(
+            "radar_debug_error",
+            str(error),
+        )
+
+        return JSONResponse(
+            {
+                "error": str(error),
+            },
+            status_code=500,
+        )
 
 # ============================================================
 # SAVE RADAR

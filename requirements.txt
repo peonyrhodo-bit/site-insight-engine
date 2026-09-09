@@ -1,4 +1,5 @@
 fastapi
 uvicorn
+requests
 aiofiles
-mcp<2
+mcp

@@ -1,157 +1,265 @@
-import os
 import json
-import sqlite3
+import logging
 import math
-from pathlib import Path
+import os
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-import aiofiles
+import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-
-
-# ============================================================
-# APP
-# ============================================================
-
-app = FastAPI(title="AI Full-Cycle YouTube System")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 # ============================================================
 # CONFIG
 # ============================================================
 
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "youtube.db"
+
 MCP_URL = os.environ.get(
     "MCP_URL",
-    "https://youtube-mcp-u39z.onrender.com/mcp",
+    "http://youtube-mcp:8002/mcp",
+).strip()
+
+FREE_MODE = (
+    os.environ.get(
+        "FREE_MODE",
+        "true",
+    ).lower()
+    == "true"
 )
 
-FREE_MODE = os.environ.get("FREE_MODE", "true").lower() == "true"
-AUTONOMOUS = os.environ.get("AUTONOMOUS", "false").lower() == "true"
+AUTONOMOUS = (
+    os.environ.get(
+        "AUTONOMOUS",
+        "false",
+    ).lower()
+    == "true"
+)
+
+# AI
+GEMINI_API_KEY = os.environ.get(
+    "GEMINI_API_KEY",
+    "",
+).strip()
+
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.7-flash",
+).strip()
+
+AI_ENABLED = (
+    os.environ.get(
+        "AI_ENABLED",
+        "true",
+    ).lower()
+    == "true"
+    and bool(GEMINI_API_KEY)
+)
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+logger = logging.getLogger(
+    "site-insight-engine"
+)
+
+
+# ============================================================
+# FASTAPI
+# ============================================================
+
+app = FastAPI(
+    title="Site Insight Engine",
+    version="1.0.0",
+)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-DATA_DIR = Path(
-    os.environ.get(
-        "DATA_DIR",
-        str(Path(__file__).parent / "data")
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(
+        DB_PATH,
+        check_same_thread=False,
     )
-)
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn.row_factory = sqlite3.Row
 
-DB_PATH = DATA_DIR / "youtube.db"
-
-
-def now():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return conn
 
 
-def db():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+def init_db() -> None:
+    conn = get_db()
 
+    cursor = conn.cursor()
 
-def init_db():
-    connection = db()
-
-    connection.executescript(
+    cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS videos(
+        CREATE TABLE IF NOT EXISTS videos (
             video_id TEXT PRIMARY KEY,
-            channel_id TEXT,
-            title TEXT,
-            channel_title TEXT,
-            published_at TEXT,
-            language TEXT,
-            first_seen_at TEXT
-        );
+            data_json TEXT,
+            first_seen TEXT,
+            last_seen TEXT
+        )
+        """
+    )
 
-        CREATE TABLE IF NOT EXISTS video_snapshots(
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id TEXT NOT NULL,
-            observed_at TEXT NOT NULL,
-            views INTEGER,
-            likes INTEGER,
-            comments INTEGER,
-            age_hours REAL,
-            views_per_hour REAL
-        );
+            created_at TEXT,
+            video_id TEXT,
+            data_json TEXT
+        )
+        """
+    )
 
-        CREATE INDEX IF NOT EXISTS idx_snap_video
-        ON video_snapshots(video_id);
-
-        CREATE INDEX IF NOT EXISTS idx_snap_time
-        ON video_snapshots(observed_at);
-
-        CREATE TABLE IF NOT EXISTS director_runs(
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS director_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
             language TEXT,
             region_code TEXT,
-            mode TEXT,
-            status TEXT,
-            hypothesis TEXT,
-            reasoning TEXT,
             data_json TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS decisions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            run_id INTEGER,
-            decision_type TEXT,
-            status TEXT,
-            user_note TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS system_events(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            event_type TEXT,
-            message TEXT,
-            data_json TEXT
-        );
+        )
         """
     )
 
-    connection.commit()
-    connection.close()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            decision TEXT,
+            data_json TEXT
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            event_type TEXT,
+            data_json TEXT
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
 
 
 init_db()
 
 
 # ============================================================
-# MCP CLIENT
+# GENERAL HELPERS
 # ============================================================
 
-async def mcp_call(name, args):
+def now_iso() -> str:
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def json_dumps(data: Any) -> str:
+    return json.dumps(
+        data,
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def json_loads_safe(
+    value: str | None,
+    default: Any = None,
+) -> Any:
+    if not value:
+        return default
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+# ============================================================
+# EVENTS
+# ============================================================
+
+def log_event(
+    event_type: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT INTO system_events (
+            created_at,
+            event_type,
+            data_json
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            now_iso(),
+            event_type,
+            json_dumps(data or {}),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# MCP
+# ============================================================
+
+async def mcp_call(
+    name: str,
+    args: dict[str, Any],
+) -> Any:
     """
-    MCP 1.x client.
-
-    Совместимо с youtube-mcp, который сейчас работает
-    на mcp<2.
+    Call a tool on youtube-mcp.
     """
 
-    async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
-
+    async with streamablehttp_client(
+        MCP_URL
+    ) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
         async with ClientSession(
             read_stream,
             write_stream,
@@ -164,343 +272,799 @@ async def mcp_call(name, args):
                 arguments=args,
             )
 
-            if not result.content:
-                raise RuntimeError(
-                    "MCP вернул пустой ответ"
-                )
-
-            # Ищем текстовый JSON-ответ.
-            for item in result.content:
-
-                text = getattr(
-                    item,
-                    "text",
-                    None,
-                )
-
-                if text is None:
-                    continue
-
-                try:
-                    return json.loads(text)
-
-                except json.JSONDecodeError:
-
-                    # Иногда MCP может вернуть обычный текст.
-                    return text
-
-            raise RuntimeError(
-                "MCP вернул ответ без распознаваемого текста"
-            )
+            return result
 
 
 # ============================================================
-# RESPONSE NORMALIZATION
+# MCP RESULT HELPERS
 # ============================================================
 
-def extract_items(data):
-    """
-    Приводит разные варианты MCP-ответа к списку.
-
-    Поддерживает:
-        [...]
-        {"videos": [...]}
-        {"channels": [...]}
-        {"results": [...]}
-        {"items": [...]}
-        {"data": [...]}
-
-    Если MCP вернул один объект-видео/канал:
-        {"video_id": "...", ...}
-
-    он тоже превращается в список из одного объекта.
-    """
-
-    if data is None:
+def extract_items(
+    result: Any,
+) -> list[dict[str, Any]]:
+    if result is None:
         return []
 
-    if isinstance(data, list):
-        return data
+    if isinstance(result, list):
+        return result
 
-    if isinstance(data, dict):
+    if isinstance(result, dict):
+        items = result.get("items")
 
-        for key in (
-            "videos",
-            "channels",
-            "results",
-            "items",
-            "data",
-        ):
+        if isinstance(items, list):
+            return items
 
-            value = data.get(key)
+        return [result]
 
-            if isinstance(value, list):
-                return value
+    structured = getattr(
+        result,
+        "structuredContent",
+        None,
+    )
 
-        # MCP может вернуть один объект напрямую.
-        if (
-            "video_id" in data
-            or "channel_id" in data
-        ):
-            return [data]
+    if isinstance(structured, dict):
+        items = structured.get(
+            "items"
+        )
+
+        if isinstance(items, list):
+            return items
+
+    content = getattr(
+        result,
+        "content",
+        None,
+    )
+
+    if content:
+        for item in content:
+            text = getattr(
+                item,
+                "text",
+                None,
+            )
+
+            if not text:
+                continue
+
+            try:
+                parsed = json.loads(text)
+
+                if isinstance(parsed, list):
+                    return parsed
+
+                if isinstance(parsed, dict):
+                    items = parsed.get(
+                        "items"
+                    )
+
+                    if isinstance(items, list):
+                        return items
+
+                    return [parsed]
+
+            except Exception:
+                continue
 
     return []
 
-def extract_object(data):
-    """
-    Приводит ответ с одним объектом к dict.
-    """
 
-    if data is None:
-        return {}
+def extract_object(
+    result: Any,
+) -> dict[str, Any]:
+    items = extract_items(result)
 
-    if isinstance(data, dict):
-        return data
+    if items:
+        if len(items) == 1:
+            return items[0]
 
-    if isinstance(data, list) and data:
-
-        if isinstance(data[0], dict):
-            return data[0]
+        return {
+            "items": items
+        }
 
     return {}
-
-
-# ============================================================
-# EVENTS
-# ============================================================
-
-def event(kind, message, data=None):
-
-    connection = db()
-
-    connection.execute(
-        """
-        INSERT INTO system_events(
-            created_at,
-            event_type,
-            message,
-            data_json
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            now(),
-            kind,
-            message,
-            json.dumps(
-                data or {},
-                ensure_ascii=False,
-            ),
-        ),
-    )
-
-    connection.commit()
-    connection.close()
 
 
 # ============================================================
 # SNAPSHOTS
 # ============================================================
 
-def save_snapshot(videos, language):
+def save_snapshot(
+    videos: list[dict[str, Any]],
+) -> int:
+    conn = get_db()
 
-    observed_at = now()
+    created_at = now_iso()
 
-    connection = db()
-
-    saved_count = 0
+    count = 0
 
     for video in videos:
-
-        if not isinstance(video, dict):
-            continue
-
-        video_id = video.get("video_id")
+        video_id = video.get(
+            "video_id"
+        ) or video.get("id")
 
         if not video_id:
             continue
 
-        connection.execute(
+        video_id = str(video_id)
+
+        data_json = json_dumps(video)
+
+        cursor = conn.cursor()
+
+        cursor.execute(
             """
-            INSERT OR IGNORE INTO videos(
+            INSERT INTO videos (
                 video_id,
-                channel_id,
-                title,
-                channel_title,
-                published_at,
-                language,
-                first_seen_at
+                data_json,
+                first_seen,
+                last_seen
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(video_id)
+            DO UPDATE SET
+                data_json = excluded.data_json,
+                last_seen = excluded.last_seen
             """,
             (
                 video_id,
-                video.get("channel_id"),
-                video.get("title"),
-                video.get("channel_title"),
-                video.get("published_at"),
-                language,
-                observed_at,
+                data_json,
+                created_at,
+                created_at,
             ),
         )
 
-        connection.execute(
+        cursor.execute(
             """
-            INSERT INTO video_snapshots(
+            INSERT INTO video_snapshots (
+                created_at,
                 video_id,
-                observed_at,
-                views,
-                likes,
-                comments,
-                age_hours,
-                views_per_hour
+                data_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?)
             """,
             (
+                created_at,
                 video_id,
-                observed_at,
-                int(video.get("views") or 0),
-                int(video.get("likes") or 0),
-                int(video.get("comments") or 0),
-                video.get("age_hours"),
-                video.get("views_per_hour"),
+                data_json,
             ),
         )
 
-        saved_count += 1
+        count += 1
 
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
 
-    return {
-        "saved_count": saved_count,
-        "observed_at": observed_at,
-    }
+    return count
 
 
 # ============================================================
-# DIRECTOR SCORE
+# HEURISTIC ANALYSIS
 # ============================================================
 
-def score(video):
-
+def score(
+    video: dict[str, Any],
+) -> float:
     views = float(
-        video.get("views") or 0
-    )
-
-    speed = float(
-        video.get("views_per_hour") or 0
+        video.get(
+            "views",
+            video.get(
+                "viewCount",
+                0,
+            ),
+        )
+        or 0
     )
 
     likes = float(
-        video.get("likes") or 0
+        video.get(
+            "likes",
+            video.get(
+                "likeCount",
+                0,
+            ),
+        )
+        or 0
     )
 
     comments = float(
-        video.get("comments") or 0
-    )
-
-    engagement = (
-        (likes + comments * 3) / views
-        if views
-        else 0
+        video.get(
+            "comments",
+            video.get(
+                "commentCount",
+                0,
+            ),
+        )
+        or 0
     )
 
     return (
-        math.log1p(speed) * 0.65
-        + math.log1p(views) * 0.15
-        + min(engagement * 1000, 20) * 0.20
+        math.log10(
+            max(views, 1)
+        )
+        + 0.5
+        * math.log10(
+            max(likes, 1)
+        )
+        + 0.5
+        * math.log10(
+            max(comments, 1)
+        )
     )
 
 
-def make_hypothesis(
-    videos,
-    language,
-    region,
-):
-
+def make_heuristic_hypothesis(
+    videos: list[dict[str, Any]],
+) -> dict[str, Any]:
     ranked = sorted(
         videos,
         key=score,
         reverse=True,
-    )[:10]
-
-    if not ranked:
-
-        return {
-            "hypothesis": (
-                "Недостаточно данных для гипотезы."
-            ),
-            "reasoning": (
-                "Радар не вернул подходящих видео."
-            ),
-            "top_videos": [],
-        }
-
-    names = [
-        video.get("title", "")
-        for video in ranked[:5]
-    ]
-
-    hypothesis = (
-        f"В сегменте {language} стоит проверить "
-        "темы и форматы, представленные "
-        "наиболее быстрорастущими видео."
     )
 
-    reasoning = (
-        f"Проанализировано {len(videos)} видео. "
-        "Ранжирование учитывает скорость просмотров, "
-        "общий объём просмотров и относительную "
-        "вовлечённость. "
-        "Это гипотеза для эксперимента, "
-        "а не прогноз успеха. "
-        f"Регион: {region}. "
-        "Сильнейшие сигналы: "
-        + "; ".join(names)
-    )
+    top = ranked[:10]
 
-    top_videos = []
+    topics = []
 
-    for video in ranked:
-
-        item = dict(video)
-
-        item["director_score"] = round(
-            score(video),
-            4,
+    for video in top:
+        title = video.get(
+            "title",
+            "",
         )
 
-        top_videos.append(item)
+        if title:
+            topics.append(title)
 
     return {
-        "hypothesis": hypothesis,
-        "reasoning": reasoning,
-        "top_videos": top_videos,
+        "provider": "heuristic",
+        "hypothesis": (
+            "The strongest current signals are "
+            "concentrated among the highest-ranked "
+            "videos in the collected radar."
+        ),
+        "reasoning": (
+            "Ranking combines logarithmic views, "
+            "likes and comments. This is a signal "
+            "for analysis, not a prediction of future success."
+        ),
+        "topics": topics[:10],
+        "formats": [],
+        "experiments": [],
+        "confidence": 0.3,
     }
+
+
+# ============================================================
+# GEMINI AI
+# ============================================================
+
+def ai_error_message(
+    response: requests.Response,
+) -> str:
+    """
+    Return a safe AI error.
+    Never include the API key.
+    """
+
+    try:
+        data = response.json()
+
+        error = data.get(
+            "error",
+            {},
+        )
+
+        message = error.get(
+            "message",
+            "",
+        )
+
+        return str(message)[:500]
+
+    except Exception:
+        return (
+            f"HTTP {response.status_code}"
+        )
+
+
+def gemini_generate_json(
+    system_instruction: str,
+    prompt: str,
+) -> dict[str, Any]:
+    """
+    Call Gemini using the REST API.
+
+    API key is sent only in the HTTP header.
+    It is never included in logs.
+    """
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not configured"
+        )
+
+    url = (
+        "https://generativelanguage.googleapis.com"
+        f"/v1beta/models/{GEMINI_MODEL}:generateContent"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+
+    payload = {
+        "system_instruction": {
+            "parts": [
+                {
+                    "text": system_instruction
+                }
+            ]
+        },
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+
+    except requests.RequestException as exc:
+        logger.error(
+            "AI_REQUEST_ERROR provider=gemini error_type=%s",
+            type(exc).__name__,
+        )
+
+        raise RuntimeError(
+            "Gemini request failed"
+        ) from exc
+
+    if not response.ok:
+        safe_message = ai_error_message(
+            response
+        )
+
+        logger.error(
+            "AI_API_ERROR provider=gemini status=%s message=%s",
+            response.status_code,
+            safe_message,
+        )
+
+        raise RuntimeError(
+            f"Gemini API error: {safe_message}"
+        )
+
+    try:
+        data = response.json()
+
+    except ValueError as exc:
+        logger.error(
+            "AI_INVALID_JSON_RESPONSE provider=gemini"
+        )
+
+        raise RuntimeError(
+            "Gemini returned invalid JSON"
+        ) from exc
+
+    candidates = data.get(
+        "candidates",
+        [],
+    )
+
+    if not candidates:
+        raise RuntimeError(
+            "Gemini returned no candidates"
+        )
+
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+
+    text_parts = []
+
+    for part in parts:
+        text = part.get("text")
+
+        if text:
+            text_parts.append(text)
+
+    text = "\n".join(
+        text_parts
+    ).strip()
+
+    if not text:
+        raise RuntimeError(
+            "Gemini returned empty content"
+        )
+
+    try:
+        return json.loads(text)
+
+    except json.JSONDecodeError:
+        # Try to recover JSON enclosed in markdown.
+        cleaned = text.strip()
+
+        if cleaned.startswith(
+            "```"
+        ):
+            cleaned = (
+                cleaned
+                .replace(
+                    "```json",
+                    "",
+                    1,
+                )
+                .replace(
+                    "```",
+                    "",
+                )
+                .strip()
+            )
+
+            try:
+                return json.loads(
+                    cleaned
+                )
+
+            except json.JSONDecodeError:
+                pass
+
+        raise RuntimeError(
+            "Gemini returned non-JSON content"
+        )
+
+
+# ============================================================
+# AI ANALYSIS
+# ============================================================
+
+def make_ai_hypothesis(
+    videos: list[dict[str, Any]],
+    trends: list[dict[str, Any]],
+    language: str,
+    region_code: str,
+) -> dict[str, Any]:
+    """
+    Ask Gemini to analyze the collected YouTube signals.
+
+    The AI is an analyst.
+    It must not pretend to know which video will go viral.
+    """
+
+    ranked_videos = sorted(
+        videos,
+        key=score,
+        reverse=True,
+    )[:20]
+
+    ranked_trends = sorted(
+        trends,
+        key=score,
+        reverse=True,
+    )[:10]
+
+    compact_videos = []
+
+    for video in ranked_videos:
+        compact_videos.append(
+            {
+                "title": video.get(
+                    "title",
+                    "",
+                ),
+                "channel": video.get(
+                    "channel_title",
+                    "",
+                ),
+                "views": video.get(
+                    "views",
+                    0,
+                ),
+                "likes": video.get(
+                    "likes",
+                    0,
+                ),
+                "comments": video.get(
+                    "comments",
+                    0,
+                ),
+                "published_at": video.get(
+                    "published_at",
+                    "",
+                ),
+                "language": video.get(
+                    "language",
+                    language,
+                ),
+                "query": video.get(
+                    "query",
+                    "",
+                ),
+            }
+        )
+
+    compact_trends = []
+
+    for video in ranked_trends:
+        snippet = video.get(
+            "snippet",
+            {},
+        )
+
+        statistics = video.get(
+            "statistics",
+            {},
+        )
+
+        compact_trends.append(
+            {
+                "title": snippet.get(
+                    "title",
+                    video.get(
+                        "title",
+                        "",
+                    ),
+                ),
+                "channel": snippet.get(
+                    "channelTitle",
+                    video.get(
+                        "channel_title",
+                        "",
+                    ),
+                ),
+                "views": int(
+                    statistics.get(
+                        "viewCount",
+                        video.get(
+                            "views",
+                            0,
+                        ),
+                    )
+                    or 0
+                ),
+                "likes": int(
+                    statistics.get(
+                        "likeCount",
+                        video.get(
+                            "likes",
+                            0,
+                        ),
+                    )
+                    or 0
+                ),
+                "comments": int(
+                    statistics.get(
+                        "commentCount",
+                        video.get(
+                            "comments",
+                            0,
+                        ),
+                    )
+                    or 0
+                ),
+            }
+        )
+
+    system_instruction = """
+You are the analytical brain of an AI Director for YouTube.
+
+Your task is to analyze supplied YouTube observations.
+
+Important rules:
+
+1. Use ONLY the supplied data.
+2. Do not invent facts.
+3. Do not claim that you can predict viral success.
+4. Treat views, likes, comments and other metrics as signals.
+5. Look for evidence of growing or interesting demand.
+6. Prefer repeated signals over a single unusual video.
+7. Consider competition and format when evidence exists.
+8. Do not recommend news.
+9. Do not recommend politics.
+10. Do not recommend 18+ content.
+11. Moderate narrative violence may exist, but do not recommend gore,
+    torture, graphic injury, glorification or incitement of violence.
+12. If evidence is weak, explicitly say that evidence is insufficient.
+13. Confidence means confidence in the interpretation of the supplied
+    evidence, NOT probability of future viral success.
+
+Return ONLY valid JSON with this structure:
+
+{
+  "hypothesis": "short statement",
+  "reasoning": "evidence-based explanation",
+  "topics": ["topic 1", "topic 2"],
+  "formats": ["format 1", "format 2"],
+  "experiments": ["experiment 1", "experiment 2"],
+  "confidence": 0.0
+}
+"""
+
+    prompt = json_dumps(
+        {
+            "task": (
+                "Analyze current YouTube signals "
+                "for the AI Director."
+            ),
+            "language": language,
+            "region_code": region_code,
+            "radar_videos": compact_videos,
+            "trending_videos": compact_trends,
+        }
+    )
+
+    result = gemini_generate_json(
+        system_instruction=system_instruction,
+        prompt=prompt,
+    )
+
+    # Normalize result
+    return {
+        "provider": "gemini",
+        "model": GEMINI_MODEL,
+        "hypothesis": str(
+            result.get(
+                "hypothesis",
+                "",
+            )
+        ),
+        "reasoning": str(
+            result.get(
+                "reasoning",
+                "",
+            )
+        ),
+        "topics": (
+            result.get(
+                "topics",
+                [],
+            )
+            if isinstance(
+                result.get(
+                    "topics",
+                    [],
+                ),
+                list,
+            )
+            else []
+        ),
+        "formats": (
+            result.get(
+                "formats",
+                [],
+            )
+            if isinstance(
+                result.get(
+                    "formats",
+                    [],
+                ),
+                list,
+            )
+            else []
+        ),
+        "experiments": (
+            result.get(
+                "experiments",
+                [],
+            )
+            if isinstance(
+                result.get(
+                    "experiments",
+                    [],
+                ),
+                list,
+            )
+            else []
+        ),
+        "confidence": float(
+            result.get(
+                "confidence",
+                0.0,
+            )
+            or 0.0
+        ),
+    }
+
+
+def make_hypothesis(
+    videos: list[dict[str, Any]],
+    language: str,
+    region_code: str,
+    trends: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Use Gemini when available.
+    Otherwise fall back to the local heuristic.
+    """
+
+    trends = trends or []
+
+    if not AI_ENABLED:
+        return make_heuristic_hypothesis(
+            videos
+        )
+
+    try:
+        result = make_ai_hypothesis(
+            videos=videos,
+            trends=trends,
+            language=language,
+            region_code=region_code,
+        )
+
+        log_event(
+            "ai_analysis_completed",
+            {
+                "provider": "gemini",
+                "model": GEMINI_MODEL,
+            },
+        )
+
+        return result
+
+    except Exception as exc:
+        logger.error(
+            "AI_ANALYSIS_FAILED provider=gemini error_type=%s",
+            type(exc).__name__,
+        )
+
+        log_event(
+            "ai_analysis_failed",
+            {
+                "provider": "gemini",
+                "error_type": type(exc).__name__,
+            },
+        )
+
+        fallback = make_heuristic_hypothesis(
+            videos
+        )
+
+        fallback["ai_fallback_reason"] = (
+            "Gemini analysis was unavailable; "
+            "local heuristic used."
+        )
+
+        return fallback
 
 
 # ============================================================
 # HOME
 # ============================================================
 
-@app.get("/")
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
 async def home():
-
-    index_path = (
-        Path(__file__).parent / "index.html"
-    )
-
-    async with aiofiles.open(
-        index_path,
-        "r",
-        encoding="utf-8",
-    ) as file:
-
-        return HTMLResponse(
-            await file.read()
-        )
+    return """
+    <html>
+        <head>
+            <title>AI YouTube System</title>
+        </head>
+        <body>
+            <h1>Site Insight Engine</h1>
+            <p>AI YouTube analytics engine is running.</p>
+        </body>
+    </html>
+    """
 
 
 # ============================================================
@@ -508,37 +1072,104 @@ async def home():
 # ============================================================
 
 @app.get("/health")
-def health():
-
+async def health():
     return {
         "status": "ok",
+        "service": "site-insight-engine",
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
-        "mcp_url": MCP_URL,
+        "ai_enabled": AI_ENABLED,
+        "ai_provider": (
+            "gemini"
+            if AI_ENABLED
+            else "heuristic"
+        ),
     }
 
-
-# ============================================================
-# SYSTEM STATUS
-# ============================================================
 
 @app.get("/system/status")
-def status():
-
+async def system_status():
     return {
-        "system": "AI Full-Cycle YouTube System",
-        "phase": "free-working-model",
-
+        "status": "ok",
+        "service": "site-insight-engine",
+        "mcp_url": MCP_URL,
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
-
-        "wallet_balance": 0,
-        "paid_tools_enabled": False,
-
-        "website_code_modification_by_ai": False,
-        "youtube_channel_deletion_by_ai": False,
-        "published_video_deletion_by_ai": False,
+        "ai": {
+            "enabled": AI_ENABLED,
+            "provider": (
+                "gemini"
+                if AI_ENABLED
+                else "heuristic"
+            ),
+            "model": GEMINI_MODEL,
+        },
     }
+
+
+# ============================================================
+# AI STATUS
+# ============================================================
+
+@app.get("/ai/status")
+async def ai_status():
+    return {
+        "enabled": AI_ENABLED,
+        "provider": (
+            "gemini"
+            if AI_ENABLED
+            else "heuristic"
+        ),
+        "model": GEMINI_MODEL,
+        "free_mode": FREE_MODE,
+        "api_key_configured": bool(
+            GEMINI_API_KEY
+        ),
+    }
+
+
+@app.get("/ai/test")
+async def ai_test():
+    if not AI_ENABLED:
+        return {
+            "ok": False,
+            "enabled": False,
+            "provider": "heuristic",
+            "message": (
+                "Gemini is not enabled. "
+                "Configure GEMINI_API_KEY."
+            ),
+        }
+
+    try:
+        result = gemini_generate_json(
+            system_instruction=(
+                "Return valid JSON only. "
+                "The JSON must contain one key named "
+                "\"message\"."
+            ),
+            prompt=(
+                "Return a JSON object with "
+                "\"message\": \"AI connection works\"."
+            ),
+        )
+
+        return {
+            "ok": True,
+            "provider": "gemini",
+            "model": GEMINI_MODEL,
+            "result": result,
+        }
+
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "provider": "gemini",
+                "error": str(exc),
+            },
+        )
 
 
 # ============================================================
@@ -548,36 +1179,29 @@ def status():
 @app.get("/search-channels")
 async def search_channels(
     query: str,
-    max_results: int = 20,
+    max_results: int = 10,
 ):
-
     try:
-
         result = await mcp_call(
             "search_channels",
             {
                 "query": query,
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
+                "max_results": max_results,
             },
         )
 
-        return extract_items(result)
+        return {
+            "items": extract_items(
+                result
+            )
+        }
 
-    except Exception as error:
-
-        event(
-            "search_channels_error",
-            str(error),
-        )
-
+    except Exception as exc:
         return JSONResponse(
-            {
-                "error": str(error),
-            },
             status_code=500,
+            content={
+                "error": str(exc)
+            },
         )
 
 
@@ -588,46 +1212,31 @@ async def search_channels(
 @app.get("/search-videos")
 async def search_videos(
     query: str,
-    max_results: int = 20,
-    published_after: str | None = None,
-    published_before: str | None = None,
-    region_code: str | None = None,
-    relevance_language: str | None = None,
-    order: str = "viewCount",
+    max_results: int = 10,
+    region_code: str = "US",
 ):
-
     try:
-
         result = await mcp_call(
             "search_videos",
             {
                 "query": query,
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
-                "published_after": published_after,
-                "published_before": published_before,
+                "max_results": max_results,
                 "region_code": region_code,
-                "relevance_language": relevance_language,
-                "order": order,
             },
         )
 
-        return extract_items(result)
+        return {
+            "items": extract_items(
+                result
+            )
+        }
 
-    except Exception as error:
-
-        event(
-            "search_videos_error",
-            str(error),
-        )
-
+    except Exception as exc:
         return JSONResponse(
-            {
-                "error": str(error),
-            },
             status_code=500,
+            content={
+                "error": str(exc)
+            },
         )
 
 
@@ -640,34 +1249,27 @@ async def trending_videos(
     max_results: int = 50,
     region_code: str = "US",
 ):
-
     try:
-
         result = await mcp_call(
             "search_trending_videos",
             {
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
+                "max_results": max_results,
                 "region_code": region_code,
             },
         )
 
-        return extract_items(result)
+        return {
+            "items": extract_items(
+                result
+            )
+        }
 
-    except Exception as error:
-
-        event(
-            "trending_error",
-            str(error),
-        )
-
+    except Exception as exc:
         return JSONResponse(
-            {
-                "error": str(error),
-            },
             status_code=500,
+            content={
+                "error": str(exc)
+            },
         )
 
 
@@ -677,43 +1279,36 @@ async def trending_videos(
 
 @app.get("/radar-videos")
 async def radar_videos(
-    max_results: int = 50,
     language: str = "ru",
-    hours_back: int = 72,
+    max_results_per_query: int = 10,
+    region_code: str = "US",
 ):
-
     try:
-
         result = await mcp_call(
             "search_radar_videos",
             {
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
                 "language": language,
-                "hours_back": min(
-                    max(hours_back, 1),
-                    168,
+                "max_results_per_query": (
+                    max_results_per_query
                 ),
+                "region_code": region_code,
             },
         )
 
-        return extract_items(result)
+        return {
+            "items": extract_items(
+                result
+            )
+        }
 
-    except Exception as error:
-
-        event(
-            "radar_error",
-            str(error),
-        )
-
+    except Exception as exc:
         return JSONResponse(
-            {
-                "error": str(error),
-            },
             status_code=500,
+            content={
+                "error": str(exc)
+            },
         )
+
 
 # ============================================================
 # RADAR DEBUG
@@ -721,90 +1316,86 @@ async def radar_videos(
 
 @app.get("/radar-debug")
 async def radar_debug(
-    max_results: int = 10,
     language: str = "ru",
-    hours_back: int = 72,
+    max_results_per_query: int = 10,
+    region_code: str = "US",
 ):
-
     try:
-
         result = await mcp_call(
             "search_radar_videos",
             {
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
                 "language": language,
-                "hours_back": min(
-                    max(hours_back, 1),
-                    168,
+                "max_results_per_query": (
+                    max_results_per_query
                 ),
+                "region_code": region_code,
             },
+        )
+
+        items = extract_items(
+            result
         )
 
         return {
-            "raw_type": type(result).__name__,
-            "raw_result": result,
-            "extracted_count": len(
-                extract_items(result)
-            ),
-            "extracted_items": extract_items(result),
+            "ok": True,
+            "count": len(items),
+            "items": items[:20],
         }
 
-    except Exception as error:
-
-        event(
-            "radar_debug_error",
-            str(error),
-        )
-
+    except Exception as exc:
         return JSONResponse(
-            {
-                "error": str(error),
-            },
             status_code=500,
-        )
-
-# ============================================================
-# SAVE RADAR
-# ============================================================
-
-@app.post("/radar-save")
-async def radar_save(payload: dict):
-
-    videos = payload.get(
-        "videos",
-        [],
-    )
-
-    if not videos:
-
-        return JSONResponse(
-            {
-                "error": "Нет видео для сохранения",
+            content={
+                "ok": False,
+                "error": str(exc),
             },
-            status_code=400,
         )
 
-    result = save_snapshot(
-        videos,
-        payload.get(
-            "language",
-            "unknown",
-        ),
-    )
 
-    event(
-        "radar_saved",
-        "Сохранено наблюдение радара",
-        result,
-    )
+# ============================================================
+# RADAR SAVE
+# ============================================================
 
-    return {
-        "status": "ok",
-        **result,
-    }
+@app.get("/radar-save")
+async def radar_save(
+    language: str = "ru",
+    max_results_per_query: int = 10,
+    region_code: str = "US",
+):
+    try:
+        result = await mcp_call(
+            "search_radar_videos",
+            {
+                "language": language,
+                "max_results_per_query": (
+                    max_results_per_query
+                ),
+                "region_code": region_code,
+            },
+        )
+
+        items = extract_items(
+            result
+        )
+
+        saved = save_snapshot(
+            items
+        )
+
+        return {
+            "ok": True,
+            "found": len(items),
+            "saved": saved,
+        }
+
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
 
 
 # ============================================================
@@ -812,49 +1403,40 @@ async def radar_save(payload: dict):
 # ============================================================
 
 @app.get("/radar-history")
-def radar_history(
+async def radar_history(
     limit: int = 100,
 ):
+    limit = max(
+        1,
+        min(int(limit), 1000),
+    )
 
-    connection = db()
+    conn = get_db()
 
-    rows = connection.execute(
+    rows = conn.execute(
         """
-        SELECT
-            v.video_id,
-            v.title,
-            v.channel_title,
-            v.published_at,
-            v.language,
-            s.observed_at,
-            s.views,
-            s.likes,
-            s.comments,
-            s.age_hours,
-            s.views_per_hour
-        FROM video_snapshots s
-        JOIN videos v
-            ON v.video_id = s.video_id
-        ORDER BY s.observed_at DESC
+        SELECT *
+        FROM video_snapshots
+        ORDER BY id DESC
         LIMIT ?
         """,
-        (
-            min(
-                max(limit, 1),
-                500,
-            ),
-        ),
+        (limit,),
     ).fetchall()
 
-    connection.close()
+    conn.close()
 
-    return {
-        "count": len(rows),
-        "snapshots": [
-            dict(row)
-            for row in rows
-        ],
-    }
+    return [
+        {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "video_id": row["video_id"],
+            "data": json_loads_safe(
+                row["data_json"],
+                {},
+            ),
+        }
+        for row in rows
+    ]
 
 
 # ============================================================
@@ -862,180 +1444,55 @@ def radar_history(
 # ============================================================
 
 @app.get("/database-status")
-def database_status():
+async def database_status():
+    conn = get_db()
 
-    connection = db()
+    videos_count = conn.execute(
+        "SELECT COUNT(*) FROM videos"
+    ).fetchone()[0]
 
-    result = {
-        "status": "ok",
+    snapshots_count = conn.execute(
+        "SELECT COUNT(*) FROM video_snapshots"
+    ).fetchone()[0]
 
-        "database": str(
-            DB_PATH
-        ),
+    runs_count = conn.execute(
+        "SELECT COUNT(*) FROM director_runs"
+    ).fetchone()[0]
 
-        "videos": connection.execute(
-            "SELECT COUNT(*) FROM videos"
-        ).fetchone()[0],
+    events_count = conn.execute(
+        "SELECT COUNT(*) FROM system_events"
+    ).fetchone()[0]
 
-        "snapshots": connection.execute(
-            "SELECT COUNT(*) FROM video_snapshots"
-        ).fetchone()[0],
+    conn.close()
 
-        "director_runs": connection.execute(
-            "SELECT COUNT(*) FROM director_runs"
-        ).fetchone()[0],
+    return {
+        "database": str(DB_PATH),
+        "videos": videos_count,
+        "snapshots": snapshots_count,
+        "director_runs": runs_count,
+        "events": events_count,
     }
-
-    connection.close()
-
-    return result
 
 
 # ============================================================
-# CHANNEL ANALYSIS
+# ANALYZE
 # ============================================================
 
 @app.get("/analyze")
 async def analyze(
-    channel_id: str,
-):
-
-    try:
-
-        result = await mcp_call(
-            "get_channel_stats",
-            {
-                "channel_id": channel_id,
-            },
-        )
-
-        return extract_object(result)
-
-    except Exception as error:
-
-        event(
-            "channel_analysis_error",
-            str(error),
-        )
-
-        return JSONResponse(
-            {
-                "error": str(error),
-            },
-            status_code=500,
-        )
-
-# ============================================================
-# DIRECTOR DEBUG
-# ============================================================
-
-@app.get("/director-debug")
-async def director_debug():
-
-    result = {
-        "radar": None,
-        "trending": None,
-    }
-
-    # --------------------------------------------------------
-    # TEST 1 — RADAR
-    # --------------------------------------------------------
-
-    try:
-
-        radar_result = await mcp_call(
-            "search_radar_videos",
-            {
-                "max_results": 10,
-                "language": "ru",
-                "hours_back": 72,
-            },
-        )
-
-        radar_videos = extract_items(
-            radar_result
-        )
-
-        result["radar"] = {
-            "status": "ok",
-            "raw_type": type(radar_result).__name__,
-            "count": len(radar_videos),
-            "videos": radar_videos,
-        }
-
-    except Exception as error:
-
-        result["radar"] = {
-            "status": "error",
-            "error": str(error),
-            "error_type": type(error).__name__,
-        }
-
-    # --------------------------------------------------------
-    # TEST 2 — TRENDING
-    # --------------------------------------------------------
-
-    try:
-
-        trends_result = await mcp_call(
-            "search_trending_videos",
-            {
-                "max_results": 10,
-                "region_code": "RU",
-            },
-        )
-
-        trends = extract_items(
-            trends_result
-        )
-
-        result["trending"] = {
-            "status": "ok",
-            "raw_type": type(trends_result).__name__,
-            "count": len(trends),
-            "videos": trends,
-        }
-
-    except Exception as error:
-
-        result["trending"] = {
-            "status": "error",
-            "error": str(error),
-            "error_type": type(error).__name__,
-        }
-
-    return result
-
-# ============================================================
-# DIRECTOR RUN
-# ============================================================
-
-@app.post("/director/run")
-async def director_run(
     language: str = "ru",
-    region_code: str = "RU",
-    hours_back: int = 72,
-    max_results: int = 50,
+    max_results_per_query: int = 10,
+    region_code: str = "US",
 ):
-
     try:
-
-        # ----------------------------------------------------
-        # 1. Growth Radar
-        # ----------------------------------------------------
-
         radar_result = await mcp_call(
             "search_radar_videos",
             {
-                "max_results": min(
-                    max(max_results, 1),
-                    50,
-                ),
                 "language": language,
-                "hours_back": min(
-                    max(hours_back, 1),
-                    168,
+                "max_results_per_query": (
+                    max_results_per_query
                 ),
+                "region_code": region_code,
             },
         )
 
@@ -1043,160 +1500,267 @@ async def director_run(
             radar_result
         )
 
-        # ----------------------------------------------------
-        # 2. Save observation
-        # ----------------------------------------------------
-
-        snapshot_result = save_snapshot(
-            videos,
-            language,
+        hypothesis = make_hypothesis(
+            videos=videos,
+            language=language,
+            region_code=region_code,
+            trends=[],
         )
 
-        # ----------------------------------------------------
-        # 3. Trending
-        # ----------------------------------------------------
+        return {
+            "ok": True,
+            "videos_count": len(videos),
+            "analysis": hypothesis,
+        }
 
-        trends_result = await mcp_call(
-            "search_trending_videos",
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
+
+
+# ============================================================
+# DIRECTOR DEBUG
+# ============================================================
+
+@app.get("/director-debug")
+async def director_debug(
+    language: str = "ru",
+    region_code: str = "US",
+):
+    result = {
+        "radar": None,
+        "trending": None,
+        "ai": {
+            "enabled": AI_ENABLED,
+            "provider": (
+                "gemini"
+                if AI_ENABLED
+                else "heuristic"
+            ),
+            "model": GEMINI_MODEL,
+        },
+    }
+
+    try:
+        radar = await mcp_call(
+            "search_radar_videos",
             {
-                "max_results": 25,
+                "language": language,
+                "max_results_per_query": 10,
                 "region_code": region_code,
             },
         )
 
-        trends = extract_items(
-            trends_result
-        )
-
-        # ----------------------------------------------------
-        # 4. Hypothesis
-        # ----------------------------------------------------
-
-        hypothesis = make_hypothesis(
-            videos,
-            language,
-            region_code,
-        )
-
-        # ----------------------------------------------------
-        # 5. Save run
-        # ----------------------------------------------------
-
-        connection = db()
-
-        cursor = connection.execute(
-            """
-            INSERT INTO director_runs(
-                created_at,
-                language,
-                region_code,
-                mode,
-                status,
-                hypothesis,
-                reasoning,
-                data_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                now(),
-                language,
-                region_code,
-                "FREE_ONLY",
-                "completed",
-                hypothesis["hypothesis"],
-                hypothesis["reasoning"],
-                json.dumps(
-                    {
-                        "radar_count": len(
-                            videos
-                        ),
-                        "trends_count": len(
-                            trends
-                        ),
-                        "snapshot": snapshot_result,
-                        "top_videos": hypothesis[
-                            "top_videos"
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
+        result["radar"] = {
+            "ok": True,
+            "count": len(
+                extract_items(radar)
             ),
-        )
-
-        run_id = cursor.lastrowid
-
-        connection.commit()
-        connection.close()
-
-        # ----------------------------------------------------
-        # 6. Event
-        # ----------------------------------------------------
-
-        event(
-            "director_run",
-            "AI Director завершил аналитический цикл",
-            {
-                "run_id": run_id,
-                "radar_count": len(videos),
-                "trends_count": len(trends),
-            },
-        )
-
-        # ----------------------------------------------------
-        # 7. Next action
-        # ----------------------------------------------------
-
-        if AUTONOMOUS:
-
-            next_action = (
-                "Сформировать контент по гипотезе"
-            )
-
-        else:
-
-            next_action = (
-                "Ожидается решение пользователя"
-            )
-
-        return {
-            "status": "completed",
-
-            "run_id": run_id,
-
-            "mode": "FREE_ONLY",
-
-            "hypothesis": hypothesis[
-                "hypothesis"
-            ],
-
-            "reasoning": hypothesis[
-                "reasoning"
-            ],
-
-            "top_videos": hypothesis[
-                "top_videos"
-            ],
-
-            "trends": trends[:10],
-
-            "next_action": next_action,
         }
 
-    except Exception as error:
+    except Exception as exc:
+        result["radar"] = {
+            "ok": False,
+            "error": str(exc),
+        }
 
-        event(
-            "director_error",
-            str(error),
-        )
-
-        return JSONResponse(
+    try:
+        trending = await mcp_call(
+            "search_trending_videos",
             {
-                "status": "error",
-                "error": str(error),
+                "max_results": 20,
+                "region_code": region_code,
             },
-            status_code=500,
         )
+
+        result["trending"] = {
+            "ok": True,
+            "count": len(
+                extract_items(trending)
+            ),
+        }
+
+    except Exception as exc:
+        result["trending"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+
+    return result
+
+
+# ============================================================
+# DIRECTOR RUN
+# ============================================================
+
+@app.post("/director/run")
+@app.get("/director/run")
+async def director_run(
+    language: str = "ru",
+    region_code: str = "US",
+):
+    started_at = now_iso()
+
+    log_event(
+        "director_run_started",
+        {
+            "language": language,
+            "region_code": region_code,
+        },
+    )
+
+    # --------------------------------------------------------
+    # 1. RADAR
+    # --------------------------------------------------------
+
+    radar_result = await mcp_call(
+        "search_radar_videos",
+        {
+            "language": language,
+            "max_results_per_query": 10,
+            "region_code": region_code,
+        },
+    )
+
+    radar_videos = extract_items(
+        radar_result
+    )
+
+    # --------------------------------------------------------
+    # 2. SAVE RADAR SNAPSHOT
+    # --------------------------------------------------------
+
+    saved_count = save_snapshot(
+        radar_videos
+    )
+
+    # --------------------------------------------------------
+    # 3. TRENDING
+    # --------------------------------------------------------
+
+    trending_result = await mcp_call(
+        "search_trending_videos",
+        {
+            "max_results": 30,
+            "region_code": region_code,
+        },
+    )
+
+    trending_videos = extract_items(
+        trending_result
+    )
+
+    # --------------------------------------------------------
+    # 4. AI ANALYSIS
+    # --------------------------------------------------------
+
+    analysis = make_hypothesis(
+        videos=radar_videos,
+        language=language,
+        region_code=region_code,
+        trends=trending_videos,
+    )
+
+    # --------------------------------------------------------
+    # 5. DIRECTOR DECISION
+    # --------------------------------------------------------
+
+    if AUTONOMOUS:
+        next_action = (
+            "continue_autonomously"
+        )
+    else:
+        next_action = (
+            "requires_user_decision"
+        )
+
+    # --------------------------------------------------------
+    # 6. SAVE RUN
+    # --------------------------------------------------------
+
+    run_data = {
+        "started_at": started_at,
+        "finished_at": now_iso(),
+        "language": language,
+        "region_code": region_code,
+        "radar_count": len(
+            radar_videos
+        ),
+        "saved_count": saved_count,
+        "trending_count": len(
+            trending_videos
+        ),
+        "analysis": analysis,
+        "next_action": next_action,
+        "free_mode": FREE_MODE,
+        "autonomous": AUTONOMOUS,
+    }
+
+    conn = get_db()
+
+    cursor = conn.execute(
+        """
+        INSERT INTO director_runs (
+            created_at,
+            language,
+            region_code,
+            data_json
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            now_iso(),
+            language,
+            region_code,
+            json_dumps(run_data),
+        ),
+    )
+
+    run_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    log_event(
+        "director_run_completed",
+        {
+            "run_id": run_id,
+            "next_action": next_action,
+            "ai_provider": analysis.get(
+                "provider"
+            ),
+        },
+    )
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "radar": {
+            "count": len(
+                radar_videos
+            ),
+            "saved": saved_count,
+        },
+        "trending": {
+            "count": len(
+                trending_videos
+            ),
+        },
+        "ai": analysis,
+        "next_action": next_action,
+        "free_mode": FREE_MODE,
+        "autonomous": AUTONOMOUS,
+        "top_videos": sorted(
+            radar_videos,
+            key=score,
+            reverse=True,
+        )[:10],
+    }
 
 
 # ============================================================
@@ -1204,44 +1768,41 @@ async def director_run(
 # ============================================================
 
 @app.get("/director/history")
-def director_history(
+async def director_history(
     limit: int = 20,
 ):
+    limit = max(
+        1,
+        min(int(limit), 100),
+    )
 
-    connection = db()
+    conn = get_db()
 
-    rows = connection.execute(
+    rows = conn.execute(
         """
-        SELECT
-            id,
-            created_at,
-            language,
-            region_code,
-            mode,
-            status,
-            hypothesis,
-            reasoning
+        SELECT *
         FROM director_runs
         ORDER BY id DESC
         LIMIT ?
         """,
-        (
-            min(
-                max(limit, 1),
-                100,
-            ),
-        ),
+        (limit,),
     ).fetchall()
 
-    connection.close()
+    conn.close()
 
-    return {
-        "count": len(rows),
-        "runs": [
-            dict(row)
-            for row in rows
-        ],
-    }
+    return [
+        {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "language": row["language"],
+            "region_code": row["region_code"],
+            "data": json_loads_safe(
+                row["data_json"],
+                {},
+            ),
+        }
+        for row in rows
+    ]
 
 
 # ============================================================
@@ -1249,66 +1810,61 @@ def director_history(
 # ============================================================
 
 @app.post("/director/decision")
-def director_decision(
-    payload: dict,
+async def director_decision(
+    decision: str,
+    data: dict[str, Any] | None = None,
 ):
-
-    decision = payload.get(
-        "decision"
-    )
-
-    allowed_decisions = {
+    allowed = {
         "approve",
         "discuss",
         "leave_as_is",
     }
 
-    if decision not in allowed_decisions:
-
+    if decision not in allowed:
         return JSONResponse(
-            {
-                "error": "Недопустимое решение",
-            },
             status_code=400,
+            content={
+                "error": (
+                    "decision must be one of: "
+                    "approve, discuss, leave_as_is"
+                )
+            },
         )
 
-    connection = db()
+    conn = get_db()
 
-    connection.execute(
+    cursor = conn.execute(
         """
-        INSERT INTO decisions(
+        INSERT INTO decisions (
             created_at,
-            run_id,
-            decision_type,
-            status,
-            user_note
+            decision,
+            data_json
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?)
         """,
         (
-            now(),
-            payload.get("run_id"),
+            now_iso(),
             decision,
-            "accepted",
-            payload.get("note"),
+            json_dumps(data or {}),
         ),
     )
 
-    connection.commit()
-    connection.close()
+    decision_id = cursor.lastrowid
 
-    event(
-        "decision",
-        "Пользователь принял решение",
+    conn.commit()
+    conn.close()
+
+    log_event(
+        "director_decision",
         {
-            "run_id": payload.get("run_id"),
+            "decision_id": decision_id,
             "decision": decision,
         },
     )
 
     return {
-        "status": "ok",
-        "run_id": payload.get("run_id"),
+        "ok": True,
+        "decision_id": decision_id,
         "decision": decision,
     }
 
@@ -1318,40 +1874,41 @@ def director_decision(
 # ============================================================
 
 @app.get("/events")
-def events(
-    limit: int = 50,
+async def events(
+    limit: int = 100,
 ):
+    limit = max(
+        1,
+        min(int(limit), 1000),
+    )
 
-    connection = db()
+    conn = get_db()
 
-    rows = connection.execute(
+    rows = conn.execute(
         """
-        SELECT
-            id,
-            created_at,
-            event_type,
-            message,
-            data_json
+        SELECT *
         FROM system_events
         ORDER BY id DESC
         LIMIT ?
         """,
-        (
-            min(
-                max(limit, 1),
-                200,
-            ),
-        ),
+        (limit,),
     ).fetchall()
 
-    connection.close()
+    conn.close()
 
-    return {
-        "events": [
-            dict(row)
-            for row in rows
-        ]
-    }
+    return [
+        {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "event_type": row["event_type"],
+            "data": json_loads_safe(
+                row["data_json"],
+                {},
+            ),
+        }
+        for row in rows
+    ]
+
 
 # ============================================================
 # DIRECTOR TEST
@@ -1359,28 +1916,17 @@ def events(
 
 @app.get("/director/test")
 async def director_test():
-    return await director_run(
-        language="ru",
-        region_code="RU",
-        hours_back=72,
-        max_results=50,
-    )
-
-# ============================================================
-# LOCAL START
-# ============================================================
-
-if __name__ == "__main__":
-
-    import uvicorn
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(
-            os.environ.get(
-                "PORT",
-                "10000",
-            )
+    return {
+        "ok": True,
+        "message": (
+            "Director endpoint is available."
         ),
-    )
+        "free_mode": FREE_MODE,
+        "autonomous": AUTONOMOUS,
+        "ai_enabled": AI_ENABLED,
+        "ai_provider": (
+            "gemini"
+            if AI_ENABLED
+            else "heuristic"
+        ),
+    }

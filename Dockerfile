@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -6,16 +6,10 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
-COPY index.html .
+COPY . .
 
-RUN mkdir -p /app/data
+ENV PYTHONUNBUFFERED=1
 
-ENV PORT=10000
-ENV MCP_URL=http://youtube-mcp:8000/mcp
-ENV FREE_MODE=true
-ENV AUTONOMOUS=false
+EXPOSE 8000
 
-EXPOSE 10000
-
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "10000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

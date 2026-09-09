@@ -925,6 +925,86 @@ async def analyze(
             status_code=500,
         )
 
+# ============================================================
+# DIRECTOR DEBUG
+# ============================================================
+
+@app.get("/director-debug")
+async def director_debug():
+
+    result = {
+        "radar": None,
+        "trending": None,
+    }
+
+    # --------------------------------------------------------
+    # TEST 1 — RADAR
+    # --------------------------------------------------------
+
+    try:
+
+        radar_result = await mcp_call(
+            "search_radar_videos",
+            {
+                "max_results": 10,
+                "language": "ru",
+                "hours_back": 72,
+            },
+        )
+
+        radar_videos = extract_items(
+            radar_result
+        )
+
+        result["radar"] = {
+            "status": "ok",
+            "raw_type": type(radar_result).__name__,
+            "count": len(radar_videos),
+            "videos": radar_videos,
+        }
+
+    except Exception as error:
+
+        result["radar"] = {
+            "status": "error",
+            "error": str(error),
+            "error_type": type(error).__name__,
+        }
+
+    # --------------------------------------------------------
+    # TEST 2 — TRENDING
+    # --------------------------------------------------------
+
+    try:
+
+        trends_result = await mcp_call(
+            "search_trending_videos",
+            {
+                "max_results": 10,
+                "region_code": "RU",
+            },
+        )
+
+        trends = extract_items(
+            trends_result
+        )
+
+        result["trending"] = {
+            "status": "ok",
+            "raw_type": type(trends_result).__name__,
+            "count": len(trends),
+            "videos": trends,
+        }
+
+    except Exception as error:
+
+        result["trending"] = {
+            "status": "error",
+            "error": str(error),
+            "error_type": type(error).__name__,
+        }
+
+    return result
 
 # ============================================================
 # DIRECTOR RUN

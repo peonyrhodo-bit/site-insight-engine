@@ -2,4 +2,4 @@ fastapi
 uvicorn
 requests
 aiofiles
-mcp
+mcp==1.30.0

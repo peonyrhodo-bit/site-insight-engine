@@ -202,15 +202,18 @@ def extract_items(data):
     """
     Приводит разные варианты MCP-ответа к списку.
 
-    Наш youtube-mcp сейчас возвращает обычные списки:
+    Поддерживает:
         [...]
-
-    Но если позже MCP начнёт возвращать:
         {"videos": [...]}
-    или
+        {"channels": [...]}
+        {"results": [...]}
         {"items": [...]}
+        {"data": [...]}
 
-    сайт тоже продолжит работать.
+    Если MCP вернул один объект-видео/канал:
+        {"video_id": "...", ...}
+
+    он тоже превращается в список из одного объекта.
     """
 
     if data is None:
@@ -234,8 +237,14 @@ def extract_items(data):
             if isinstance(value, list):
                 return value
 
-    return []
+        # MCP может вернуть один объект напрямую.
+        if (
+            "video_id" in data
+            or "channel_id" in data
+        ):
+            return [data]
 
+    return []
 
 def extract_object(data):
     """

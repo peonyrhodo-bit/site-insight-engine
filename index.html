@@ -1,1826 +1,2445 @@
 <!DOCTYPE html>
-
 <html lang="ru">
-
 <head>
-
-<meta charset="UTF-8">
-
-<meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
->
-
-<title>Аналитика для Дашули</title>
-
-
-<style>
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-
-    margin: 0;
-
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-
-    background: #f5f6fa;
-
-    color: #222;
-}
-
-
-.container {
-
-    max-width: 1400px;
-
-    margin: 0 auto;
-
-    padding: 30px;
-}
-
-
-h1 {
-
-    margin-top: 0;
-
-    margin-bottom: 8px;
-}
-
-
-.subtitle {
-
-    color: #777;
-
-    margin-bottom: 30px;
-}
-
-
-.card {
-
-    background: white;
-
-    border-radius: 14px;
-
-    padding: 22px;
-
-    margin-bottom: 25px;
-
-    box-shadow:
-        0 4px 20px
-        rgba(0,0,0,0.06);
-}
-
-
-.input-row {
-
-    display: flex;
-
-    gap: 10px;
-
-    flex-wrap: wrap;
-}
-
-
-input,
-select {
-
-    padding: 12px 14px;
-
-    border: 1px solid #ddd;
-
-    border-radius: 8px;
-
-    font-size: 15px;
-}
-
-
-input {
-
-    flex: 1;
-
-    min-width: 300px;
-}
-
-
-button {
-
-    border: none;
-
-    border-radius: 8px;
-
-    padding: 12px 18px;
-
-    font-size: 15px;
-
-    cursor: pointer;
-
-    background: #111;
-
-    color: white;
-}
-
-
-button:hover {
-
-    opacity: 0.85;
-}
-
-
-.mode-buttons {
-
-    display: flex;
-
-    gap: 10px;
-
-    margin-bottom: 15px;
-}
-
-
-.mode-button {
-
-    background: #eee;
-
-    color: #333;
-}
-
-
-.mode-button.active {
-
-    background: #111;
-
-    color: white;
-}
-
-
-.tool-buttons {
-
-    display: flex;
-
-    gap: 10px;
-
-    flex-wrap: wrap;
-
-    margin-bottom: 20px;
-}
-
-
-.tool-button {
-
-    background: #eee;
-
-    color: #333;
-}
-
-
-.tool-button.active {
-
-    background: #111;
-
-    color: white;
-}
-
-
-.controls {
-
-    display: flex;
-
-    gap: 10px;
-
-    flex-wrap: wrap;
-
-    align-items: center;
-}
-
-
-.status {
-
-    margin-top: 15px;
-
-    color: #666;
-}
-
-
-.summary {
-
-    margin-top: 15px;
-
-    font-size: 14px;
-
-    color: #666;
-}
-
-
-.table-wrapper {
-
-    overflow-x: auto;
-
-    margin-top: 20px;
-}
-
-
-table {
-
-    width: 100%;
-
-    border-collapse: collapse;
-
-    min-width: 900px;
-}
-
-
-th,
-td {
-
-    padding: 12px;
-
-    border-bottom:
-        1px solid #eee;
-
-    text-align: left;
-
-    vertical-align: top;
-}
-
-
-th {
-
-    background: #fafafa;
-
-    font-weight: 600;
-}
-
-
-td a {
-
-    color: #111;
-
-    text-decoration: none;
-
-    font-weight: 500;
-}
-
-
-td a:hover {
-
-    text-decoration: underline;
-}
-
-
-.number {
-
-    white-space: nowrap;
-
-    font-variant-numeric:
-        tabular-nums;
-}
-
-
-.hidden {
-
-    display: none;
-}
-
-
-.badge {
-
-    display: inline-block;
-
-    padding: 5px 8px;
-
-    border-radius: 6px;
-
-    background: #f0f0f0;
-
-    font-size: 12px;
-}
-
-</style>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Аналитика для Дашули</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #f5f6fa;
+            --card: #ffffff;
+            --border: #e7e8ee;
+            --text: #202124;
+            --muted: #70757d;
+            --soft: #f0f1f5;
+            --dark: #202124;
+            --success: #1f8f55;
+            --warning: #b7791f;
+            --danger: #c53d3d;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        button,
+        input,
+        select,
+        textarea {
+            font: inherit;
+        }
+
+        button {
+            cursor: pointer;
+        }
+
+        .container {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 28px;
+        }
+
+        .page-header {
+            margin-bottom: 24px;
+        }
+
+        .page-header h1 {
+            margin: 0 0 8px;
+            font-size: 32px;
+        }
+
+        .subtitle {
+            color: var(--muted);
+            font-size: 15px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
+            gap: 20px;
+            align-items: start;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
+        }
+
+        .card h2 {
+            margin: 0 0 14px;
+            font-size: 20px;
+        }
+
+        .card h3 {
+            margin: 0 0 10px;
+            font-size: 17px;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .chat-card {
+            min-height: 620px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .chat-status {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .chat-messages {
+            flex: 1;
+            min-height: 390px;
+            max-height: 520px;
+            overflow-y: auto;
+            padding: 8px 2px 12px;
+        }
+
+        .message {
+            display: flex;
+            margin-bottom: 14px;
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-bubble {
+            max-width: 82%;
+            padding: 12px 15px;
+            border-radius: 14px;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+
+        .message.assistant .message-bubble {
+            background: var(--soft);
+        }
+
+        .message.user .message-bubble {
+            background: var(--dark);
+            color: #fff;
+        }
+
+        .chat-input-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 10px;
+            margin-top: auto;
+        }
+
+        .chat-input {
+            min-height: 48px;
+            max-height: 140px;
+            resize: vertical;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            outline: none;
+        }
+
+        .chat-input:focus {
+            border-color: #b5b8c2;
+        }
+
+        .primary-button {
+            border: 0;
+            border-radius: 11px;
+            background: var(--dark);
+            color: white;
+            padding: 12px 18px;
+        }
+
+        .secondary-button {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: white;
+            color: var(--text);
+            padding: 10px 14px;
+        }
+
+        .secondary-button:hover,
+        .primary-button:hover {
+            opacity: 0.88;
+        }
+
+        .side-column {
+            display: grid;
+            gap: 20px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .status-item {
+            background: var(--soft);
+            border-radius: 11px;
+            padding: 12px;
+        }
+
+        .status-label {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .status-ok {
+            color: var(--success);
+        }
+
+        .status-bad {
+            color: var(--danger);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .stat {
+            background: var(--soft);
+            border-radius: 11px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .stat-label {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .list {
+            display: grid;
+            gap: 9px;
+        }
+
+        .list-item {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 11px 12px;
+            background: #fff;
+        }
+
+        .list-item-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .list-item-meta {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .suggestion {
+            border: 1px solid var(--border);
+            border-radius: 11px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+
+        .suggestion:last-child {
+            margin-bottom: 0;
+        }
+
+        .decision-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .decision-button {
+            flex: 1;
+            min-width: 120px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px;
+            background: white;
+        }
+
+        .decision-button:hover {
+            background: var(--soft);
+        }
+
+        .reports-card {
+            margin-top: 20px;
+        }
+
+        .reports-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .report-empty {
+            padding: 28px;
+            text-align: center;
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            color: var(--muted);
+        }
+
+        .report-note {
+            margin-top: 8px;
+            font-size: 13px;
+        }
+
+        .research-card {
+            margin-top: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .tab {
+            border: 1px solid var(--border);
+            background: white;
+            border-radius: 10px;
+            padding: 9px 13px;
+        }
+
+        .tab.active {
+            background: var(--dark);
+            color: white;
+            border-color: var(--dark);
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        input,
+        select {
+            padding: 11px 13px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: white;
+        }
+
+        .search-row {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            gap: 10px;
+        }
+
+        .search-row input {
+            width: 100%;
+        }
+
+        .research-status {
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            margin-top: 16px;
+        }
+
+        table {
+            width: 100%;
+            min-width: 850px;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: #fafafa;
+        }
+
+        td a {
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        td a:hover {
+            text-decoration: underline;
+        }
+
+        .badge {
+            display: inline-block;
+            background: var(--soft);
+            border-radius: 7px;
+            padding: 5px 8px;
+            font-size: 12px;
+        }
+
+        .empty {
+            padding: 16px 0;
+            color: var(--muted);
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .footer-note {
+            margin-top: 22px;
+            color: var(--muted);
+            font-size: 12px;
+            text-align: center;
+        }
+
+        @media (max-width: 980px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .chat-card {
+                min-height: auto;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 700px) {
+            .container {
+                padding: 16px;
+            }
+
+            .chat-input-row,
+            .search-row {
+                grid-template-columns: 1fr;
+            }
+
+            .status-grid,
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .message-bubble {
+                max-width: 92%;
+            }
+        }
+    </style>
 </head>
-
 
 <body>
 
-
 <div class="container">
 
+    <header class="page-header">
+        <h1>📊 Аналитика для Дашули</h1>
+        <div class="subtitle">
+            AI Director для анализа YouTube, стратегии и развития канала.
+        </div>
+    </header>
+
+
+    <!-- =====================================================
+         MAIN DASHBOARD
+    ====================================================== -->
+
+    <div class="dashboard-grid">
+
+        <!-- =================================================
+             CHAT
+        ================================================== -->
+
+        <section class="card chat-card">
+
+            <div class="chat-header">
+                <div>
+                    <h2>💬 AI Director</h2>
+                    <div id="chatStatus" class="chat-status">
+                        Подключаемся к Director...
+                    </div>
+                </div>
+
+                <button
+                    class="secondary-button"
+                    onclick="refreshDashboard()"
+                >
+                    ↻ Обновить
+                </button>
+            </div>
+
+            <div
+                id="chatMessages"
+                class="chat-messages"
+            >
+                <div class="message assistant">
+                    <div class="message-bubble">
+                        Привет! Я готова анализировать данные системы,
+                        обсуждать стратегию и отвечать на вопросы.
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-row">
+
+                <textarea
+                    id="chatInput"
+                    class="chat-input"
+                    placeholder="Напиши вопрос AI Director..."
+                    onkeydown="handleChatKeydown(event)"
+                ></textarea>
+
+                <button
+                    class="primary-button"
+                    onclick="sendChat()"
+                >
+                    Отправить
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             SIDE
+        ================================================== -->
+
+        <div class="side-column">
+
+            <!-- SYSTEM STATUS -->
+
+            <section class="card">
+
+                <h2>🟢 Состояние системы</h2>
+
+                <div class="status-grid">
+
+                    <div class="status-item">
+                        <div class="status-label">
+                            AI
+                        </div>
+                        <div
+                            id="statusAi"
+                            class="status-value"
+                        >
+                            Проверка...
+                        </div>
+                    </div>
+
+                    <div class="status-item">
+                        <div class="status-label">
+                            MCP
+                        </div>
+                        <div
+                            id="statusMcp"
+                            class="status-value"
+                        >
+                            Проверка...
+                        </div>
+                    </div>
+
+                    <div class="status-item">
+                        <div class="status-label">
+                            Режим
+                        </div>
+                        <div
+                            id="statusMode"
+                            class="status-value"
+                        >
+                            Проверка...
+                        </div>
+                    </div>
+
+                    <div class="status-item">
+                        <div class="status-label">
+                            Автономность
+                        </div>
+                        <div
+                            id="statusAutonomous"
+                            class="status-value"
+                        >
+                            Проверка...
+                        </div>
+                    </div>
+
+                </div>
+
+            </section>
+
+
+            <!-- STATISTICS -->
+
+            <section class="card">
+
+                <h2>📈 Краткая статистика</h2>
+
+                <div class="stats-grid">
+
+                    <div class="stat">
+                        <div
+                            id="statRuns"
+                            class="stat-value"
+                        >
+                            0
+                        </div>
+                        <div class="stat-label">
+                            анализов
+                        </div>
+                    </div>
+
+                    <div class="stat">
+                        <div
+                            id="statEvents"
+                            class="stat-value"
+                        >
+                            0
+                        </div>
+                        <div class="stat-label">
+                            событий
+                        </div>
+                    </div>
+
+                    <div class="stat">
+                        <div
+                            id="statSuggestions"
+                            class="stat-value"
+                        >
+                            0
+                        </div>
+                        <div class="stat-label">
+                            предложений
+                        </div>
+                    </div>
+
+                </div>
+
+            </section>
 
-<h1>📊 Аналитика для Дашули</h1>
 
-<div class="subtitle">
+            <!-- TASKS -->
+
+            <section class="card">
 
-Инструмент для исследования YouTube,
-поиска каналов и обнаружения быстрорастущих видео.
+                <h2>🎯 Текущие задачи</h2>
+
+                <div
+                    id="tasksList"
+                    class="list"
+                >
+                    <div class="empty">
+                        Загружаем...
+                    </div>
+                </div>
+
+            </section>
+
+
+            <!-- AI SUGGESTIONS -->
+
+            <section class="card">
+
+                <h2>💡 Предложения AI</h2>
+
+                <div
+                    id="suggestionsList"
+                >
+                    <div class="empty">
+                        Загружаем...
+                    </div>
+                </div>
+
+                <div class="decision-buttons">
+
+                    <button
+                        class="decision-button"
+                        onclick="sendDecision('approve')"
+                    >
+                        Одобрить
+                    </button>
+
+                    <button
+                        class="decision-button"
+                        onclick="sendDecision('discuss')"
+                    >
+                        Обсудить
+                    </button>
+
+                    <button
+                        class="decision-button"
+                        onclick="sendDecision('leave_as_is')"
+                    >
+                        Оставить как есть
+                    </button>
+
+                </div>
+
+                <div
+                    id="decisionStatus"
+                    class="research-status"
+                ></div>
+
+            </section>
+
+
+            <!-- EVENTS -->
+
+            <section class="card">
+
+                <h2>🕒 Последние события</h2>
+
+                <div
+                    id="eventsList"
+                    class="list"
+                >
+                    <div class="empty">
+                        Загружаем...
+                    </div>
+                </div>
+
+            </section>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         WEEKLY REPORTS
+    ====================================================== -->
+
+    <section class="card reports-card">
+
+        <div class="reports-header">
+
+            <div>
+                <h2>📊 Еженедельные отчёты</h2>
+
+                <div class="muted">
+                    Отдельное пространство для анализа недели.
+                </div>
+            </div>
+
+            <button
+                class="secondary-button"
+                onclick="showReportMessage()"
+            >
+                Обновить
+            </button>
+
+        </div>
 
-</div>
+        <div
+            id="weeklyReports"
+            style="margin-top: 16px;"
+        >
+            <div class="report-empty">
+                Еженедельный отчёт пока не сформирован.
+                <div class="report-note">
+                    Weekly Report Engine подключим после завершения
+                    памяти Director.
+                </div>
+            </div>
+        </div>
 
+    </section>
 
-<!-- ===================================================== -->
-<!-- SEARCH -->
-<!-- ===================================================== -->
 
-<div class="card">
+    <!-- =====================================================
+         RESEARCH TOOLS
+    ====================================================== -->
 
-<h2>🔎 Поиск</h2>
+    <section class="card research-card">
 
+        <h2>🔎 Исследовательские инструменты</h2>
 
-<div class="mode-buttons">
+        <div class="tabs">
 
-<button
-    id="channelsMode"
-    class="mode-button active"
-    onclick="setSearchMode('channels')"
->
-    📺 Каналы
-</button>
+            <button
+                id="searchTab"
+                class="tab active"
+                onclick="showResearchTool('search')"
+            >
+                Поиск
+            </button>
 
+            <button
+                id="radarTab"
+                class="tab"
+                onclick="showResearchTool('radar')"
+            >
+                Радар роста
+            </button>
 
-<button
-    id="videosMode"
-    class="mode-button"
-    onclick="setSearchMode('videos')"
->
-    🎬 Видео
-</button>
+            <button
+                id="trendsTab"
+                class="tab"
+                onclick="showResearchTool('trends')"
+            >
+                Тренды
+            </button>
 
-</div>
+        </div>
 
 
-<div class="input-row">
+        <!-- SEARCH TOOL -->
 
-<input
-    id="searchInput"
-    type="text"
-    placeholder="Например: pandas, AI, fitness, технологии..."
-    onkeydown="if(event.key === 'Enter') search()"
->
+        <div id="searchTool">
 
+            <div class="search-row">
 
-<button onclick="search()">
+                <select id="searchMode">
+                    <option value="channels">
+                        📺 Каналы
+                    </option>
 
-🔎 Найти
+                    <option value="videos">
+                        🎬 Видео
+                    </option>
+                </select>
 
-</button>
+                <input
+                    id="searchInput"
+                    type="text"
+                    placeholder="Например: AI, fitness, технологии..."
+                    onkeydown="if (event.key === 'Enter') runSearch()"
+                >
 
-</div>
+                <button
+                    class="primary-button"
+                    onclick="runSearch()"
+                >
+                    🔎 Найти
+                </button>
 
+            </div>
 
-<div
-    id="searchStatus"
-    class="status"
-></div>
+            <div
+                id="searchStatus"
+                class="research-status"
+            ></div>
 
+            <div
+                id="searchResults"
+            ></div>
 
-<div
-    id="searchResults"
-></div>
+        </div>
 
-</div>
 
+        <!-- RADAR TOOL -->
 
-<!-- ===================================================== -->
-<!-- TOOLS -->
-<!-- ===================================================== -->
+        <div
+            id="radarTool"
+            class="hidden"
+        >
 
-<div class="card">
+            <div class="controls">
 
-<h2>🧠 Инструменты исследования</h2>
+                <select id="radarLanguage">
 
+                    <option value="ru">
+                        🇷🇺 Русский
+                    </option>
 
-<div class="tool-buttons">
+                    <option value="en">
+                        🇺🇸 English
+                    </option>
 
-<button
-    id="radarButton"
-    class="tool-button active"
-    onclick="showTool('radar')"
->
-    🚀 Радар роста
-</button>
+                    <option value="hi">
+                        🇮🇳 हिन्दी
+                    </option>
 
+                    <option value="zh-Hans">
+                        🇨🇳 中文
+                    </option>
 
-<button
-    id="trendsButton"
-    class="tool-button"
-    onclick="showTool('trends')"
->
-    🔥 Тренды YouTube
-</button>
+                </select>
 
-</div>
+                <select id="radarHours">
 
+                    <option value="24">
+                        24 часа
+                    </option>
 
-<!-- ===================================================== -->
-<!-- RADAR -->
-<!-- ===================================================== -->
+                    <option value="48">
+                        48 часов
+                    </option>
 
-<div id="radarTool">
+                    <option value="72" selected>
+                        72 часа
+                    </option>
 
-<h3>🚀 Радар роста</h3>
+                    <option value="168">
+                        7 дней
+                    </option>
 
-<p>
+                </select>
 
-Ищем свежие видео по выбранному языку
-и сортируем их по текущей скорости набора просмотров.
+                <button
+                    class="primary-button"
+                    onclick="runRadar()"
+                >
+                    🚀 Запустить
+                </button>
 
-</p>
+            </div>
 
+            <div
+                id="radarStatus"
+                class="research-status"
+            ></div>
 
-<div class="controls">
+            <div
+                id="radarResults"
+            ></div>
 
+        </div>
 
-<select id="radarLanguage">
 
-<option value="ru">
-    🇷🇺 Русский
-</option>
+        <!-- TRENDS TOOL -->
 
-<option value="en">
-    🇺🇸 English
-</option>
+        <div
+            id="trendsTool"
+            class="hidden"
+        >
 
-<option value="hi">
-    🇮🇳 हिन्दी
-</option>
+            <div class="controls">
 
-<option value="zh-Hans">
-    🇨🇳 中文
-</option>
+                <select id="trendRegion">
 
-</select>
+                    <option value="RU">
+                        🇷🇺 Россия
+                    </option>
 
+                    <option value="US">
+                        🇺🇸 США
+                    </option>
 
-<select id="radarHours">
+                    <option value="IN">
+                        🇮🇳 Индия
+                    </option>
 
-<option value="24">
-    Последние 24 часа
-</option>
+                    <option value="ZA">
+                        🇿🇦 Южная Африка
+                    </option>
 
-<option value="48">
-    Последние 48 часов
-</option>
+                    <option value="CN">
+                        🇨🇳 Китай
+                    </option>
 
-<option value="72" selected>
-    Последние 72 часа
-</option>
+                </select>
 
-<option value="168">
-    Последние 7 дней
-</option>
+                <button
+                    class="primary-button"
+                    onclick="runTrends()"
+                >
+                    🔥 Показать тренды
+                </button>
 
-</select>
+            </div>
 
+            <div
+                id="trendStatus"
+                class="research-status"
+            ></div>
 
-<button onclick="runRadar()">
+            <div
+                id="trendResults"
+            ></div>
 
-🚀 Запустить радар
+        </div>
 
-</button>
+    </section>
 
-<button
-    id="saveRadarButton"
-    onclick="saveRadarSnapshot()"
-    disabled
->
-    💾 Сохранить наблюдение
-</button>
-    
-</div>
 
-
-<div
-    id="radarStatus"
-    class="status"
-></div>
-
-
-<div
-    id="radarSummary"
-    class="summary"
-></div>
-
-
-<div
-    id="radarResults"
-></div>
-
-</div>
-
-
-<!-- ===================================================== -->
-<!-- TRENDS -->
-<!-- ===================================================== -->
-
-<div
-    id="trendsTool"
-    class="hidden"
->
-
-<h3>🔥 Тренды YouTube</h3>
-
-<p>
-
-Это официальный региональный
-YouTube chart.
-
-</p>
-
-
-<div class="controls">
-
-
-<select id="trendRegion">
-
-<option value="RU">
-    🇷🇺 Россия
-</option>
-
-<option value="US">
-    🇺🇸 США
-</option>
-
-<option value="IN">
-    🇮🇳 Индия
-</option>
-
-<option value="ZA">
-    🇿🇦 Южная Африка
-</option>
-
-<option value="CN">
-    🇨🇳 Китай
-</option>
-
-</select>
-
-
-<button onclick="runTrends()">
-
-🔥 Показать тренды
-
-</button>
-
-
-</div>
-
-
-<div
-    id="trendStatus"
-    class="status"
-></div>
-
-
-<div
-    id="trendResults"
-></div>
-
-</div>
-
-</div>
+    <div class="footer-note">
+        Технические endpoints системы остаются доступны отдельно.
+    </div>
 
 </div>
 
 
 <script>
 
+    // ========================================================
+    // STATE
+    // ========================================================
 
-// =========================================================
-// STATE
-// =========================================================
+    let latestRun = null;
+    let latestSuggestions = [];
 
-let searchMode = "channels";
-let lastRadarData = null;
 
-// =========================================================
-// HELPERS
-// =========================================================
+    // ========================================================
+    // HELPERS
+    // ========================================================
 
-function formatNumber(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
-        return "—";
-    }
-
-    return Number(value).toLocaleString(
-        "ru-RU"
-    );
-}
-
-
-function formatDate(value) {
-
-    if (!value) {
-        return "—";
-    }
-
-    const date = new Date(value);
-
-    return date.toLocaleString(
-        "ru-RU"
-    );
-}
-
-
-function formatDuration(duration) {
-
-    if (!duration) {
-        return "—";
-    }
-
-    const match = duration.match(
-        /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/
-    );
-
-    if (!match) {
-        return duration;
-    }
-
-    const hours =
-        Number(match[1] || 0);
-
-    const minutes =
-        Number(match[2] || 0);
-
-    const seconds =
-        Number(match[3] || 0);
-
-
-    let result = "";
-
-    if (hours > 0) {
-        result += hours + " ч ";
-    }
-
-    if (
-        minutes > 0 ||
-        hours > 0
-    ) {
-        result += minutes + " мин ";
-    }
-
-    result += seconds + " сек";
-
-    return result.trim();
-}
-
-
-function formatAge(hours) {
-
-    if (
-        hours === null ||
-        hours === undefined
-    ) {
-        return "—";
-    }
-
-    if (hours < 1) {
-
-        return Math.round(
-            hours * 60
-        ) + " мин";
-
-    }
-
-
-    if (hours < 24) {
-
-        const h =
-            Math.floor(hours);
-
-        const m =
-            Math.round(
-                (hours - h) * 60
-            );
-
-        return (
-            h +
-            " ч " +
-            m +
-            " мин"
-        );
-    }
-
-
-    const days =
-        Math.floor(
-            hours / 24
-        );
-
-    const remainingHours =
-        Math.round(
-            hours % 24
-        );
-
-    return (
-        days +
-        " д " +
-        remainingHours +
-        " ч"
-    );
-}
-
-
-function videoUrl(videoId) {
-
-    return (
-        "https://www.youtube.com/watch?v="
-        + videoId
-    );
-}
-
-
-function channelUrl(channelId) {
-
-    return (
-        "https://www.youtube.com/channel/"
-        + channelId
-    );
-}
-
-
-// =========================================================
-// SEARCH MODE
-// =========================================================
-
-function setSearchMode(mode) {
-
-    searchMode = mode;
-
-
-    document
-        .getElementById("channelsMode")
-        .classList.toggle(
-            "active",
-            mode === "channels"
-        );
-
-
-    document
-        .getElementById("videosMode")
-        .classList.toggle(
-            "active",
-            mode === "videos"
-        );
-}
-
-
-// =========================================================
-// SEARCH
-// =========================================================
-
-async function search() {
-
-    const query =
-        document
-            .getElementById(
-                "searchInput"
-            )
-            .value
-            .trim();
-
-
-    if (!query) {
-
-        alert(
-            "Введите поисковый запрос"
-        );
-
-        return;
-    }
-
-
-    const status =
-        document.getElementById(
-            "searchStatus"
-        );
-
-
-    const results =
-        document.getElementById(
-            "searchResults"
-        );
-
-
-    status.textContent =
-        "⏳ Ищем...";
-
-    results.innerHTML = "";
-
-
-    try {
+    function escapeHtml(value) {
 
         if (
-            searchMode ===
-            "channels"
+            value === null ||
+            value === undefined
         ) {
-
-            await searchChannels(
-                query
-            );
-
-        } else {
-
-            await searchVideos(
-                query
-            );
-
+            return "";
         }
 
-    } catch (error) {
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+
+    function formatDate(value) {
+
+        if (!value) {
+            return "—";
+        }
+
+        const date = new Date(value);
+
+        if (Number.isNaN(date.getTime())) {
+            return value;
+        }
+
+        return date.toLocaleString("ru-RU");
+    }
+
+
+    function formatNumber(value) {
+
+        if (
+            value === null ||
+            value === undefined ||
+            value === ""
+        ) {
+            return "0";
+        }
+
+        const number = Number(value);
+
+        if (Number.isNaN(number)) {
+            return String(value);
+        }
+
+        return number.toLocaleString("ru-RU");
+    }
+
+
+    function getNestedData(object, path, fallback = null) {
+
+        let current = object;
+
+        for (const key of path) {
+
+            if (
+                current === null ||
+                current === undefined ||
+                current[key] === undefined
+            ) {
+                return fallback;
+            }
+
+            current = current[key];
+        }
+
+        return current;
+    }
+
+
+    // ========================================================
+    // CHAT
+    // ========================================================
+
+    function addChatMessage(
+        role,
+        text
+    ) {
+
+        const container =
+            document.getElementById(
+                "chatMessages"
+            );
+
+        const message =
+            document.createElement(
+                "div"
+            );
+
+        message.className =
+            "message " + role;
+
+        const bubble =
+            document.createElement(
+                "div"
+            );
+
+        bubble.className =
+            "message-bubble";
+
+        bubble.textContent =
+            text;
+
+        message.appendChild(
+            bubble
+        );
+
+        container.appendChild(
+            message
+        );
+
+        container.scrollTop =
+            container.scrollHeight;
+    }
+
+
+    function handleChatKeydown(event) {
+
+        if (
+            event.key === "Enter" &&
+            !event.shiftKey
+        ) {
+            event.preventDefault();
+            sendChat();
+        }
+    }
+
+
+    async function sendChat() {
+
+        const input =
+            document.getElementById(
+                "chatInput"
+            );
+
+        const message =
+            input.value.trim();
+
+        if (!message) {
+            return;
+        }
+
+        addChatMessage(
+            "user",
+            message
+        );
+
+        input.value = "";
+
+        const status =
+            document.getElementById(
+                "chatStatus"
+            );
 
         status.textContent =
-            "❌ Ошибка: "
-            + error.message;
-
-    }
-}
-
-
-// =========================================================
-// SEARCH CHANNELS
-// =========================================================
-
-async function searchChannels(
-    query
-) {
-
-    const response =
-        await fetch(
-            "/search-channels?query="
-            + encodeURIComponent(query)
-            + "&max_results=20"
-        );
-
-
-    const data =
-        await response.json();
-
-
-    if (data.error) {
-
-        throw new Error(
-            data.error
-        );
-    }
-
-
-    document.getElementById(
-        "searchStatus"
-    ).textContent =
-        "Найдено каналов: "
-        + data.count;
-
-
-    let html = `
-
-        <div class="table-wrapper">
-
-        <table>
-
-        <thead>
-
-        <tr>
-
-            <th>№</th>
-
-            <th>Канал</th>
-
-            <th>Описание</th>
-
-            <th>Дата создания</th>
-
-        </tr>
-
-        </thead>
-
-        <tbody>
-    `;
-
-
-    data.channels.forEach(
-        (channel, index) => {
-
-            html += `
-
-            <tr>
-
-                <td>
-                    ${index + 1}
-                </td>
-
-                <td>
-
-                    <a
-                        href="${channelUrl(
-                            channel.channel_id
-                        )}"
-                        target="_blank"
-                    >
-                        ${escapeHtml(
-                            channel.title
-                        )}
-                    </a>
-
-                </td>
-
-                <td>
-                    ${escapeHtml(
-                        channel.description || ""
-                    )}
-                </td>
-
-                <td>
-                    ${formatDate(
-                        channel.published_at
-                    )}
-                </td>
-
-            </tr>
-
-            `;
-        }
-    );
-
-
-    html += `
-
-        </tbody>
-
-        </table>
-
-        </div>
-
-    `;
-
-
-    document.getElementById(
-        "searchResults"
-    ).innerHTML = html;
-}
-
-
-// =========================================================
-// SEARCH VIDEOS
-// =========================================================
-
-async function searchVideos(
-    query
-) {
-
-    const response =
-        await fetch(
-            "/search-videos?query="
-            + encodeURIComponent(query)
-            + "&max_results=20"
-            + "&order=viewCount"
-        );
-
-
-    const data =
-        await response.json();
-
-
-    if (data.error) {
-
-        throw new Error(
-            data.error
-        );
-    }
-
-
-    document.getElementById(
-        "searchStatus"
-    ).textContent =
-        "Найдено видео: "
-        + data.count;
-
-
-    let html = `
-
-        <div class="table-wrapper">
-
-        <table>
-
-        <thead>
-
-        <tr>
-
-            <th>№</th>
-
-            <th>Видео</th>
-
-            <th>Канал</th>
-
-            <th>Просмотры</th>
-
-            <th>Лайки</th>
-
-            <th>Комментарии</th>
-
-            <th>Дата</th>
-
-            <th>Длительность</th>
-
-        </tr>
-
-        </thead>
-
-        <tbody>
-    `;
-
-
-    data.videos.forEach(
-        (video, index) => {
-
-            html += `
-
-            <tr>
-
-                <td>
-                    ${index + 1}
-                </td>
-
-                <td>
-
-                    <a
-                        href="${videoUrl(
-                            video.video_id
-                        )}"
-                        target="_blank"
-                    >
-                        ${escapeHtml(
-                            video.title
-                        )}
-                    </a>
-
-                </td>
-
-                <td>
-
-                    <a
-                        href="${channelUrl(
-                            video.channel_id
-                        )}"
-                        target="_blank"
-                    >
-                        ${escapeHtml(
-                            video.channel_title
-                        )}
-                    </a>
-
-                </td>
-
-                <td class="number">
-                    ${formatNumber(
-                        video.views
-                    )}
-                </td>
-
-                <td class="number">
-                    ${formatNumber(
-                        video.likes
-                    )}
-                </td>
-
-                <td class="number">
-                    ${formatNumber(
-                        video.comments
-                    )}
-                </td>
-
-                <td>
-                    ${formatDate(
-                        video.published_at
-                    )}
-                </td>
-
-                <td>
-                    ${formatDuration(
-                        video.duration
-                    )}
-                </td>
-
-            </tr>
-
-            `;
-        }
-    );
-
-
-    html += `
-
-        </tbody>
-
-        </table>
-
-        </div>
-
-    `;
-
-
-    document.getElementById(
-        "searchResults"
-    ).innerHTML = html;
-}
-
-
-// =========================================================
-// RADAR
-// =========================================================
-
-async function runRadar() {
-
-    const language =
-        document.getElementById(
-            "radarLanguage"
-        ).value;
-
-
-    const hours =
-        document.getElementById(
-            "radarHours"
-        ).value;
-
-
-    const status =
-        document.getElementById(
-            "radarStatus"
-        );
-
-
-    const summary =
-        document.getElementById(
-            "radarSummary"
-        );
-
-
-    const results =
-        document.getElementById(
-            "radarResults"
-        );
-
-
-    status.textContent =
-        "⏳ Запускаем радар...";
-
-    summary.textContent = "";
-
-    results.innerHTML = "";
-
-
-    try {
-
-        const response =
-            await fetch(
-                "/radar-videos"
-                + "?language="
-                + encodeURIComponent(
-                    language
-                )
-                + "&hours_back="
-                + encodeURIComponent(
-                    hours
-                )
-                + "&max_results=50"
+            "Director думает...";
+
+        try {
+
+            const response =
+                await fetch(
+                    "/director/chat",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            message: message
+                        })
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    getNestedData(
+                        data,
+                        [
+                            "detail",
+                            "response"
+                        ],
+                        "Ошибка Chat API"
+                    )
+                );
+            }
+
+            const answer =
+                getNestedData(
+                    data,
+                    [
+                        "result",
+                        "answer"
+                    ],
+                    null
+                );
+
+            if (!answer) {
+
+                throw new Error(
+                    "AI не вернул ответ"
+                );
+            }
+
+            addChatMessage(
+                "assistant",
+                answer
             );
 
+            status.textContent =
+                "AI Director подключён";
+
+            await refreshDashboard();
+
+        } catch (error) {
+
+            addChatMessage(
+                "assistant",
+                "Не удалось получить ответ: " +
+                error.message
+            );
+
+            status.textContent =
+                "Ошибка соединения";
+        }
+    }
+
+
+    // ========================================================
+    // DASHBOARD
+    // ========================================================
+
+    async function refreshDashboard() {
+
+        await Promise.all([
+            loadSystemStatus(),
+            loadHistory(),
+            loadEvents()
+        ]);
+    }
+
+
+    async function loadSystemStatus() {
+
+        try {
+
+            const response =
+                await fetch(
+                    "/status"
+                );
+
+            const data =
+                await response.json();
+
+            const engine =
+                data.engine || {};
+
+            const engineResponse =
+                engine.response || {};
+
+            const aiEnabled =
+                engineResponse.ai_enabled === true;
+
+            const freeMode =
+                engineResponse.free_mode === true;
+
+            const autonomous =
+                engineResponse.autonomous === true;
+
+            setStatus(
+                "statusAi",
+                aiEnabled
+                    ? "OpenRouter ✓"
+                    : "AI выключен",
+                aiEnabled
+            );
+
+            setStatus(
+                "statusMcp",
+                engine.status === "ok"
+                    ? "Подключён ✓"
+                    : "Ошибка",
+                engine.status === "ok"
+            );
+
+            setStatus(
+                "statusMode",
+                freeMode
+                    ? "FREE"
+                    : "Другой",
+                true
+            );
+
+            setStatus(
+                "statusAutonomous",
+                autonomous
+                    ? "Включена"
+                    : "Выключена",
+                !autonomous
+            );
+
+            document.getElementById(
+                "chatStatus"
+            ).textContent =
+                aiEnabled &&
+                engine.status === "ok"
+                    ? "AI Director подключён"
+                    : "Проверь состояние системы";
+
+        } catch (error) {
+
+            setStatus(
+                "statusAi",
+                "Ошибка",
+                false
+            );
+
+            setStatus(
+                "statusMcp",
+                "Ошибка",
+                false
+            );
+
+            document.getElementById(
+                "chatStatus"
+            ).textContent =
+                "Не удалось проверить систему";
+        }
+    }
+
+
+    function setStatus(
+        elementId,
+        text,
+        ok
+    ) {
+
+        const element =
+            document.getElementById(
+                elementId
+            );
+
+        element.textContent =
+            text;
+
+        element.classList.toggle(
+            "status-ok",
+            ok
+        );
+
+        element.classList.toggle(
+            "status-bad",
+            !ok
+        );
+    }
+
+
+    async function loadHistory() {
+
+        try {
+
+            const response =
+                await fetch(
+                    "/director/history"
+                );
+
+            const data =
+                await response.json();
+
+            const runs =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        Array.isArray(
+                            data.runs
+                        )
+                            ? data.runs
+                            : []
+                    );
+
+            document.getElementById(
+                "statRuns"
+            ).textContent =
+                formatNumber(
+                    runs.length
+                );
+
+            renderTasks(
+                runs
+            );
+
+            renderSuggestions(
+                runs
+            );
+
+        } catch (error) {
+
+            document.getElementById(
+                "statRuns"
+            ).textContent = "0";
+
+            renderTasks([]);
+            renderSuggestions([]);
+        }
+    }
+
+
+    function renderTasks(
+        runs
+    ) {
+
+        const container =
+            document.getElementById(
+                "tasksList"
+            );
+
+        container.innerHTML = "";
+
+        if (!runs.length) {
+
+            container.innerHTML =
+                `
+                <div class="empty">
+                    Пока нет завершённых Director runs.
+                </div>
+                `;
+
+            return;
+        }
+
+        const latest =
+            runs[0];
 
         const data =
-            await response.json();
+            latest.data || {};
 
-        lastRadarData = data;
+        const nextAction =
+            data.next_action ||
+            "requires_user_decision";
 
-document.getElementById(
-    "saveRadarButton"
-).disabled = (
-    !data.videos ||
-    data.videos.length === 0
-);
-
-        if (data.error) {
-
-            throw new Error(
-                data.error
+        const item =
+            document.createElement(
+                "div"
             );
-        }
 
+        item.className =
+            "list-item";
 
-        status.textContent =
-            "✅ Радар завершён";
+        item.innerHTML =
+            `
+            <div class="list-item-title">
+                Последний цикл Director
+            </div>
 
-
-        summary.innerHTML = `
-
-            <span class="badge">
-
-                Язык:
+            <div class="list-item-meta">
                 ${escapeHtml(
-                    data.language_label
+                    nextAction
                 )}
-
-            </span>
-
-            &nbsp;
-
-            <span class="badge">
-
-                Период:
-                ${data.hours_back}
-                ч
-
-            </span>
-
-            &nbsp;
-
-            <span class="badge">
-
-                Найдено:
-                ${data.count}
-
-            </span>
-
-        `;
-
-
-        let html = `
-
-            <div class="table-wrapper">
-
-            <table>
-
-            <thead>
-
-            <tr>
-
-                <th>№</th>
-
-                <th>Видео</th>
-
-                <th>Канал</th>
-
-                <th>Возраст</th>
-
-                <th>Просмотры</th>
-
-                <th>Просм./час</th>
-
-                <th>Лайки</th>
-
-                <th>Дата добавления</th>
-
-            </tr>
-
-            </thead>
-
-            <tbody>
-
-        `;
-
-
-        data.videos.forEach(
-            (video, index) => {
-
-                html += `
-
-                <tr>
-
-                    <td>
-                        ${index + 1}
-                    </td>
-
-                    <td>
-
-                        <a
-                            href="${videoUrl(
-                                video.video_id
-                            )}"
-                            target="_blank"
-                        >
-                            ${escapeHtml(
-                                video.title
-                            )}
-                        </a>
-
-                    </td>
-
-                    <td>
-
-                        <a
-                            href="${channelUrl(
-                                video.channel_id
-                            )}"
-                            target="_blank"
-                        >
-                            ${escapeHtml(
-                                video.channel_title
-                            )}
-                        </a>
-
-                    </td>
-
-                    <td>
-
-                        ${formatAge(
-                            video.age_hours
-                        )}
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.views
-                        )}
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.views_per_hour
-                        )}
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.likes
-                        )}
-
-                    </td>
-
-                    <td>
-
-                        ${formatDate(
-                            video.published_at
-                        )}
-
-                    </td>
-
-                </tr>
-
-                `;
-            }
-        );
-
-
-        html += `
-
-            </tbody>
-
-            </table>
-
             </div>
+            `;
 
-        `;
-
-
-        results.innerHTML =
-            html;
-
-
-    } catch (error) {
-
-        status.textContent =
-            "❌ Ошибка: "
-            + error.message;
-
+        container.appendChild(
+            item
+        );
     }
-}
 
 
-// =========================================================
-// YOUTUBE TRENDS
-// =========================================================
+    function renderSuggestions(
+        runs
+    ) {
 
-async function runTrends() {
-
-    const region =
-        document.getElementById(
-            "trendRegion"
-        ).value;
-
-
-    const status =
-        document.getElementById(
-            "trendStatus"
-        );
-
-
-    const results =
-        document.getElementById(
-            "trendResults"
-        );
-
-
-    status.textContent =
-        "⏳ Загружаем тренды...";
-
-    results.innerHTML = "";
-
-
-    try {
-
-        const response =
-            await fetch(
-                "/trending-videos"
-                + "?region_code="
-                + encodeURIComponent(
-                    region
-                )
-                + "&max_results=50"
+        const container =
+            document.getElementById(
+                "suggestionsList"
             );
 
+        container.innerHTML = "";
 
-        const data =
-            await response.json();
+        latestSuggestions = [];
 
+        if (!runs.length) {
 
-        if (data.error) {
+            document.getElementById(
+                "statSuggestions"
+            ).textContent = "0";
 
-            throw new Error(
-                data.error
-            );
+            container.innerHTML =
+                `
+                <div class="empty">
+                    Пока нет предложений AI.
+                </div>
+                `;
+
+            return;
         }
 
+        const latest =
+            runs[0];
 
-        status.textContent =
-            "✅ Загружено трендов: "
-            + data.count;
+        latestRun =
+            latest;
 
+        const analysis =
+            getNestedData(
+                latest,
+                ["data", "analysis"],
+                {}
+            );
 
-        let html = `
+        const experiments =
+            Array.isArray(
+                analysis.experiments
+            )
+                ? analysis.experiments
+                : [];
 
-            <div class="table-wrapper">
+        const topics =
+            Array.isArray(
+                analysis.topics
+            )
+                ? analysis.topics
+                : [];
 
-            <table>
+        latestSuggestions =
+            [
+                ...experiments,
+                ...topics
+            ].filter(
+                value =>
+                    value !== null &&
+                    value !== undefined &&
+                    String(value).trim()
+            ).slice(0, 5);
 
-            <thead>
+        document.getElementById(
+            "statSuggestions"
+        ).textContent =
+            formatNumber(
+                latestSuggestions.length
+            );
 
-            <tr>
+        if (!latestSuggestions.length) {
 
-                <th>№</th>
-
-                <th>Видео</th>
-
-                <th>Канал</th>
-
-                <th>Просмотры</th>
-
-                <th>Лайки</th>
-
-                <th>Комментарии</th>
-
-                <th>Дата</th>
-
-                <th>Длительность</th>
-
-            </tr>
-
-            </thead>
-
-            <tbody>
-
-        `;
-
-
-        data.videos.forEach(
-            (video, index) => {
-
-                html += `
-
-                <tr>
-
-                    <td>
-                        ${index + 1}
-                    </td>
-
-                    <td>
-
-                        <a
-                            href="${videoUrl(
-                                video.video_id
-                            )}"
-                            target="_blank"
-                        >
-                            ${escapeHtml(
-                                video.title
-                            )}
-                        </a>
-
-                    </td>
-
-                    <td>
-
-                        <a
-                            href="${channelUrl(
-                                video.channel_id
-                            )}"
-                            target="_blank"
-                        >
-                            ${escapeHtml(
-                                video.channel_title
-                            )}
-                        </a>
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.views
-                        )}
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.likes
-                        )}
-
-                    </td>
-
-                    <td class="number">
-
-                        ${formatNumber(
-                            video.comments
-                        )}
-
-                    </td>
-
-                    <td>
-
-                        ${formatDate(
-                            video.published_at
-                        )}
-
-                    </td>
-
-                    <td>
-
-                        ${formatDuration(
-                            video.duration
-                        )}
-
-                    </td>
-
-                </tr>
-
+            container.innerHTML =
+                `
+                <div class="empty">
+                    В последнем анализе пока нет отдельных предложений.
+                </div>
                 `;
+
+            return;
+        }
+
+        latestSuggestions.forEach(
+            suggestion => {
+
+                const block =
+                    document.createElement(
+                        "div"
+                    );
+
+                block.className =
+                    "suggestion";
+
+                block.textContent =
+                    suggestion;
+
+                container.appendChild(
+                    block
+                );
             }
         );
-
-
-        html += `
-
-            </tbody>
-
-            </table>
-
-            </div>
-
-        `;
-
-
-        results.innerHTML =
-            html;
-
-
-    } catch (error) {
-
-        status.textContent =
-            "❌ Ошибка: "
-            + error.message;
-
-    }
-}
-
-
-// =========================================================
-// SWITCH TOOLS
-// =========================================================
-
-function showTool(tool) {
-
-    const radar =
-        document.getElementById(
-            "radarTool"
-        );
-
-
-    const trends =
-        document.getElementById(
-            "trendsTool"
-        );
-
-
-    const radarButton =
-        document.getElementById(
-            "radarButton"
-        );
-
-
-    const trendsButton =
-        document.getElementById(
-            "trendsButton"
-        );
-
-
-    if (tool === "radar") {
-
-        radar.classList.remove(
-            "hidden"
-        );
-
-        trends.classList.add(
-            "hidden"
-        );
-
-        radarButton.classList.add(
-            "active"
-        );
-
-        trendsButton.classList.remove(
-            "active"
-        );
-
-    } else {
-
-        radar.classList.add(
-            "hidden"
-        );
-
-        trends.classList.remove(
-            "hidden"
-        );
-
-        radarButton.classList.remove(
-            "active"
-        );
-
-        trendsButton.classList.add(
-            "active"
-        );
-    }
-}
-
-
-// =========================================================
-// HTML ESCAPE
-// =========================================================
-
-function escapeHtml(value) {
-
-    if (
-        value === null ||
-        value === undefined
-    ) {
-        return "";
     }
 
 
-    return String(value)
+    async function loadEvents() {
 
-        .replace(
-            /&/g,
-            "&amp;"
-        )
+        try {
 
-        .replace(
-            /</g,
-            "&lt;"
-        )
+            const response =
+                await fetch(
+                    "/events"
+                );
 
-        .replace(
-            />/g,
-            "&gt;"
-        )
+            const data =
+                await response.json();
 
-        .replace(
-            /"/g,
-            "&quot;"
-        )
+            const events =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        Array.isArray(
+                            data.events
+                        )
+                            ? data.events
+                            : []
+                    );
 
-        .replace(
-            /'/g,
-            "&#039;"
-        );
-}
+            document.getElementById(
+                "statEvents"
+            ).textContent =
+                formatNumber(
+                    events.length
+                );
 
-    // =========================================================
-// SAVE RADAR SNAPSHOT
-// =========================================================
+            const container =
+                document.getElementById(
+                    "eventsList"
+                );
 
-async function saveRadarSnapshot() {
+            container.innerHTML = "";
 
-    if (
-        !lastRadarData ||
-        !lastRadarData.videos ||
-        lastRadarData.videos.length === 0
-    ) {
+            if (!events.length) {
 
-        alert(
-            "Сначала запусти радар."
-        );
+                container.innerHTML =
+                    `
+                    <div class="empty">
+                        Событий пока нет.
+                    </div>
+                    `;
 
-        return;
-    }
+                return;
+            }
 
+            events.slice(
+                0,
+                5
+            ).forEach(
+                event => {
 
-    const button =
-        document.getElementById(
-            "saveRadarButton"
-        );
+                    const item =
+                        document.createElement(
+                            "div"
+                        );
 
+                    item.className =
+                        "list-item";
 
-    const status =
-        document.getElementById(
-            "radarStatus"
-        );
+                    item.innerHTML =
+                        `
+                        <div class="list-item-title">
+                            ${escapeHtml(
+                                event.event_type ||
+                                "Событие"
+                            )}
+                        </div>
 
+                        <div class="list-item-meta">
+                            ${formatDate(
+                                event.created_at
+                            )}
+                        </div>
+                        `;
 
-    button.disabled = true;
-
-    button.textContent =
-        "⏳ Сохраняем...";
-
-
-    try {
-
-        const response =
-            await fetch(
-                "/radar-save",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-                        language:
-                            lastRadarData.language,
-
-                        videos:
-                            lastRadarData.videos
-                    })
+                    container.appendChild(
+                        item
+                    );
                 }
             );
 
+        } catch (error) {
 
-        const data =
-            await response.json();
+            document.getElementById(
+                "statEvents"
+            ).textContent = "0";
+        }
+    }
 
 
-        if (data.error) {
+    function showReportMessage() {
 
-            throw new Error(
-                data.error
+        const container =
+            document.getElementById(
+                "weeklyReports"
             );
+
+        container.innerHTML =
+            `
+            <div class="report-empty">
+                Weekly Report Engine ещё не подключён.
+                <div class="report-note">
+                    Сначала завершаем память Director,
+                    затем подключаем автоматические недельные отчёты.
+                </div>
+            </div>
+            `;
+    }
+
+
+    // ========================================================
+    // DECISIONS
+    // ========================================================
+
+    async function sendDecision(
+        decision
+    ) {
+
+        const status =
+            document.getElementById(
+                "decisionStatus"
+            );
+
+        status.textContent =
+            "Сохраняем решение...";
+
+        try {
+
+            const response =
+                await fetch(
+                    "/director/decision",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            decision: decision,
+                            run_id:
+                                latestRun
+                                    ? latestRun.id
+                                    : null
+                        })
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    getNestedData(
+                        data,
+                        [
+                            "detail",
+                            "error"
+                        ],
+                        "Не удалось сохранить решение"
+                    )
+                );
+            }
+
+            status.textContent =
+                "✓ Решение сохранено";
+
+            await loadHistory();
+            await loadEvents();
+
+        } catch (error) {
+
+            status.textContent =
+                "Решение пока не подключено: " +
+                error.message;
+        }
+    }
+
+
+    // ========================================================
+    // RESEARCH TABS
+    // ========================================================
+
+    function showResearchTool(
+        tool
+    ) {
+
+        const tools = {
+            search: "searchTool",
+            radar: "radarTool",
+            trends: "trendsTool"
+        };
+
+        const tabs = {
+            search: "searchTab",
+            radar: "radarTab",
+            trends: "trendsTab"
+        };
+
+        Object.values(
+            tools
+        ).forEach(
+            id =>
+                document
+                    .getElementById(id)
+                    .classList.add("hidden")
+        );
+
+        Object.values(
+            tabs
+        ).forEach(
+            id =>
+                document
+                    .getElementById(id)
+                    .classList.remove("active")
+        );
+
+        document
+            .getElementById(
+                tools[tool]
+            )
+            .classList.remove(
+                "hidden"
+            );
+
+        document
+            .getElementById(
+                tabs[tool]
+            )
+            .classList.add(
+                "active"
+            );
+    }
+
+
+    // ========================================================
+    // SEARCH
+    // ========================================================
+
+    async function runSearch() {
+
+        const mode =
+            document.getElementById(
+                "searchMode"
+            ).value;
+
+        const query =
+            document.getElementById(
+                "searchInput"
+            ).value.trim();
+
+        const status =
+            document.getElementById(
+                "searchStatus"
+            );
+
+        const results =
+            document.getElementById(
+                "searchResults"
+            );
+
+        if (!query) {
+
+            status.textContent =
+                "Введите поисковый запрос.";
+
+            return;
         }
 
-
         status.textContent =
-            "✅ Наблюдение сохранено: "
-            + data.saved_count
-            + " видео";
+            "Ищем...";
 
+        results.innerHTML = "";
 
-        button.textContent =
-            "💾 Сохранить ещё раз";
+        try {
 
-        button.disabled = false;
+            const endpoint =
+                mode === "channels"
+                    ? "/search-channels"
+                    : "/search-videos";
 
+            const response =
+                await fetch(
+                    endpoint +
+                    "?query=" +
+                    encodeURIComponent(query) +
+                    "&max_results=20"
+                );
 
-    } catch (error) {
+            const data =
+                await response.json();
 
-        status.textContent =
-            "❌ Ошибка сохранения: "
-            + error.message;
+            if (!response.ok) {
 
+                throw new Error(
+                    data.error ||
+                    "Ошибка поиска"
+                );
+            }
 
-        button.textContent =
-            "💾 Сохранить наблюдение";
+            const items =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.channels ||
+                        data.videos ||
+                        []
+                    );
 
-        button.disabled = false;
+            status.textContent =
+                "Найдено: " +
+                items.length;
+
+            renderSearchTable(
+                items,
+                mode
+            );
+
+        } catch (error) {
+
+            status.textContent =
+                "Ошибка: " +
+                error.message;
+        }
     }
-}
+
+
+    function renderSearchTable(
+        items,
+        mode
+    ) {
+
+        const results =
+            document.getElementById(
+                "searchResults"
+            );
+
+        if (!items.length) {
+
+            results.innerHTML =
+                `
+                <div class="empty">
+                    Ничего не найдено.
+                </div>
+                `;
+
+            return;
+        }
+
+        let html =
+            `
+            <div class="table-wrapper">
+            <table>
+            <thead>
+            <tr>
+            <th>№</th>
+            <th>Название</th>
+            <th>Канал</th>
+            <th>Просмотры</th>
+            <th>Дата</th>
+            </tr>
+            </thead>
+            <tbody>
+            `;
+
+        items.forEach(
+            (item, index) => {
+
+                const title =
+                    item.title ||
+                    "Без названия";
+
+                const channel =
+                    item.channel_title ||
+                    item.channelTitle ||
+                    "—";
+
+                const views =
+                    item.views ||
+                    item.viewCount ||
+                    (
+                        item.statistics
+                            ? item.statistics.viewCount
+                            : 0
+                    );
+
+                const published =
+                    item.published_at ||
+                    item.publishedAt ||
+                    (
+                        item.snippet
+                            ? item.snippet.publishedAt
+                            : null
+                    );
+
+                let link =
+                    "#";
+
+                if (mode === "videos") {
+
+                    const videoId =
+                        item.video_id ||
+                        (
+                            item.id &&
+                            typeof item.id === "string"
+                                ? item.id
+                                : (
+                                    item.id
+                                        ? item.id.videoId
+                                        : null
+                                )
+                        );
+
+                    if (videoId) {
+
+                        link =
+                            "https://www.youtube.com/watch?v=" +
+                            videoId;
+                    }
+                }
+
+                if (mode === "channels") {
+
+                    const channelId =
+                        item.channel_id ||
+                        (
+                            item.id &&
+                            typeof item.id === "string"
+                                ? item.id
+                                : null
+                        );
+
+                    if (channelId) {
+
+                        link =
+                            "https://www.youtube.com/channel/" +
+                            channelId;
+                    }
+                }
+
+                html +=
+                    `
+                    <tr>
+                        <td>${index + 1}</td>
+
+                        <td>
+                            <a
+                                href="${escapeHtml(link)}"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                ${escapeHtml(title)}
+                            </a>
+                        </td>
+
+                        <td>
+                            ${escapeHtml(channel)}
+                        </td>
+
+                        <td>
+                            ${formatNumber(views)}
+                        </td>
+
+                        <td>
+                            ${formatDate(published)}
+                        </td>
+                    </tr>
+                    `;
+            }
+        );
+
+        html +=
+            `
+            </tbody>
+            </table>
+            </div>
+            `;
+
+        results.innerHTML =
+            html;
+    }
+
+
+    // ========================================================
+    // RADAR
+    // ========================================================
+
+    async function runRadar() {
+
+        const language =
+            document.getElementById(
+                "radarLanguage"
+            ).value;
+
+        const hours =
+            document.getElementById(
+                "radarHours"
+            ).value;
+
+        const status =
+            document.getElementById(
+                "radarStatus"
+            );
+
+        const results =
+            document.getElementById(
+                "radarResults"
+            );
+
+        status.textContent =
+            "Запускаем радар...";
+
+        results.innerHTML = "";
+
+        try {
+
+            const response =
+                await fetch(
+                    "/radar?language=" +
+                    encodeURIComponent(language) +
+                    "&hours_back=" +
+                    encodeURIComponent(hours) +
+                    "&max_results=50"
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    "Ошибка радара"
+                );
+            }
+
+            const items =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.videos ||
+                        []
+                    );
+
+            status.textContent =
+                "Найдено: " +
+                items.length;
+
+            renderResearchVideos(
+                items,
+                results
+            );
+
+        } catch (error) {
+
+            status.textContent =
+                "Ошибка: " +
+                error.message;
+        }
+    }
+
+
+    // ========================================================
+    // TRENDS
+    // ========================================================
+
+    async function runTrends() {
+
+        const region =
+            document.getElementById(
+                "trendRegion"
+            ).value;
+
+        const status =
+            document.getElementById(
+                "trendStatus"
+            );
+
+        const results =
+            document.getElementById(
+                "trendResults"
+            );
+
+        status.textContent =
+            "Загружаем тренды...";
+
+        results.innerHTML = "";
+
+        try {
+
+            const response =
+                await fetch(
+                    "/trending-videos?region_code=" +
+                    encodeURIComponent(region) +
+                    "&max_results=50"
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    "Ошибка трендов"
+                );
+            }
+
+            const items =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.videos ||
+                        []
+                    );
+
+            status.textContent =
+                "Загружено: " +
+                items.length;
+
+            renderResearchVideos(
+                items,
+                results
+            );
+
+        } catch (error) {
+
+            status.textContent =
+                "Ошибка: " +
+                error.message;
+        }
+    }
+
+
+    function renderResearchVideos(
+        items,
+        container
+    ) {
+
+        if (!items.length) {
+
+            container.innerHTML =
+                `
+                <div class="empty">
+                    Данные не найдены.
+                </div>
+                `;
+
+            return;
+        }
+
+        let html =
+            `
+            <div class="table-wrapper">
+            <table>
+            <thead>
+            <tr>
+                <th>№</th>
+                <th>Видео</th>
+                <th>Канал</th>
+                <th>Просмотры</th>
+                <th>Лайки</th>
+                <th>Комментарии</th>
+                <th>Просм./час</th>
+                <th>Дата</th>
+            </tr>
+            </thead>
+            <tbody>
+            `;
+
+        items.forEach(
+            (video, index) => {
+
+                const title =
+                    video.title ||
+                    getNestedData(
+                        video,
+                        [
+                            "snippet",
+                            "title"
+                        ],
+                        "Без названия"
+                    );
+
+                const channel =
+                    video.channel_title ||
+                    getNestedData(
+                        video,
+                        [
+                            "snippet",
+                            "channelTitle"
+                        ],
+                        "—"
+                    );
+
+                const views =
+                    video.views ||
+                    getNestedData(
+                        video,
+                        [
+                            "statistics",
+                            "viewCount"
+                        ],
+                        0
+                    );
+
+                const likes =
+                    video.likes ||
+                    getNestedData(
+                        video,
+                        [
+                            "statistics",
+                            "likeCount"
+                        ],
+                        0
+                    );
+
+                const comments =
+                    video.comments ||
+                    getNestedData(
+                        video,
+                        [
+                            "statistics",
+                            "commentCount"
+                        ],
+                        0
+                    );
+
+                const viewsPerHour =
+                    video.views_per_hour ||
+                    "—";
+
+                const published =
+                    video.published_at ||
+                    getNestedData(
+                        video,
+                        [
+                            "snippet",
+                            "publishedAt"
+                        ],
+                        null
+                    );
+
+                const videoId =
+                    video.video_id ||
+                    (
+                        video.id &&
+                        typeof video.id === "string"
+                            ? video.id
+                            : (
+                                video.id
+                                    ? video.id.videoId
+                                    : null
+                            )
+                    );
+
+                const link =
+                    videoId
+                        ? "https://www.youtube.com/watch?v=" +
+                          videoId
+                        : "#";
+
+                html +=
+                    `
+                    <tr>
+
+                        <td>
+                            ${index + 1}
+                        </td>
+
+                        <td>
+                            <a
+                                href="${escapeHtml(link)}"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                ${escapeHtml(title)}
+                            </a>
+                        </td>
+
+                        <td>
+                            ${escapeHtml(channel)}
+                        </td>
+
+                        <td>
+                            ${formatNumber(views)}
+                        </td>
+
+                        <td>
+                            ${formatNumber(likes)}
+                        </td>
+
+                        <td>
+                            ${formatNumber(comments)}
+                        </td>
+
+                        <td>
+                            ${formatNumber(viewsPerHour)}
+                        </td>
+
+                        <td>
+                            ${formatDate(published)}
+                        </td>
+
+                    </tr>
+                    `;
+            }
+        );
+
+        html +=
+            `
+            </tbody>
+            </table>
+            </div>
+            `;
+
+        container.innerHTML =
+            html;
+    }
+
+
+    // ========================================================
+    // INITIAL LOAD
+    // ========================================================
+
+    refreshDashboard();
 
 </script>
 
-
 </body>
-
 </html>

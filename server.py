@@ -1635,6 +1635,52 @@ Do not return JSON.
         "related_decision_ids": related_decision_ids[:20],
         "suggested_actions": [],
     }
+# ============================================================
+# SUPABASE STATUS
+# ============================================================
+
+@app.get("/supabase/status")
+async def supabase_status():
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return {
+            "ok": False,
+            "enabled": False,
+            "message": "Supabase is not configured.",
+        }
+
+    try:
+        result = (
+            supabase
+            .table("chat_messages")
+            .select("id")
+            .limit(1)
+            .execute()
+        )
+
+        return {
+            "ok": True,
+            "enabled": True,
+            "database_reachable": True,
+        }
+
+    except Exception as exc:
+
+        logger.error(
+            "SUPABASE_STATUS_FAILED error_type=%s",
+            type(exc).__name__,
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "enabled": True,
+                "database_reachable": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
 
 # ============================================================
 # HOME

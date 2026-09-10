@@ -220,6 +220,95 @@ def json_loads_safe(
 # ============================================================
 # EVENTS
 # ============================================================
+def get_recent_system_context(
+    limit_runs: int = 10,
+    limit_decisions: int = 20,
+    limit_events: int = 30,
+) -> dict[str, Any]:
+    conn = get_db()
+
+    runs = conn.execute(
+        """
+        SELECT *
+        FROM director_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit_runs,),
+    ).fetchall()
+
+    decisions = conn.execute(
+        """
+        SELECT *
+        FROM decisions
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit_decisions,),
+    ).fetchall()
+
+    events = conn.execute(
+        """
+        SELECT *
+        FROM system_events
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit_events,),
+    ).fetchall()
+
+    conn.close()
+
+    return {
+        "recent_runs": [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "language": row["language"],
+                "region_code": row["region_code"],
+                "data": json_loads_safe(
+                    row["data_json"],
+                    {},
+                ),
+            }
+            for row in runs
+        ],
+        "recent_decisions": [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "decision": row["decision"],
+                "data": json_loads_safe(
+                    row["data_json"],
+                    {},
+                ),
+            }
+            for row in decisions
+        ],
+        "recent_events": [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "event_type": row["event_type"],
+                "data": json_loads_safe(
+                    row["data_json"],
+                    {},
+                ),
+            }
+            for row in events
+        ],
+        "system": {
+            "free_mode": FREE_MODE,
+            "autonomous": AUTONOMOUS,
+            "ai_enabled": AI_ENABLED,
+            "ai_provider": (
+                "openrouter"
+                if AI_ENABLED
+                else "heuristic"
+            ),
+            "ai_model": AI_MODEL,
+        },
+    }
 
 def log_event(
     event_type: str,
@@ -1303,6 +1392,139 @@ def make_hypothesis(
 
         return fallback
 
+def director_chat(
+    message: str,
+) -> dict[str, Any]:
+    if not AI_ENABLED:
+        raise RuntimeError(
+            "OpenRouter AI is not enabled"
+        )
+
+    context = get_recent_system_context()
+
+    system_instruction = """
+You are the AI Director of a YouTube content system.
+
+You are having a normal conversation with the system owner.
+
+You have access to the supplied system context, including:
+- recent YouTube analyses;
+- Director runs;
+- user decisions;
+- system events;
+- current system state.
+
+Rules:
+
+1. Use the supplied context as your source of truth.
+2. Do not invent system data.
+3. If the context does not contain enough information,
+   clearly say that the information is insufficient.
+4. Historical decisions are data, not permanent rules.
+5. A previous "leave as is" decision does not permanently
+   forbid reconsidering the subject later.
+6. A previous approval does not mean that every future
+   similar action is automatically approved.
+7. Distinguish facts, observations, hypotheses and recommendations.
+8. Do not claim certainty about future YouTube performance.
+9. Do not recommend news, politics or 18+ content.
+10. Do not recommend gore, torture, graphic injury,
+    glorification or incitement of violence.
+11. When useful, explain why you reached a conclusion.
+12. Answer the user's actual question directly.
+13. You are an AI Director, not merely a statistics bot.
+
+Return ONLY valid JSON:
+
+{
+  "answer": "your answer to the user",
+  "reasoning": "short explanation of how the context supports the answer",
+  "related_run_ids": [1, 2],
+  "related_decision_ids": [1],
+  "suggested_actions": ["action 1", "action 2"]
+}
+"""
+
+    prompt = json_dumps(
+        {
+            "user_message": message,
+            "system_context": context,
+        }
+    )
+
+    result = openrouter_generate_json(
+        system_instruction=system_instruction,
+        prompt=prompt,
+    )
+
+    answer = str(
+        result.get(
+            "answer",
+            "",
+        )
+    ).strip()
+
+    if not answer:
+        raise RuntimeError(
+            "Director chat returned empty answer"
+        )
+
+    reasoning = str(
+        result.get(
+            "reasoning",
+            "",
+        )
+    ).strip()
+
+    related_run_ids = result.get(
+        "related_run_ids",
+        [],
+    )
+
+    related_decision_ids = result.get(
+        "related_decision_ids",
+        [],
+    )
+
+    suggested_actions = result.get(
+        "suggested_actions",
+        [],
+    )
+
+    if not isinstance(
+        related_run_ids,
+        list,
+    ):
+        related_run_ids = []
+
+    if not isinstance(
+        related_decision_ids,
+        list,
+    ):
+        related_decision_ids = []
+
+    if not isinstance(
+        suggested_actions,
+        list,
+    ):
+        suggested_actions = []
+
+    log_event(
+        "director_chat",
+        {
+            "message": message[:2000],
+            "provider": "openrouter",
+            "model": AI_MODEL,
+        },
+    )
+
+    return {
+        "answer": answer,
+        "reasoning": reasoning,
+        "related_run_ids": related_run_ids[:20],
+        "related_decision_ids": related_decision_ids[:20],
+        "suggested_actions": suggested_actions[:10],
+    }
 
 # ============================================================
 # HOME
@@ -1442,6 +1664,66 @@ async def ai_test():
             },
         )
 
+# ============================================================
+# DIRECTOR CHAT
+# ============================================================
+
+@app.post("/director/chat")
+async def director_chat_endpoint(
+    message: str,
+):
+    message = message.strip()
+
+    if not message:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "message is required",
+            },
+        )
+
+    if len(message) > 4000:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "message is too long",
+            },
+        )
+
+    try:
+        result = director_chat(
+            message
+        )
+
+        return {
+            "ok": True,
+            "provider": "openrouter",
+            "model": AI_MODEL,
+            "result": result,
+        }
+
+    except Exception as exc:
+        logger.error(
+            "DIRECTOR_CHAT_FAILED error_type=%s",
+            type(exc).__name__,
+        )
+
+        log_event(
+            "director_chat_failed",
+            {
+                "error_type": type(exc).__name__,
+            },
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
 
 # ============================================================
 # SEARCH CHANNELS

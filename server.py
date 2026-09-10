@@ -1012,16 +1012,27 @@ def extract_object(
 def save_snapshot(
     videos: list[dict[str, Any]],
 ) -> int:
-    conn = get_db()
+    """
+    Save YouTube video observations to Supabase.
+
+    The local SQLite database is not used as the primary
+    storage for new snapshots anymore.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        raise RuntimeError(
+            "Supabase is not configured"
+        )
 
     created_at = now_iso()
 
     count = 0
 
     for video in videos:
-        video_id = video.get(
-            "video_id"
-        ) or video.get("id")
+        video_id = (
+            video.get("video_id")
+            or video.get("id")
+        )
 
         if isinstance(video_id, dict):
             video_id = video_id.get(
@@ -1033,70 +1044,66 @@ def save_snapshot(
 
         video_id = str(video_id)
 
-        data_json = json_dumps(video)
+        # ----------------------------------------------------
+        # Check whether this video already exists
+        # ----------------------------------------------------
 
-        cursor = conn.cursor()
-
-        existing = cursor.execute(
-            """
-            SELECT first_seen
-            FROM videos
-            WHERE video_id = ?
-            """,
-            (video_id,),
-        ).fetchone()
-
-        first_seen = (
-            existing["first_seen"]
-            if existing
-            else created_at
+        existing_result = (
+            supabase
+            .table("videos")
+            .select("first_seen")
+            .eq("video_id", video_id)
+            .limit(1)
+            .execute()
         )
 
-        cursor.execute(
-            """
-            INSERT INTO videos (
-                video_id,
-                data_json,
-                first_seen,
-                last_seen
+        existing_rows = (
+            existing_result.data
+            if existing_result.data
+            else []
+        )
+
+        if existing_rows:
+            first_seen = (
+                existing_rows[0].get(
+                    "first_seen"
+                )
+                or created_at
             )
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(video_id)
-            DO UPDATE SET
-                data_json = excluded.data_json,
-                last_seen = excluded.last_seen
-            """,
-            (
-                video_id,
-                data_json,
-                first_seen,
-                created_at,
-            ),
-        )
+        else:
+            first_seen = created_at
 
-        cursor.execute(
-            """
-            INSERT INTO video_snapshots (
-                created_at,
-                video_id,
-                data_json
-            )
-            VALUES (?, ?, ?)
-            """,
-            (
-                created_at,
-                video_id,
-                data_json,
-            ),
-        )
+        # ----------------------------------------------------
+        # Save / update current video state
+        # ----------------------------------------------------
+
+        supabase.table("videos").upsert(
+            {
+                "video_id": video_id,
+                "data_json": video,
+                "first_seen": first_seen,
+                "last_seen": created_at,
+            },
+            on_conflict="video_id",
+        ).execute()
+
+        # ----------------------------------------------------
+        # Save immutable snapshot
+        # ----------------------------------------------------
+
+        supabase.table(
+            "video_snapshots"
+        ).insert(
+            {
+                "created_at": created_at,
+                "video_id": video_id,
+                "data_json": video,
+            }
+        ).execute()
 
         count += 1
 
-    conn.commit()
-    conn.close()
-
     return count
-
 
 # ============================================================
 # NORMALIZED VIDEO METRICS

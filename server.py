@@ -15,7 +15,7 @@ import requests
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from supabase import create_client, Client
@@ -228,11 +228,9 @@ async def authentication_middleware(
     request: Request,
     call_next,
 ):
-
     path = request.url.path
 
-    # These endpoints must remain publicly accessible.
-    # /health is needed for Render health checks.
+    # Эти страницы доступны без авторизации
     public_paths = {
         "/login",
         "/health",
@@ -241,25 +239,33 @@ async def authentication_middleware(
     if path in public_paths:
         return await call_next(request)
 
-    # If authentication is not configured,
-    # allow the application to work normally.
-    #
-    # This prevents accidentally locking yourself out
-    # before Render environment variables are added.
+    # Если авторизация не настроена в Render,
+    # не блокируем сайт
     if not auth_is_configured():
         return await call_next(request)
 
-    if not is_authenticated(request):
-        return JSONResponse(
-            status_code=401,
-            content={
-                "ok": False,
-                "authenticated": False,
-                "error": "Authentication required",
-            },
+    # Пользователь уже авторизован
+    if is_authenticated(request):
+        return await call_next(request)
+
+    # При заходе на сайт отправляем на страницу входа,
+    # а не показываем JSON 401
+    if path == "/":
+        return RedirectResponse(
+            url="/login",
+            status_code=303,
         )
 
-    return await call_next(request)
+    # Для API оставляем нормальный JSON 401
+    return JSONResponse(
+        status_code=401,
+        content={
+            "ok": False,
+            "authenticated": False,
+            "error": "Authentication required",
+        },
+    )
+
 # ============================================================
 # DATABASE
 # ============================================================
@@ -2034,13 +2040,13 @@ async def login(
     )
 
     response.set_cookie(
-        key="site_auth",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-    )
-
+    key="site_auth",
+    value=token,
+    httponly=True,
+    secure=True,
+    samesite="lax",
+    max_age=60 * 60 * 24 * 30,
+)
     logger.info(
         "AUTH_LOGIN_SUCCESS"
     )

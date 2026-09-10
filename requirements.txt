@@ -3,3 +3,4 @@ uvicorn
 requests
 aiofiles
 mcp==1.30.0
+supabase

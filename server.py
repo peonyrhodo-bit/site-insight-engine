@@ -18,6 +18,20 @@ from supabase import create_client, Client
 
 
 # ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+logger = logging.getLogger(
+    "site-insight-engine"
+)
+
+
+# ============================================================
 # CONFIG
 # ============================================================
 
@@ -74,6 +88,7 @@ AI_ENABLED = (
     and bool(OPENROUTER_API_KEY)
 )
 
+
 # ============================================================
 # SUPABASE
 # ============================================================
@@ -88,13 +103,11 @@ SUPABASE_KEY = os.environ.get(
     "",
 ).strip()
 
-
 SUPABASE_ENABLED = bool(
     SUPABASE_URL and SUPABASE_KEY
 )
 
-
-supabase = None
+supabase: Client | None = None
 
 
 if SUPABASE_ENABLED:
@@ -117,18 +130,6 @@ if SUPABASE_ENABLED:
         supabase = None
         SUPABASE_ENABLED = False
 
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-
-logger = logging.getLogger(
-    "site-insight-engine"
-)
 
 # ============================================================
 # FASTAPI
@@ -264,6 +265,7 @@ def json_loads_safe(
 # ============================================================
 # EVENTS
 # ============================================================
+
 def get_recent_system_context(
     limit_runs: int = 10,
     limit_decisions: int = 20,
@@ -354,6 +356,7 @@ def get_recent_system_context(
         },
     }
 
+
 def log_event(
     event_type: str,
     data: dict[str, Any] | None = None,
@@ -411,12 +414,6 @@ async def mcp_call(
     name: str,
     args: dict[str, Any],
 ) -> Any:
-    """
-    Call a tool on youtube-mcp.
-
-    ExceptionGroup / TaskGroup errors are explicitly
-    unwrapped so the real MCP connection error is visible.
-    """
 
     logger.info(
         "MCP_CALL_START tool=%s url=%s",
@@ -507,9 +504,7 @@ def extract_items(
     )
 
     if isinstance(structured, dict):
-        items = structured.get(
-            "items"
-        )
+        items = structured.get("items")
 
         if isinstance(items, list):
             return items
@@ -538,9 +533,7 @@ def extract_items(
                     return parsed
 
                 if isinstance(parsed, dict):
-                    items = parsed.get(
-                        "items"
-                    )
+                    items = parsed.get("items")
 
                     if isinstance(items, list):
                         return items
@@ -854,10 +847,6 @@ def make_heuristic_hypothesis(
 def openrouter_error_message(
     response: requests.Response,
 ) -> str:
-    """
-    Return a safe AI error.
-    Never include the API key.
-    """
 
     try:
         data = response.json()
@@ -887,12 +876,6 @@ def openrouter_error_message(
 def extract_json_from_text(
     text: str,
 ) -> dict[str, Any]:
-    """
-    Parse JSON returned by the model.
-
-    Handles both plain JSON and JSON accidentally
-    wrapped in a Markdown code fence.
-    """
 
     cleaned = text.strip()
 
@@ -927,7 +910,6 @@ def extract_json_from_text(
         except json.JSONDecodeError:
             pass
 
-    # Last safe attempt: locate the outermost JSON object.
     start = cleaned.find("{")
     end = cleaned.rfind("}")
 
@@ -956,12 +938,6 @@ def openrouter_generate_json(
     system_instruction: str,
     prompt: str,
 ) -> dict[str, Any]:
-    """
-    Call OpenRouter using the OpenAI-compatible API.
-
-    The API key is sent only in the Authorization header.
-    It is never logged or returned to the client.
-    """
 
     if not OPENROUTER_API_KEY:
         raise RuntimeError(
@@ -1113,12 +1089,6 @@ def make_ai_hypothesis(
     language: str,
     region_code: str,
 ) -> dict[str, Any]:
-    """
-    Ask OpenRouter to analyze collected YouTube signals.
-
-    The AI is an analyst.
-    It must not pretend to know which video will go viral.
-    """
 
     ranked_videos = sorted(
         videos,
@@ -1381,10 +1351,6 @@ def make_hypothesis(
     region_code: str,
     trends: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """
-    Use OpenRouter when available.
-    Otherwise fall back to the local heuristic.
-    """
 
     trends = trends or []
 
@@ -1436,16 +1402,11 @@ def make_hypothesis(
 
         return fallback
 
+
 def openrouter_generate_text(
     system_instruction: str,
     prompt: str,
 ) -> str:
-    """
-    Call OpenRouter for a normal text response.
-
-    The API key is sent only in the Authorization header.
-    It is never logged or returned to the client.
-    """
 
     if not OPENROUTER_API_KEY:
         raise RuntimeError(
@@ -1678,6 +1639,8 @@ Do not return JSON.
         "related_decision_ids": related_decision_ids[:20],
         "suggested_actions": [],
     }
+
+
 # ============================================================
 # SUPABASE STATUS
 # ============================================================
@@ -1710,8 +1673,9 @@ async def supabase_status():
     except Exception as exc:
 
         logger.error(
-            "SUPABASE_STATUS_FAILED error_type=%s",
+            "SUPABASE_STATUS_FAILED error_type=%s error=%s",
             type(exc).__name__,
+            str(exc),
         )
 
         return JSONResponse(
@@ -1725,6 +1689,7 @@ async def supabase_status():
             },
         )
 
+
 # ============================================================
 # HOME
 # ============================================================
@@ -1734,6 +1699,7 @@ async def supabase_status():
     response_class=HTMLResponse,
 )
 async def home():
+
     index_path = BASE_DIR / "index.html"
 
     if not index_path.exists():
@@ -1761,6 +1727,7 @@ async def home():
 
 @app.get("/health")
 async def health():
+
     provider = (
         "openrouter"
         if AI_ENABLED
@@ -1779,6 +1746,7 @@ async def health():
 
 @app.get("/system/status")
 async def system_status():
+
     provider = (
         "openrouter"
         if AI_ENABLED
@@ -1805,6 +1773,7 @@ async def system_status():
 
 @app.get("/ai/status")
 async def ai_status():
+
     provider = (
         "openrouter"
         if AI_ENABLED
@@ -1824,6 +1793,7 @@ async def ai_status():
 
 @app.get("/ai/test")
 async def ai_test():
+
     if not OPENROUTER_API_KEY:
         return {
             "ok": False,
@@ -1856,6 +1826,7 @@ async def ai_test():
         }
 
     except Exception as exc:
+
         logger.error(
             "AI_TEST_FAILED provider=openrouter error_type=%s",
             type(exc).__name__,
@@ -1870,9 +1841,16 @@ async def ai_test():
                 "error": str(exc),
             },
         )
+
+
+# ============================================================
+# DIRECTOR CHAT MODEL
+# ============================================================
+
 class DirectorChatRequest(BaseModel):
     message: str
-    
+
+
 # ============================================================
 # DIRECTOR CHAT
 # ============================================================
@@ -1881,8 +1859,8 @@ class DirectorChatRequest(BaseModel):
 async def director_chat_endpoint(
     request: DirectorChatRequest,
 ):
+
     message = request.message
-    
 
     if not message:
         return JSONResponse(
@@ -1915,6 +1893,7 @@ async def director_chat_endpoint(
         }
 
     except Exception as exc:
+
         logger.error(
             "DIRECTOR_CHAT_FAILED error_type=%s",
             type(exc).__name__,
@@ -1935,6 +1914,7 @@ async def director_chat_endpoint(
             },
         )
 
+
 # ============================================================
 # SEARCH CHANNELS
 # ============================================================
@@ -1944,6 +1924,7 @@ async def search_channels(
     query: str,
     max_results: int = 10,
 ):
+
     try:
         result = await mcp_call(
             "search_channels",
@@ -1960,6 +1941,7 @@ async def search_channels(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -1978,6 +1960,7 @@ async def search_videos(
     max_results: int = 10,
     region_code: str = "US",
 ):
+
     try:
         result = await mcp_call(
             "search_videos",
@@ -1995,6 +1978,7 @@ async def search_videos(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2012,6 +1996,7 @@ async def trending_videos(
     max_results: int = 50,
     region_code: str = "US",
 ):
+
     try:
         result = await mcp_call(
             "search_trending_videos",
@@ -2028,6 +2013,7 @@ async def trending_videos(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2046,6 +2032,7 @@ async def radar_videos(
     max_results_per_query: int = 10,
     region_code: str = "RU",
 ):
+
     try:
         result = await mcp_call(
             "search_radar_videos",
@@ -2077,6 +2064,7 @@ async def radar_videos(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2095,6 +2083,7 @@ async def radar_debug(
     max_results_per_query: int = 10,
     region_code: str = "RU",
 ):
+
     try:
         result = await mcp_call(
             "search_radar_videos",
@@ -2130,6 +2119,7 @@ async def radar_debug(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2149,6 +2139,7 @@ async def radar_save(
     max_results_per_query: int = 10,
     region_code: str = "RU",
 ):
+
     try:
         result = await mcp_call(
             "search_radar_videos",
@@ -2188,6 +2179,7 @@ async def radar_save(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2205,6 +2197,7 @@ async def radar_save(
 async def radar_history(
     limit: int = 100,
 ):
+
     limit = max(
         1,
         min(int(limit), 1000),
@@ -2244,6 +2237,7 @@ async def radar_history(
 
 @app.get("/database-status")
 async def database_status():
+
     conn = get_db()
 
     videos_count = conn.execute(
@@ -2283,6 +2277,7 @@ async def analyze(
     max_results_per_query: int = 10,
     region_code: str = "RU",
 ):
+
     try:
         radar_result = await mcp_call(
             "search_radar_videos",
@@ -2314,6 +2309,7 @@ async def analyze(
         }
 
     except Exception as exc:
+
         return JSONResponse(
             status_code=500,
             content={
@@ -2332,6 +2328,7 @@ async def director_debug(
     language: str = "ru",
     region_code: str = "RU",
 ):
+
     result = {
         "radar": None,
         "trending": None,
@@ -2376,6 +2373,7 @@ async def director_debug(
         }
 
     except Exception as exc:
+
         result["radar"] = {
             "ok": False,
             "error": str(exc),
@@ -2398,6 +2396,7 @@ async def director_debug(
         }
 
     except Exception as exc:
+
         result["trending"] = {
             "ok": False,
             "error": str(exc),
@@ -2416,6 +2415,7 @@ async def director_run(
     language: str = "ru",
     region_code: str = "RU",
 ):
+
     started_at = now_iso()
 
     log_event(
@@ -2484,6 +2484,7 @@ async def director_run(
         )
 
     except Exception as exc:
+
         logger.warning(
             "TRENDING_FAILED error_type=%s",
             type(exc).__name__,
@@ -2614,6 +2615,7 @@ async def director_run(
 async def director_history(
     limit: int = 20,
 ):
+
     limit = max(
         1,
         min(int(limit), 100),
@@ -2657,6 +2659,7 @@ async def director_decision(
     decision: str,
     data: dict[str, Any] | None = None,
 ):
+
     allowed = {
         "approve",
         "discuss",
@@ -2720,6 +2723,7 @@ async def director_decision(
 async def events(
     limit: int = 100,
 ):
+
     limit = max(
         1,
         min(int(limit), 1000),
@@ -2759,6 +2763,7 @@ async def events(
 
 @app.get("/director/test")
 async def director_test():
+
     return {
         "ok": True,
         "message": (

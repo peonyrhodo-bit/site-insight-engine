@@ -2153,7 +2153,7 @@ Do not return JSON.
         },
     )
 
-        return {
+    return {
         "answer": answer,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,

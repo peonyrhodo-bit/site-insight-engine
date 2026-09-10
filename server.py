@@ -1393,9 +1393,154 @@ def make_hypothesis(
 
         return fallback
 
+def openrouter_generate_text(
+    system_instruction: str,
+    prompt: str,
+) -> str:
+    """
+    Call OpenRouter for a normal text response.
+
+    The API key is sent only in the Authorization header.
+    It is never logged or returned to the client.
+    """
+
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not configured"
+        )
+
+    url = (
+        OPENROUTER_BASE_URL.rstrip("/")
+        + "/chat/completions"
+    )
+
+    headers = {
+        "Authorization": (
+            f"Bearer {OPENROUTER_API_KEY}"
+        ),
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": AI_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_instruction,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        "temperature": 0.3,
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=90,
+        )
+
+    except requests.RequestException as exc:
+        logger.error(
+            "AI_CHAT_REQUEST_ERROR provider=openrouter error_type=%s",
+            type(exc).__name__,
+        )
+
+        raise RuntimeError(
+            "OpenRouter chat request failed"
+        ) from exc
+
+    if not response.ok:
+        safe_message = openrouter_error_message(
+            response
+        )
+
+        logger.error(
+            "AI_CHAT_API_ERROR provider=openrouter status=%s message=%s",
+            response.status_code,
+            safe_message,
+        )
+
+        raise RuntimeError(
+            f"OpenRouter API error: {safe_message}"
+        )
+
+    try:
+        data = response.json()
+
+    except ValueError as exc:
+        logger.error(
+            "AI_CHAT_INVALID_RESPONSE provider=openrouter"
+        )
+
+        raise RuntimeError(
+            "OpenRouter returned invalid JSON"
+        ) from exc
+
+    choices = data.get(
+        "choices",
+        [],
+    )
+
+    if not choices:
+        raise RuntimeError(
+            "OpenRouter returned no choices"
+        )
+
+    message_data = choices[0].get(
+        "message",
+        {},
+    )
+
+    if not isinstance(
+        message_data,
+        dict,
+    ):
+        raise RuntimeError(
+            "OpenRouter returned invalid message"
+        )
+
+    content = message_data.get(
+        "content",
+        "",
+    )
+
+    if isinstance(content, list):
+        text_parts = []
+
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+
+                if text:
+                    text_parts.append(
+                        str(text)
+                    )
+
+        content = "\n".join(
+            text_parts
+        )
+
+    text = str(
+        content or ""
+    ).strip()
+
+    if not text:
+        raise RuntimeError(
+            "OpenRouter returned empty chat content"
+        )
+
+    return text
+
+
 def director_chat(
     message: str,
 ) -> dict[str, Any]:
+
     if not AI_ENABLED:
         raise RuntimeError(
             "OpenRouter AI is not enabled"
@@ -1406,7 +1551,7 @@ def director_chat(
     system_instruction = """
 You are the AI Director of a YouTube content system.
 
-You are having a normal conversation with the system owner.
+You are having a direct conversation with the system owner.
 
 You have access to the supplied system context, including:
 - recent YouTube analyses;
@@ -1434,16 +1579,13 @@ Rules:
 11. When useful, explain why you reached a conclusion.
 12. Answer the user's actual question directly.
 13. You are an AI Director, not merely a statistics bot.
+14. Treat previous decisions as historical context.
+15. Do not expose API keys, credentials or secrets.
+16. Do not claim that an action was performed unless the
+    supplied system context confirms that it was performed.
 
-Return ONLY valid JSON:
-
-{
-  "answer": "your answer to the user",
-  "reasoning": "short explanation of how the context supports the answer",
-  "related_run_ids": [1, 2],
-  "related_decision_ids": [1],
-  "suggested_actions": ["action 1", "action 2"]
-}
+Answer naturally in plain text.
+Do not return JSON.
 """
 
     prompt = json_dumps(
@@ -1453,62 +1595,30 @@ Return ONLY valid JSON:
         }
     )
 
-    result = openrouter_generate_json(
+    answer = openrouter_generate_text(
         system_instruction=system_instruction,
         prompt=prompt,
     )
 
-    answer = str(
-        result.get(
-            "answer",
-            "",
+    related_run_ids = [
+        run.get("id")
+        for run in context.get(
+            "recent_runs",
+            [],
         )
-    ).strip()
+        if isinstance(run, dict)
+        and run.get("id") is not None
+    ]
 
-    if not answer:
-        raise RuntimeError(
-            "Director chat returned empty answer"
+    related_decision_ids = [
+        decision.get("id")
+        for decision in context.get(
+            "recent_decisions",
+            [],
         )
-
-    reasoning = str(
-        result.get(
-            "reasoning",
-            "",
-        )
-    ).strip()
-
-    related_run_ids = result.get(
-        "related_run_ids",
-        [],
-    )
-
-    related_decision_ids = result.get(
-        "related_decision_ids",
-        [],
-    )
-
-    suggested_actions = result.get(
-        "suggested_actions",
-        [],
-    )
-
-    if not isinstance(
-        related_run_ids,
-        list,
-    ):
-        related_run_ids = []
-
-    if not isinstance(
-        related_decision_ids,
-        list,
-    ):
-        related_decision_ids = []
-
-    if not isinstance(
-        suggested_actions,
-        list,
-    ):
-        suggested_actions = []
+        if isinstance(decision, dict)
+        and decision.get("id") is not None
+    ]
 
     log_event(
         "director_chat",
@@ -1521,10 +1631,9 @@ Return ONLY valid JSON:
 
     return {
         "answer": answer,
-        "reasoning": reasoning,
         "related_run_ids": related_run_ids[:20],
         "related_decision_ids": related_decision_ids[:20],
-        "suggested_actions": suggested_actions[:10],
+        "suggested_actions": [],
     }
 
 # ============================================================

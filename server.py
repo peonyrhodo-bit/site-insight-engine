@@ -1645,17 +1645,25 @@ Do not return JSON.
     response_class=HTMLResponse,
 )
 async def home():
-    return """
-    <html>
-        <head>
-            <title>AI YouTube System</title>
-        </head>
-        <body>
-            <h1>Site Insight Engine</h1>
-            <p>AI YouTube analytics engine is running.</p>
-        </body>
-    </html>
-    """
+    index_path = BASE_DIR / "index.html"
+
+    if not index_path.exists():
+        return HTMLResponse(
+            content=(
+                "<h1>Ошибка</h1>"
+                "<p>index.html не найден.</p>"
+            ),
+            status_code=500,
+        )
+
+    with open(
+        index_path,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        return HTMLResponse(
+            content=file.read()
+        )
 
 
 # ============================================================

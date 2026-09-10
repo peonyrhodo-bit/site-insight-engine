@@ -2366,13 +2366,13 @@ async def login(
     )
 
     response.set_cookie(
-    key="site_auth",
-    value=token,
-    httponly=True,
-    secure=True,
-    samesite="lax",
-    max_age=60 * 60 * 24 * 30,
-)
+        key="site_auth",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
     logger.info(
         "AUTH_LOGIN_SUCCESS"
     )
@@ -2444,20 +2444,20 @@ async def health():
         else "heuristic"
     )
 
- return {
-    "status": "ok",
-    "service": "site-insight-engine",
-    "free_mode": FREE_MODE,
-    "autonomous": AUTONOMOUS,
-    "ai_enabled": AI_ENABLED,
-    "ai_provider": provider,
-    "supabase_enabled": SUPABASE_ENABLED,
-    "director_memory": (
-        "supabase"
-        if SUPABASE_ENABLED
-        else "sqlite"
-    ),
-}
+    return {
+        "status": "ok",
+        "service": "site-insight-engine",
+        "free_mode": FREE_MODE,
+        "autonomous": AUTONOMOUS,
+        "ai_enabled": AI_ENABLED,
+        "ai_provider": provider,
+        "supabase_enabled": SUPABASE_ENABLED,
+        "director_memory": (
+            "supabase"
+            if SUPABASE_ENABLED
+            else "sqlite"
+        ),
+    }
 
 @app.get("/system/status")
 async def system_status():
@@ -3259,46 +3259,46 @@ async def director_run(
         "autonomous": AUTONOMOUS,
     }
 
-  # --------------------------------------------------------
-# SAVE DIRECTOR RUN TO SUPABASE
-# --------------------------------------------------------
+    # --------------------------------------------------------
+    # SAVE DIRECTOR RUN TO SUPABASE
+    # --------------------------------------------------------
 
-run_id = supabase_save_director_run(
-    language=language,
-    region_code=region_code,
-    data=run_data,
-)
-
-# --------------------------------------------------------
-# FALLBACK TO SQLITE
-# --------------------------------------------------------
-
-if run_id is None:
-
-    conn = get_db()
-
-    cursor = conn.execute(
-        """
-        INSERT INTO director_runs (
-            created_at,
-            language,
-            region_code,
-            data_json
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            now_iso(),
-            language,
-            region_code,
-            json_dumps(run_data),
-        ),
+    run_id = supabase_save_director_run(
+        language=language,
+        region_code=region_code,
+        data=run_data,
     )
 
-    run_id = cursor.lastrowid
+    # --------------------------------------------------------
+    # FALLBACK TO SQLITE
+    # --------------------------------------------------------
 
-    conn.commit()
-    conn.close()
+    if run_id is None:
+
+        conn = get_db()
+
+        cursor = conn.execute(
+            """
+            INSERT INTO director_runs (
+                created_at,
+                language,
+                region_code,
+                data_json
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                now_iso(),
+                language,
+                region_code,
+                json_dumps(run_data),
+            ),
+        )
+
+        run_id = cursor.lastrowid
+
+        conn.commit()
+        conn.close()
 
     log_event(
         "director_run_completed",
@@ -3463,45 +3463,45 @@ async def director_decision(
             },
         )
 
-  decision_data = data or {}
+    decision_data = data or {}
 
-# --------------------------------------------------------
-# SAVE DECISION TO SUPABASE
-# --------------------------------------------------------
+    # --------------------------------------------------------
+    # SAVE DECISION TO SUPABASE
+    # --------------------------------------------------------
 
-decision_id = supabase_save_decision(
-    decision=decision,
-    data=decision_data,
-)
-
-# --------------------------------------------------------
-# FALLBACK TO SQLITE
-# --------------------------------------------------------
-
-if decision_id is None:
-
-    conn = get_db()
-
-    cursor = conn.execute(
-        """
-        INSERT INTO decisions (
-            created_at,
-            decision,
-            data_json
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            now_iso(),
-            decision,
-            json_dumps(decision_data),
-        ),
+    decision_id = supabase_save_decision(
+        decision=decision,
+        data=decision_data,
     )
 
-    decision_id = cursor.lastrowid
+    # --------------------------------------------------------
+    # FALLBACK TO SQLITE
+    # --------------------------------------------------------
 
-    conn.commit()
-    conn.close()
+    if decision_id is None:
+
+        conn = get_db()
+
+        cursor = conn.execute(
+            """
+            INSERT INTO decisions (
+                created_at,
+                decision,
+                data_json
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                now_iso(),
+                decision,
+                json_dumps(decision_data),
+            ),
+        )
+
+        decision_id = cursor.lastrowid
+
+        conn.commit()
+        conn.close()
 
     log_event(
         "director_decision",

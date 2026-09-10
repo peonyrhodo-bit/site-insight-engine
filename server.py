@@ -3,12 +3,16 @@ import logging
 import math
 import os
 import sqlite3
+import hashlib
+import hmac
+import secrets
+import requests
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -30,7 +34,74 @@ logger = logging.getLogger(
     "site-insight-engine"
 )
 
+# ============================================================
+# SITE AUTHENTICATION
+# ============================================================
 
+SITE_LOGIN = os.environ.get(
+    "SITE_LOGIN",
+    "",
+).strip()
+
+SITE_PASSWORD = os.environ.get(
+    "SITE_PASSWORD",
+    "",
+).strip()
+
+SITE_AUTH_SECRET = os.environ.get(
+    "SITE_AUTH_SECRET",
+    "",
+).strip()
+
+
+def make_auth_token() -> str:
+    """
+    Creates a signed authentication token.
+    The actual password is never stored in the cookie.
+    """
+
+    payload = "site-insight-engine-auth"
+
+    signature = hmac.new(
+        SITE_AUTH_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return signature
+
+
+def is_authenticated(request: Request) -> bool:
+
+    if not (
+        SITE_LOGIN
+        and SITE_PASSWORD
+        and SITE_AUTH_SECRET
+    ):
+        return False
+
+    cookie = request.cookies.get(
+        "site_auth"
+    )
+
+    if not cookie:
+        return False
+
+    expected = make_auth_token()
+
+    return hmac.compare_digest(
+        cookie,
+        expected,
+    )
+
+
+def auth_is_configured() -> bool:
+
+    return bool(
+        SITE_LOGIN
+        and SITE_PASSWORD
+        and SITE_AUTH_SECRET
+    )
 # ============================================================
 # CONFIG
 # ============================================================
@@ -148,7 +219,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================
+# AUTHENTICATION MIDDLEWARE
+# ============================================================
 
+@app.middleware("http")
+async def authentication_middleware(
+    request: Request,
+    call_next,
+):
+
+    path = request.url.path
+
+    # These endpoints must remain publicly accessible.
+    # /health is needed for Render health checks.
+    public_paths = {
+        "/login",
+        "/health",
+    }
+
+    if path in public_paths:
+        return await call_next(request)
+
+    # If authentication is not configured,
+    # allow the application to work normally.
+    #
+    # This prevents accidentally locking yourself out
+    # before Render environment variables are added.
+    if not auth_is_configured():
+        return await call_next(request)
+
+    if not is_authenticated(request):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "ok": False,
+                "authenticated": False,
+                "error": "Authentication required",
+            },
+        )
+
+    return await call_next(request)
 # ============================================================
 # DATABASE
 # ============================================================
@@ -1689,6 +1800,273 @@ async def supabase_status():
             },
         )
 
+# ============================================================
+# LOGIN
+# ============================================================
+
+class LoginRequest(BaseModel):
+    login: str
+    password: str
+
+
+@app.get(
+    "/login",
+    response_class=HTMLResponse,
+)
+async def login_page():
+
+    return HTMLResponse(
+        content="""
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Site Insight Engine — Login</title>
+
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #111;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }
+
+        .login-box {
+            width: 320px;
+            padding: 30px;
+            background: #1c1c1c;
+            border-radius: 14px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+        }
+
+        h1 {
+            margin-top: 0;
+            margin-bottom: 25px;
+            font-size: 22px;
+            text-align: center;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            margin-bottom: 12px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background: #111;
+            color: #fff;
+            font-size: 15px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            border: 0;
+            border-radius: 8px;
+            background: #fff;
+            color: #111;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .error {
+            display: none;
+            margin-top: 15px;
+            color: #ff6b6b;
+            text-align: center;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="login-box">
+
+    <h1>Site Insight Engine</h1>
+
+    <form id="login-form">
+
+        <input
+            id="login"
+            type="text"
+            placeholder="Логин"
+            autocomplete="username"
+            required
+        >
+
+        <input
+            id="password"
+            type="password"
+            placeholder="Пароль"
+            autocomplete="current-password"
+            required
+        >
+
+        <button type="submit">
+            Войти
+        </button>
+
+        <div id="error" class="error">
+            Неверный логин или пароль
+        </div>
+
+    </form>
+
+</div>
+
+<script>
+
+document
+    .getElementById("login-form")
+    .addEventListener("submit", async function(event) {
+
+        event.preventDefault();
+
+        const login =
+            document.getElementById("login").value;
+
+        const password =
+            document.getElementById("password").value;
+
+        const error =
+            document.getElementById("error");
+
+        error.style.display = "none";
+
+        try {
+
+            const response = await fetch(
+                "/login",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        login: login,
+                        password: password
+                    })
+                }
+            );
+
+            if (response.ok) {
+                window.location.href = "/";
+                return;
+            }
+
+            error.style.display = "block";
+
+        } catch (err) {
+
+            error.textContent =
+                "Ошибка соединения с сервером";
+
+            error.style.display = "block";
+        }
+    });
+
+</script>
+
+</body>
+</html>
+"""
+    )
+
+
+@app.post("/login")
+async def login(
+    request: LoginRequest,
+):
+
+    if not auth_is_configured():
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "Authentication is not configured.",
+            },
+        )
+
+    valid_login = secrets.compare_digest(
+        request.login,
+        SITE_LOGIN,
+    )
+
+    valid_password = secrets.compare_digest(
+        request.password,
+        SITE_PASSWORD,
+    )
+
+    if not (
+        valid_login
+        and valid_password
+    ):
+        logger.warning(
+            "AUTH_LOGIN_FAILED"
+        )
+
+        return JSONResponse(
+            status_code=401,
+            content={
+                "ok": False,
+                "error": "Invalid credentials",
+            },
+        )
+
+    token = make_auth_token()
+
+    response = JSONResponse(
+        content={
+            "ok": True,
+            "authenticated": True,
+        }
+    )
+
+    response.set_cookie(
+        key="site_auth",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+
+    logger.info(
+        "AUTH_LOGIN_SUCCESS"
+    )
+
+    return response
+
+
+@app.post("/logout")
+async def logout():
+
+    response = JSONResponse(
+        content={
+            "ok": True,
+            "authenticated": False,
+        }
+    )
+
+    response.delete_cookie(
+        key="site_auth",
+    )
+
+    logger.info(
+        "AUTH_LOGOUT"
+    )
+
+    return response
 
 # ============================================================
 # HOME

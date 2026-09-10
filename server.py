@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 from fastapi import FastAPI
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from mcp import ClientSession
@@ -1663,16 +1664,19 @@ async def ai_test():
                 "error": str(exc),
             },
         )
-
+class DirectorChatRequest(BaseModel):
+    message: str
+    
 # ============================================================
 # DIRECTOR CHAT
 # ============================================================
 
 @app.post("/director/chat")
 async def director_chat_endpoint(
-    message: str,
+    request: DirectorChatRequest,
 ):
-    message = message.strip()
+    message = request.message
+    
 
     if not message:
         return JSONResponse(

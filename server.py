@@ -259,7 +259,7 @@ async def mcp_call(
     Call a tool on youtube-mcp.
     """
 
-    async with streamablehttp_client(
+    async with streamable_http_client(
         MCP_URL
     ) as (
         read_stream,

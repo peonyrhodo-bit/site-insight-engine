@@ -1269,94 +1269,112 @@
     }
 
 
-    async function loadSystemStatus() {
+   async function loadSystemStatus() {
 
-        try {
+    try {
 
-            const response =
-                await fetch(
-                    "/status"
-                );
+        const [
+            systemResponse,
+            aiResponse
+        ] = await Promise.all([
+            fetch("/system/status"),
+            fetch("/ai/status")
+        ]);
 
-            const data =
-                await response.json();
+        const systemData =
+            await systemResponse.json();
 
-            const engine =
-                data.engine || {};
+        const aiData =
+            await aiResponse.json();
 
-            const engineResponse =
-                engine.response || {};
-
-            const aiEnabled =
-                engineResponse.ai_enabled === true;
-
-            const freeMode =
-                engineResponse.free_mode === true;
-
-            const autonomous =
-                engineResponse.autonomous === true;
-
-            setStatus(
-                "statusAi",
-                aiEnabled
-                    ? "OpenRouter ✓"
-                    : "AI выключен",
-                aiEnabled
+        if (!systemResponse.ok) {
+            throw new Error(
+                "Не удалось получить состояние системы"
             );
-
-            setStatus(
-                "statusMcp",
-                engine.status === "ok"
-                    ? "Подключён ✓"
-                    : "Ошибка",
-                engine.status === "ok"
-            );
-
-            setStatus(
-                "statusMode",
-                freeMode
-                    ? "FREE"
-                    : "Другой",
-                true
-            );
-
-            setStatus(
-                "statusAutonomous",
-                autonomous
-                    ? "Включена"
-                    : "Выключена",
-                !autonomous
-            );
-
-            document.getElementById(
-                "chatStatus"
-            ).textContent =
-                aiEnabled &&
-                engine.status === "ok"
-                    ? "AI Director подключён"
-                    : "Проверь состояние системы";
-
-        } catch (error) {
-
-            setStatus(
-                "statusAi",
-                "Ошибка",
-                false
-            );
-
-            setStatus(
-                "statusMcp",
-                "Ошибка",
-                false
-            );
-
-            document.getElementById(
-                "chatStatus"
-            ).textContent =
-                "Не удалось проверить систему";
         }
-    }
 
+        if (!aiResponse.ok) {
+            throw new Error(
+                "Не удалось получить состояние AI"
+            );
+        }
+
+        const aiEnabled =
+            aiData.enabled === true;
+
+        const mcpConfigured =
+            typeof systemData.mcp_url === "string" &&
+            (
+                systemData.mcp_url.startsWith("http://") ||
+                systemData.mcp_url.startsWith("https://")
+            );
+
+        const freeMode =
+            systemData.free_mode === true;
+
+        const autonomous =
+            systemData.autonomous === true;
+
+        setStatus(
+            "statusAi",
+            aiEnabled
+                ? "OpenRouter ✓"
+                : "AI выключен",
+            aiEnabled
+        );
+
+        setStatus(
+            "statusMcp",
+            mcpConfigured
+                ? "Подключён ✓"
+                : "Не настроен",
+            mcpConfigured
+        );
+
+        setStatus(
+            "statusMode",
+            freeMode
+                ? "FREE"
+                : "Другой",
+            true
+        );
+
+        setStatus(
+            "statusAutonomous",
+            autonomous
+                ? "Включена"
+                : "Выключена",
+            !autonomous
+        );
+
+        document.getElementById(
+            "chatStatus"
+        ).textContent =
+            aiEnabled
+                ? "AI Director подключён"
+                : "AI Director недоступен";
+
+    } catch (error) {
+
+        setStatus(
+            "statusAi",
+            "Ошибка проверки",
+            false
+        );
+
+        setStatus(
+            "statusMcp",
+            "Ошибка проверки",
+            false
+        );
+
+        document.getElementById(
+            "chatStatus"
+        ).textContent =
+            "Не удалось проверить состояние системы";
+    }
+}
+    
 
     function setStatus(
         elementId,

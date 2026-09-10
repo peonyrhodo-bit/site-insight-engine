@@ -251,34 +251,99 @@ def log_event(
 # MCP
 # ============================================================
 
+def exception_details(exc: BaseException) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        parts: list[str] = []
+
+        for child in exc.exceptions:
+            detail = exception_details(child)
+
+            if detail:
+                parts.append(detail)
+
+        if parts:
+            return " | ".join(parts)
+
+        return str(exc)
+
+    message = str(exc).strip()
+
+    if message:
+        return f"{type(exc).__name__}: {message}"
+
+    return type(exc).__name__
+
+
 async def mcp_call(
     name: str,
     args: dict[str, Any],
 ) -> Any:
     """
     Call a tool on youtube-mcp.
+
+    ExceptionGroup / TaskGroup errors are explicitly
+    unwrapped so the real MCP connection error is visible.
     """
 
-    async with streamable_http_client(
-        MCP_URL
-    ) as (
-        read_stream,
-        write_stream,
-        _,
-    ):
-        async with ClientSession(
+    logger.info(
+        "MCP_CALL_START tool=%s url=%s",
+        name,
+        MCP_URL,
+    )
+
+    try:
+        async with streamable_http_client(
+            MCP_URL
+        ) as (
             read_stream,
             write_stream,
-        ) as session:
+            _,
+        ):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+            ) as session:
 
-            await session.initialize()
+                await session.initialize()
 
-            result = await session.call_tool(
-                name,
-                arguments=args,
-            )
+                logger.info(
+                    "MCP_INITIALIZED tool=%s",
+                    name,
+                )
 
-            return result
+                result = await session.call_tool(
+                    name,
+                    arguments=args,
+                )
+
+                logger.info(
+                    "MCP_CALL_SUCCESS tool=%s",
+                    name,
+                )
+
+                return result
+
+    except Exception as exc:
+        detail = exception_details(exc)
+
+        logger.error(
+            "MCP_CALL_FAILED tool=%s error=%s",
+            name,
+            detail,
+        )
+
+        log_event(
+            "mcp_call_failed",
+            {
+                "tool": name,
+                "error_type": type(exc).__name__,
+                "error": detail[:1000],
+            },
+        )
+
+        raise RuntimeError(
+            f"MCP call failed for '{name}': {detail}"
+        ) from exc
 
 
 # ============================================================

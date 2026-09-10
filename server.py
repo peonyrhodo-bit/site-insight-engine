@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from supabase import create_client, Client
 
 
 # ============================================================
@@ -44,6 +45,7 @@ AUTONOMOUS = (
     == "true"
 )
 
+
 # ============================================================
 # OPENROUTER AI
 # ============================================================
@@ -72,6 +74,48 @@ AI_ENABLED = (
     and bool(OPENROUTER_API_KEY)
 )
 
+# ============================================================
+# SUPABASE
+# ============================================================
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    "",
+).strip()
+
+SUPABASE_KEY = os.environ.get(
+    "SUPABASE_KEY",
+    "",
+).strip()
+
+
+SUPABASE_ENABLED = bool(
+    SUPABASE_URL and SUPABASE_KEY
+)
+
+
+supabase = None
+
+
+if SUPABASE_ENABLED:
+    try:
+        supabase = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY,
+        )
+
+        logger.info(
+            "SUPABASE_INITIALIZED"
+        )
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_INITIALIZATION_FAILED error_type=%s",
+            type(exc).__name__,
+        )
+
+        supabase = None
+        SUPABASE_ENABLED = False
 
 # ============================================================
 # LOGGING
@@ -85,7 +129,6 @@ logging.basicConfig(
 logger = logging.getLogger(
     "site-insight-engine"
 )
-
 
 # ============================================================
 # FASTAPI

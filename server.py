@@ -378,6 +378,255 @@ def json_loads_safe(
     except Exception:
         return default
 
+# ============================================================
+# SUPABASE MEMORY HELPERS
+# ============================================================
+
+def supabase_save_director_run(
+    language: str,
+    region_code: str,
+    data: dict[str, Any],
+) -> int | None:
+    """
+    Saves a Director run to Supabase.
+    Returns the Supabase row ID.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        result = (
+            supabase
+            .table("director_runs")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "language": language,
+                    "region_code": region_code,
+                    "data_json": data,
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        return rows[0].get("id")
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_DIRECTOR_RUN_FAILED error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
+
+
+def supabase_save_decision(
+    decision: str,
+    data: dict[str, Any],
+) -> int | None:
+    """
+    Saves a user decision to Supabase.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        result = (
+            supabase
+            .table("decisions")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "decision": decision,
+                    "data_json": data,
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        return rows[0].get("id")
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_DECISION_FAILED error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
+
+
+def supabase_save_event(
+    event_type: str,
+    data: dict[str, Any],
+) -> int | None:
+    """
+    Saves a system event to Supabase.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        result = (
+            supabase
+            .table("system_events")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "event_type": event_type,
+                    "data_json": data,
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        return rows[0].get("id")
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_EVENT_FAILED error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
+
+
+def supabase_get_director_context(
+    limit_runs: int = 10,
+    limit_decisions: int = 20,
+    limit_events: int = 30,
+) -> dict[str, Any] | None:
+    """
+    Reads Director memory from Supabase.
+
+    Returns None when Supabase memory is unavailable,
+    so the caller can use SQLite as a fallback.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        runs_result = (
+            supabase
+            .table("director_runs")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_runs)
+            .execute()
+        )
+
+        decisions_result = (
+            supabase
+            .table("decisions")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_decisions)
+            .execute()
+        )
+
+        events_result = (
+            supabase
+            .table("system_events")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_events)
+            .execute()
+        )
+
+        runs = runs_result.data or []
+        decisions = decisions_result.data or []
+        events = events_result.data or []
+
+        return {
+            "recent_runs": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "language": row.get("language"),
+                    "region_code": row.get("region_code"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in runs
+            ],
+            "recent_decisions": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "decision": row.get("decision"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in decisions
+            ],
+            "recent_events": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "event_type": row.get("event_type"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in events
+            ],
+        }
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_GET_DIRECTOR_CONTEXT_FAILED error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
 
 # ============================================================
 # EVENTS
@@ -388,6 +637,41 @@ def get_recent_system_context(
     limit_decisions: int = 20,
     limit_events: int = 30,
 ) -> dict[str, Any]:
+
+    # --------------------------------------------------------
+    # PRIMARY MEMORY: SUPABASE
+    # --------------------------------------------------------
+
+    supabase_context = supabase_get_director_context(
+        limit_runs=limit_runs,
+        limit_decisions=limit_decisions,
+        limit_events=limit_events,
+    )
+
+    if supabase_context is not None:
+        supabase_context["system"] = {
+            "free_mode": FREE_MODE,
+            "autonomous": AUTONOMOUS,
+            "ai_enabled": AI_ENABLED,
+            "ai_provider": (
+                "openrouter"
+                if AI_ENABLED
+                else "heuristic"
+            ),
+            "ai_model": AI_MODEL,
+            "memory_provider": "supabase",
+        }
+
+        return supabase_context
+
+    # --------------------------------------------------------
+    # FALLBACK MEMORY: SQLITE
+    # --------------------------------------------------------
+
+    logger.warning(
+        "DIRECTOR_MEMORY_FALLBACK_TO_SQLITE"
+    )
+
     conn = get_db()
 
     runs = conn.execute(
@@ -470,6 +754,7 @@ def get_recent_system_context(
                 else "heuristic"
             ),
             "ai_model": AI_MODEL,
+            "memory_provider": "sqlite",
         },
     }
 
@@ -478,6 +763,47 @@ def log_event(
     event_type: str,
     data: dict[str, Any] | None = None,
 ) -> None:
+
+    event_data = data or {}
+
+    # --------------------------------------------------------
+    # PRIMARY STORAGE: SUPABASE
+    # --------------------------------------------------------
+
+    if SUPABASE_ENABLED and supabase is not None:
+
+        event_id = supabase_save_event(
+            event_type=event_type,
+            data=event_data,
+        )
+
+        if event_id is not None:
+            return
+
+    # --------------------------------------------------------
+    # FALLBACK STORAGE: SQLITE
+    # --------------------------------------------------------
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT INTO system_events (
+            created_at,
+            event_type,
+            data_json
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            now_iso(),
+            event_type,
+            json_dumps(event_data),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
     conn = get_db()
 
     conn.execute(
@@ -2118,15 +2444,20 @@ async def health():
         else "heuristic"
     )
 
-    return {
-        "status": "ok",
-        "service": "site-insight-engine",
-        "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-        "ai_enabled": AI_ENABLED,
-        "ai_provider": provider,
-    }
-
+ return {
+    "status": "ok",
+    "service": "site-insight-engine",
+    "free_mode": FREE_MODE,
+    "autonomous": AUTONOMOUS,
+    "ai_enabled": AI_ENABLED,
+    "ai_provider": provider,
+    "supabase_enabled": SUPABASE_ENABLED,
+    "director_memory": (
+        "supabase"
+        if SUPABASE_ENABLED
+        else "sqlite"
+    ),
+}
 
 @app.get("/system/status")
 async def system_status():
@@ -2928,6 +3259,22 @@ async def director_run(
         "autonomous": AUTONOMOUS,
     }
 
+  # --------------------------------------------------------
+# SAVE DIRECTOR RUN TO SUPABASE
+# --------------------------------------------------------
+
+run_id = supabase_save_director_run(
+    language=language,
+    region_code=region_code,
+    data=run_data,
+)
+
+# --------------------------------------------------------
+# FALLBACK TO SQLITE
+# --------------------------------------------------------
+
+if run_id is None:
+
     conn = get_db()
 
     cursor = conn.execute(
@@ -3005,6 +3352,63 @@ async def director_history(
         min(int(limit), 100),
     )
 
+    # --------------------------------------------------------
+    # PRIMARY: SUPABASE
+    # --------------------------------------------------------
+
+    if SUPABASE_ENABLED and supabase is not None:
+
+        try:
+            result = (
+                supabase
+                .table("director_runs")
+                .select("*")
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+            rows = result.data or []
+
+            return [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get(
+                        "created_at"
+                    ),
+                    "language": row.get(
+                        "language"
+                    ),
+                    "region_code": row.get(
+                        "region_code"
+                    ),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in rows
+            ]
+
+        except Exception as exc:
+
+            logger.error(
+                "SUPABASE_DIRECTOR_HISTORY_FAILED error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    # --------------------------------------------------------
+    # FALLBACK: SQLITE
+    # --------------------------------------------------------
+
     conn = get_db()
 
     rows = conn.execute(
@@ -3032,8 +3436,6 @@ async def director_history(
         }
         for row in rows
     ]
-
-
 # ============================================================
 # DIRECTOR DECISION
 # ============================================================
@@ -3061,6 +3463,23 @@ async def director_decision(
             },
         )
 
+  decision_data = data or {}
+
+# --------------------------------------------------------
+# SAVE DECISION TO SUPABASE
+# --------------------------------------------------------
+
+decision_id = supabase_save_decision(
+    decision=decision,
+    data=decision_data,
+)
+
+# --------------------------------------------------------
+# FALLBACK TO SQLITE
+# --------------------------------------------------------
+
+if decision_id is None:
+
     conn = get_db()
 
     cursor = conn.execute(
@@ -3075,7 +3494,7 @@ async def director_decision(
         (
             now_iso(),
             decision,
-            json_dumps(data or {}),
+            json_dumps(decision_data),
         ),
     )
 
@@ -3113,6 +3532,60 @@ async def events(
         min(int(limit), 1000),
     )
 
+    # --------------------------------------------------------
+    # PRIMARY: SUPABASE
+    # --------------------------------------------------------
+
+    if SUPABASE_ENABLED and supabase is not None:
+
+        try:
+            result = (
+                supabase
+                .table("system_events")
+                .select("*")
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+            rows = result.data or []
+
+            return [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get(
+                        "created_at"
+                    ),
+                    "event_type": row.get(
+                        "event_type"
+                    ),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in rows
+            ]
+
+        except Exception as exc:
+
+            logger.error(
+                "SUPABASE_EVENTS_FAILED error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    # --------------------------------------------------------
+    # FALLBACK: SQLITE
+    # --------------------------------------------------------
+
     conn = get_db()
 
     rows = conn.execute(
@@ -3139,7 +3612,6 @@ async def events(
         }
         for row in rows
     ]
-
 
 # ============================================================
 # DIRECTOR TEST

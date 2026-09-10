@@ -1955,161 +1955,174 @@
     }
 
 
-    function renderSearchTable(
-        items,
-        mode
-    ) {
+function renderSearchTable(
+    items,
+    mode
+) {
 
-        const results =
-            document.getElementById(
-                "searchResults"
-            );
+    const results =
+        document.getElementById(
+            "searchResults"
+        );
 
-        if (!items.length) {
+    if (!items.length) {
 
-            results.innerHTML =
-                `
-                <div class="empty">
-                    Ничего не найдено.
-                </div>
-                `;
-
-            return;
-        }
-
-        let html =
+        results.innerHTML =
             `
-            <div class="table-wrapper">
-            <table>
-            <thead>
-            <tr>
+            <div class="empty">
+                Ничего не найдено.
+            </div>
+            `;
+
+        return;
+    }
+
+    let html =
+        `
+        <div class="table-wrapper">
+        <table>
+        <thead>
+        <tr>
             <th>№</th>
             <th>Название</th>
             <th>Канал</th>
             <th>Просмотры</th>
             <th>Дата</th>
-            </tr>
-            </thead>
-            <tbody>
-            `;
+        </tr>
+        </thead>
+        <tbody>
+        `;
 
-        items.forEach(
-            (item, index) => {
+    items.forEach(
+        (item, index) => {
 
-                const title =
-                    item.title ||
-                    "Без названия";
+            const snippet =
+                item.snippet &&
+                typeof item.snippet === "object"
+                    ? item.snippet
+                    : {};
 
-                const channel =
-                    item.channel_title ||
-                    item.channelTitle ||
-                    "—";
+            const statistics =
+                item.statistics &&
+                typeof item.statistics === "object"
+                    ? item.statistics
+                    : {};
 
-                const views =
-                    item.views ||
-                    item.viewCount ||
+            const itemId =
+                item.id &&
+                typeof item.id === "object"
+                    ? item.id
+                    : {};
+
+            const title =
+                item.title ||
+                snippet.title ||
+                "Без названия";
+
+            const channel =
+                item.channel_title ||
+                item.channelTitle ||
+                snippet.channelTitle ||
+                "—";
+
+            const views =
+                item.views ??
+                item.viewCount ??
+                statistics.viewCount ??
+                0;
+
+            const published =
+                item.published_at ||
+                item.publishedAt ||
+                snippet.publishedAt ||
+                null;
+
+            let link = "#";
+
+            if (mode === "videos") {
+
+                const videoId =
+                    item.video_id ||
                     (
-                        item.statistics
-                            ? item.statistics.viewCount
-                            : 0
+                        typeof item.id === "string"
+                            ? item.id
+                            : itemId.videoId
                     );
 
-                const published =
-                    item.published_at ||
-                    item.publishedAt ||
+                if (videoId) {
+
+                    link =
+                        "https://www.youtube.com/watch?v=" +
+                        videoId;
+                }
+            }
+
+            if (mode === "channels") {
+
+                const channelId =
+                    item.channel_id ||
+                    item.channelId ||
+                    snippet.channelId ||
+                    itemId.channelId ||
                     (
-                        item.snippet
-                            ? item.snippet.publishedAt
+                        typeof item.id === "string"
+                            ? item.id
                             : null
                     );
 
-                let link =
-                    "#";
+                if (channelId) {
 
-                if (mode === "videos") {
-
-                    const videoId =
-                        item.video_id ||
-                        (
-                            item.id &&
-                            typeof item.id === "string"
-                                ? item.id
-                                : (
-                                    item.id
-                                        ? item.id.videoId
-                                        : null
-                                )
-                        );
-
-                    if (videoId) {
-
-                        link =
-                            "https://www.youtube.com/watch?v=" +
-                            videoId;
-                    }
+                    link =
+                        "https://www.youtube.com/channel/" +
+                        channelId;
                 }
-
-                if (mode === "channels") {
-
-                    const channelId =
-                        item.channel_id ||
-                        (
-                            item.id &&
-                            typeof item.id === "string"
-                                ? item.id
-                                : null
-                        );
-
-                    if (channelId) {
-
-                        link =
-                            "https://www.youtube.com/channel/" +
-                            channelId;
-                    }
-                }
-
-                html +=
-                    `
-                    <tr>
-                        <td>${index + 1}</td>
-
-                        <td>
-                            <a
-                                href="${escapeHtml(link)}"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                ${escapeHtml(title)}
-                            </a>
-                        </td>
-
-                        <td>
-                            ${escapeHtml(channel)}
-                        </td>
-
-                        <td>
-                            ${formatNumber(views)}
-                        </td>
-
-                        <td>
-                            ${formatDate(published)}
-                        </td>
-                    </tr>
-                    `;
             }
-        );
 
-        html +=
-            `
-            </tbody>
-            </table>
-            </div>
-            `;
+            html +=
+                `
+                <tr>
 
-        results.innerHTML =
-            html;
-    }
+                    <td>
+                        ${index + 1}
+                    </td>
 
+                    <td>
+                        <a
+                            href="${escapeHtml(link)}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            ${escapeHtml(title)}
+                        </a>
+                    </td>
+
+                    <td>
+                        ${escapeHtml(channel)}
+                    </td>
+
+                    <td>
+                        ${formatNumber(views)}
+                    </td>
+
+                    <td>
+                        ${formatDate(published)}
+                    </td>
+
+                </tr>
+                `;
+        }
+    );
+
+    html +=
+        `
+        </tbody>
+        </table>
+        </div>
+        `;
+
+    results.innerHTML =
+        html;
+}
 
     // ========================================================
     // RADAR

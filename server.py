@@ -382,6 +382,50 @@ def json_loads_safe(
 # SUPABASE MEMORY HELPERS
 # ============================================================
 
+def supabase_save_chat_message(
+    role: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+) -> int | None:
+    """
+    Saves a Director chat message to Supabase.
+    Returns the Supabase row ID.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        result = (
+            supabase
+            .table("chat_messages")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "role": role,
+                    "message": message,
+                    "data_json": data or {},
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        return rows[0].get("id")
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_CHAT_MESSAGE_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
 def supabase_save_director_run(
     language: str,
     region_code: str,
@@ -2054,6 +2098,32 @@ Do not return JSON.
         prompt=prompt,
     )
 
+    # --------------------------------------------------------
+    # SAVE USER MESSAGE
+    # --------------------------------------------------------
+
+    user_message_id = supabase_save_chat_message(
+        role="user",
+        message=message,
+        data={
+            "provider": "openrouter",
+            "model": AI_MODEL,
+        },
+    )
+
+    # --------------------------------------------------------
+    # SAVE DIRECTOR RESPONSE
+    # --------------------------------------------------------
+
+    assistant_message_id = supabase_save_chat_message(
+        role="assistant",
+        message=answer,
+        data={
+            "provider": "openrouter",
+            "model": AI_MODEL,
+        },
+    )
+    
     related_run_ids = [
         run.get("id")
         for run in context.get(
@@ -2083,8 +2153,10 @@ Do not return JSON.
         },
     )
 
-    return {
+        return {
         "answer": answer,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
         "related_run_ids": related_run_ids[:20],
         "related_decision_ids": related_decision_ids[:20],
         "suggested_actions": [],

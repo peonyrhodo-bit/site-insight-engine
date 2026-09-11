@@ -679,6 +679,66 @@ def get_storage_status() -> dict[str, Any]:
         "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
         "remaining_bytes": remaining,
     }
+def get_director_resource_status() -> dict[str, Any]:
+
+    quota = get_youtube_quota_status()
+    storage = get_storage_status()
+
+    search_remaining = int(
+        quota.get(
+            "search_remaining",
+            0,
+        )
+    )
+
+    other_remaining = int(
+        quota.get(
+            "other_remaining",
+            0,
+        )
+    )
+
+    search_reserve = int(
+        math.ceil(
+            search_remaining
+            * YOUTUBE_SEARCH_RESERVE_RATIO
+        )
+    )
+
+    other_reserve = int(
+        math.ceil(
+            other_remaining
+            * YOUTUBE_OTHER_RESERVE_RATIO
+        )
+    )
+
+    searchable_calls = max(
+        0,
+        search_remaining
+        - search_reserve,
+    )
+
+    usable_other_units = max(
+        0,
+        other_remaining
+        - other_reserve,
+    )
+
+    return {
+        "youtube_quota": {
+            "search_remaining": search_remaining,
+            "search_reserve": search_reserve,
+            "search_available_for_research": (
+                searchable_calls
+            ),
+            "other_remaining": other_remaining,
+            "other_reserve": other_reserve,
+            "other_available_for_research": (
+                usable_other_units
+            ),
+        },
+        "storage": storage,
+    }
 
 # ============================================================
 # WEEKLY REPORTS

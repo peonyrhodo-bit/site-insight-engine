@@ -513,106 +513,63 @@ def json_loads_safe(
 # YOUTUBE QUOTA MANAGER
 # ============================================================
 
-def youtube_quota_day_key() -> str:
-    return datetime.now(
-        timezone.utc
-    ).strftime("%Y-%m-%d")
-
-
-def youtube_quota_reset_at() -> str:
-    now = datetime.now(timezone.utc)
-
-    next_day = (
-        now.replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-        + timedelta(days=1)
-    )
-
-    return next_day.isoformat()
-
-
-def get_youtube_quota_usage_today() -> int:
+def get_youtube_quota_status() -> dict[str, Any]:
     conn = get_db()
 
     try:
         row = conn.execute(
             """
-            SELECT COALESCE(
-                SUM(units),
-                0
-            ) AS used
+            SELECT
+                COALESCE(SUM(search_calls), 0) AS search_calls,
+                COALESCE(SUM(other_units), 0) AS other_units
             FROM youtube_quota_usage
-            WHERE created_at >= ?
-            """,
-            (
-                youtube_quota_day_key()
-                + "T00:00:00+00:00",
-            ),
+            WHERE created_at >= date('now')
+            """
         ).fetchone()
 
-        return int(
-            row["used"]
-            if row and row["used"] is not None
+        search_calls = int(
+            row["search_calls"]
+            if row and row["search_calls"] is not None
             else 0
         )
 
-    finally:
-        conn.close()
-
-
-def record_youtube_quota_usage(
-    operation: str,
-    units: int,
-    successful: bool = True,
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    conn = get_db()
-
-    try:
-        conn.execute(
-            """
-            INSERT INTO youtube_quota_usage (
-                created_at,
-                operation,
-                units,
-                successful,
-                metadata_json
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                now_iso(),
-                operation,
-                int(units),
-                1 if successful else 0,
-                json_dumps(metadata or {}),
-            ),
+        other_units = int(
+            row["other_units"]
+            if row and row["other_units"] is not None
+            else 0
         )
 
-        conn.commit()
+        search_limit = int(
+            os.environ.get(
+                "YOUTUBE_SEARCH_DAILY_LIMIT",
+                "100",
+            )
+        )
+
+        other_limit = int(
+            os.environ.get(
+                "YOUTUBE_OTHER_DAILY_QUOTA_UNITS",
+                "10000",
+            )
+        )
+
+        return {
+            "search_calls": search_calls,
+            "search_limit": search_limit,
+            "search_remaining": max(
+                search_limit - search_calls,
+                0,
+            ),
+            "other_units": other_units,
+            "other_limit": other_limit,
+            "other_remaining": max(
+                other_limit - other_units,
+                0,
+            ),
+        }
 
     finally:
         conn.close()
-
-
-def get_youtube_quota_status() -> dict[str, Any]:
-    used = get_youtube_quota_usage_today()
-
-    remaining = max(
-        YOUTUBE_DAILY_QUOTA_UNITS - used,
-        0,
-    )
-
-    return {
-        "daily_limit": YOUTUBE_DAILY_QUOTA_UNITS,
-        "used": used,
-        "remaining": remaining,
-        "reset_at": youtube_quota_reset_at(),
-    }
 
 # ============================================================
 # SUPABASE STORAGE STATUS

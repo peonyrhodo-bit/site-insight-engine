@@ -3822,6 +3822,7 @@ def director_resources():
     return {
         "ok": True,
         "youtube_quota": get_youtube_quota_status(),
+        "storage": get_storage_status(),
     }
         
 @app.get("/database-status")

@@ -4025,10 +4025,23 @@ def choose_director_research_languages(
     # AUTONOMOUS GLOBAL RESEARCH
     # --------------------------------------------------------
 
-    available_languages = [
+        available_languages = [
         "en",
         "hi",
         "zh",
+        "ja",
+        "ko",
+        "es",
+        "pt",
+        "ar",
+        "de",
+        "fr",
+        "it",
+        "tr",
+        "id",
+        "vi",
+        "th",
+        "pl",
         "ru",
     ]
 

@@ -3921,6 +3921,34 @@ async def director_run(
         )[:10],
     }
 
+# ============================================================
+# WEEKLY REPORT API
+# ============================================================
+
+@app.get("/api/weekly-reports")
+def api_weekly_reports(limit: int = 12):
+    limit = max(1, min(limit, 100))
+
+    return {
+        "ok": True,
+        "reports": get_weekly_reports(limit),
+    }
+
+
+@app.get("/api/weekly-reports/{report_id}")
+def api_weekly_report(report_id: int):
+    report = get_weekly_report(report_id)
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Weekly report not found",
+        )
+
+    return {
+        "ok": True,
+        "report": report,
+    }
 
 # ============================================================
 # DIRECTOR HISTORY

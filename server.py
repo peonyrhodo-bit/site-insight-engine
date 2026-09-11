@@ -4006,6 +4006,76 @@ async def director_resources():
     }
 
 # ============================================================
+# DIRECTOR RESEARCH PLANNER
+# ============================================================
+
+def choose_director_research_languages(
+    language: str | None = None,
+    region_code: str | None = None,
+) -> list[str]:
+
+    # --------------------------------------------------------
+    # MANUAL TARGETED RESEARCH
+    # --------------------------------------------------------
+
+    if language:
+        return [language]
+
+    # --------------------------------------------------------
+    # AUTONOMOUS GLOBAL RESEARCH
+    # --------------------------------------------------------
+
+    available_languages = [
+        "en",
+        "hi",
+        "zh",
+        "ru",
+    ]
+
+    quota = get_youtube_quota_status()
+
+    search_remaining = int(
+        quota.get(
+            "search_remaining",
+            0,
+        )
+    )
+
+    if search_remaining <= 0:
+        return []
+
+    # Один язык = несколько search.list вызовов.
+    # Поэтому не пытаемся исследовать всё сразу.
+    if search_remaining >= 20:
+        max_languages = 4
+    elif search_remaining >= 12:
+        max_languages = 3
+    elif search_remaining >= 8:
+        max_languages = 2
+    else:
+        max_languages = 1
+
+    # Небольшая ротация направлений.
+    # Director не будет каждый раз начинать с одного
+    # и того же языка.
+    from datetime import datetime, timezone
+
+    day_number = (
+        datetime.now(timezone.utc).timetuple().tm_yday
+    )
+
+    offset = day_number % len(
+        available_languages
+    )
+
+    rotated = (
+        available_languages[offset:]
+        + available_languages[:offset]
+    )
+
+    return rotated[:max_languages]
+        
+# ============================================================
 # DIRECTOR RUN
 # ============================================================
 
@@ -4026,16 +4096,34 @@ async def director_run(
         },
     )
 
+       # --------------------------------------------------------
+    # 1. DIRECTOR RESEARCH PLAN
     # --------------------------------------------------------
-    # 1. RADAR
+
+    research_languages = (
+        choose_director_research_languages(
+            language=language,
+            region_code=region_code,
+        )
+    )
+
+    log_event(
+        "director_research_plan_created",
+        {
+            "language": language,
+            "region_code": region_code,
+            "research_languages": research_languages,
+        },
+    )
+
+    # --------------------------------------------------------
+    # 2. RADAR
     # --------------------------------------------------------
 
     radar_result = await mcp_call(
         "search_radar_videos",
         {
-            "languages": [
-                language
-            ],
+            "languages": research_languages,
             "max_results_per_query": 10,
         },
     )
@@ -4055,7 +4143,6 @@ async def director_run(
         )
         else False
     )
-
     # --------------------------------------------------------
     # 2. SAVE RADAR SNAPSHOT
     # --------------------------------------------------------

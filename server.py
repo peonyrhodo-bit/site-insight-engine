@@ -4086,6 +4086,96 @@ def choose_director_research_languages(
     )
 
     return rotated[:max_languages]
+
+def choose_director_research_queries(
+    language: str | None = None,
+    previous_analysis: dict[str, Any] | None = None,
+) -> list[str]:
+
+    # --------------------------------------------------------
+    # BASE QUERY CATALOG
+    # --------------------------------------------------------
+
+    base_queries = {
+        "ru": [
+            "интересные факты",
+            "новые технологии",
+            "истории которые удивляют",
+            "образование короткие видео",
+        ],
+        "en": [
+            "interesting facts",
+            "new technology",
+            "stories that surprise",
+            "educational shorts",
+        ],
+        "hi": [
+            "interesting facts",
+            "new technology",
+            "amazing stories",
+            "educational shorts",
+        ],
+        "zh": [
+            "有趣的事实",
+            "新科技",
+            "令人惊讶的故事",
+            "教育短视频",
+        ],
+    }
+
+    # --------------------------------------------------------
+    # FALLBACK
+    # --------------------------------------------------------
+
+    if not previous_analysis:
+        return base_queries.get(
+            language or "en",
+            base_queries["en"],
+        )
+
+    # --------------------------------------------------------
+    # USE DIRECTOR'S PREVIOUS DISCOVERY
+    # --------------------------------------------------------
+
+    topics = previous_analysis.get(
+        "topics",
+        [],
+    )
+
+    formats = previous_analysis.get(
+        "formats",
+        [],
+    )
+
+    generated_queries = []
+
+    for topic in topics:
+        if not isinstance(topic, str):
+            continue
+
+        generated_queries.append(topic)
+
+    for fmt in formats:
+        if not isinstance(fmt, str):
+            continue
+
+        generated_queries.append(fmt)
+
+    # --------------------------------------------------------
+    # SAFETY FALLBACK
+    # --------------------------------------------------------
+
+    if not generated_queries:
+        return base_queries.get(
+            language or "en",
+            base_queries["en"],
+        )
+
+    # --------------------------------------------------------
+    # LIMIT
+    # --------------------------------------------------------
+
+    return generated_queries[:8]
         
 # ============================================================
 # DIRECTOR RUN

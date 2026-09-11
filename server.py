@@ -3981,6 +3981,12 @@ async def director_decision(
         "run_id": run_id,
         "decision": decision,
     }
+class DirectorActionRequest(BaseModel):
+    description: str
+    action_type: str = "general"
+    run_id: int | None = None
+    decision_id: int | None = None
+    data: dict[str, Any] = {}
 
 # ============================================================
 # DIRECTOR ACTION
@@ -3988,80 +3994,15 @@ async def director_decision(
 
 @app.post("/director/action")
 async def director_action(
-    request: Request,
+    request: DirectorActionRequest,
 ):
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    description = str(
-        body.get(
-            "description",
-            "",
-        )
-    ).strip()
-
-    if not description:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "description is required",
-            },
-        )
-
-    action_type = str(
-        body.get(
-            "action_type",
-            "general",
-        )
-    ).strip()
-
-    run_id = body.get(
-        "run_id"
-    )
-
-    decision_id = body.get(
-        "decision_id"
-    )
-
-    data = body.get(
-        "data",
-        {},
-    )
-
-    if not isinstance(
-        data,
-        dict,
-    ):
-        data = {}
-
-    try:
-        run_id = (
-            int(run_id)
-            if run_id is not None
-            else None
-        )
-    except Exception:
-        run_id = None
-
-    try:
-        decision_id = (
-            int(decision_id)
-            if decision_id is not None
-            else None
-        )
-    except Exception:
-        decision_id = None
-
     action_id = supabase_save_action(
-        description=description,
-        action_type=action_type,
-        run_id=run_id,
-        decision_id=decision_id,
-        data=data,
+        description=request.description,
+        action_type=request.action_type,
+        run_id=request.run_id,
+        decision_id=request.decision_id,
+        data=request.data,
     )
 
     if action_id is None:
@@ -4069,7 +4010,10 @@ async def director_action(
             status_code=503,
             content={
                 "ok": False,
-                "error": "Action could not be saved to Supabase.",
+                "error": (
+                    "Action could not be saved "
+                    "to Supabase."
+                ),
             },
         )
 
@@ -4077,20 +4021,19 @@ async def director_action(
         "director_action_created",
         {
             "action_id": action_id,
-            "run_id": run_id,
-            "decision_id": decision_id,
-            "action_type": action_type,
+            "run_id": request.run_id,
+            "decision_id": request.decision_id,
+            "action_type": request.action_type,
         },
     )
 
     return {
         "ok": True,
         "action_id": action_id,
-        "run_id": run_id,
-        "decision_id": decision_id,
+        "run_id": request.run_id,
+        "decision_id": request.decision_id,
         "status": "pending",
     }
-
 
 # ============================================================
 # DIRECTOR RESULT

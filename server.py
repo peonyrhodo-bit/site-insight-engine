@@ -11,7 +11,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
-import requests
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware

@@ -358,14 +358,12 @@ def init_db() -> None:
         )
         """
     )
-  
 
-conn.commit()
-conn.close()
+    conn.commit()
+    conn.close()
 
 
 init_db()
-
 
 # ============================================================
 # GENERAL HELPERS

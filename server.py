@@ -396,6 +396,160 @@ def json_loads_safe(
         return default
 
 # ============================================================
+# WEEKLY REPORTS
+# ============================================================
+
+def save_weekly_report(
+    week_start: str,
+    week_end: str,
+    summary: str = "",
+    what_happened: str = "",
+    what_worked: str = "",
+    what_did_not_work: str = "",
+    what_changed: str = "",
+    recommendations: str = "",
+    raw_context: dict[str, Any] | None = None,
+) -> int | None:
+    conn = get_db()
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO weekly_reports (
+                week_start,
+                week_end,
+                created_at,
+                summary,
+                what_happened,
+                what_worked,
+                what_did_not_work,
+                what_changed,
+                recommendations,
+                raw_context
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                week_start,
+                week_end,
+                now_iso(),
+                summary,
+                what_happened,
+                what_worked,
+                what_did_not_work,
+                what_changed,
+                recommendations,
+                json_dumps(raw_context or {}),
+            ),
+        )
+
+        conn.commit()
+
+        return cursor.lastrowid
+
+    except Exception as exc:
+        logger.error(
+            "SAVE_WEEKLY_REPORT_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+        return None
+
+    finally:
+        conn.close()
+
+
+def get_weekly_reports(
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    conn = get_db()
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM weekly_reports
+            ORDER BY week_end DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "week_start": row["week_start"],
+                "week_end": row["week_end"],
+                "created_at": row["created_at"],
+                "summary": row["summary"] or "",
+                "what_happened": row["what_happened"] or "",
+                "what_worked": row["what_worked"] or "",
+                "what_did_not_work": (
+                    row["what_did_not_work"] or ""
+                ),
+                "what_changed": row["what_changed"] or "",
+                "recommendations": (
+                    row["recommendations"] or ""
+                ),
+                "raw_context": json_loads_safe(
+                    row["raw_context"],
+                    {},
+                ),
+            }
+            for row in rows
+        ]
+
+    finally:
+        conn.close()
+
+
+def get_weekly_report(
+    report_id: int,
+) -> dict[str, Any] | None:
+    conn = get_db()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM weekly_reports
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (report_id,),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "week_start": row["week_start"],
+            "week_end": row["week_end"],
+            "created_at": row["created_at"],
+            "summary": row["summary"] or "",
+            "what_happened": row["what_happened"] or "",
+            "what_worked": row["what_worked"] or "",
+            "what_did_not_work": (
+                row["what_did_not_work"] or ""
+            ),
+            "what_changed": row["what_changed"] or "",
+            "recommendations": (
+                row["recommendations"] or ""
+            ),
+            "raw_context": json_loads_safe(
+                row["raw_context"],
+                {},
+            ),
+        }
+
+    finally:
+        conn.close()
+
+# ============================================================
 # SUPABASE MEMORY HELPERS
 # ============================================================
 

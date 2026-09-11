@@ -450,45 +450,6 @@ def now_iso() -> str:
         timezone.utc
     ).isoformat()
 
-def get_youtube_quota_status() -> dict[str, Any]:
-    conn = get_db()
-
-    row = conn.execute("""
-        SELECT
-            COALESCE(SUM(search_calls), 0) AS search_calls,
-            COALESCE(SUM(other_units), 0) AS other_units
-        FROM youtube_quota_usage
-        WHERE created_at >= date('now')
-    """).fetchone()
-
-    conn.close()
-
-    search_calls = int(row["search_calls"] or 0)
-    other_units = int(row["other_units"] or 0)
-
-    search_limit = int(
-        os.environ.get("YOUTUBE_SEARCH_DAILY_LIMIT", "100")
-    )
-
-    other_limit = int(
-        os.environ.get("YOUTUBE_OTHER_DAILY_QUOTA_UNITS", "10000")
-    )
-
-    return {
-        "search_calls_used": search_calls,
-        "search_calls_limit": search_limit,
-        "search_calls_remaining": max(
-            0,
-            search_limit - search_calls,
-        ),
-        "other_units_used": other_units,
-        "other_units_limit": other_limit,
-        "other_units_remaining": max(
-            0,
-            other_limit - other_units,
-        ),
-    }
-
 def json_dumps(data: Any) -> str:
     return json.dumps(
         data,
@@ -4086,97 +4047,179 @@ def choose_director_research_languages(
     )
 
     return rotated[:max_languages]
-
 def choose_director_research_queries(
     language: str | None = None,
     previous_analysis: dict[str, Any] | None = None,
 ) -> list[str]:
 
-    # --------------------------------------------------------
-    # BASE QUERY CATALOG
-    # --------------------------------------------------------
+    previous_analysis = (
+        previous_analysis
+        if isinstance(
+            previous_analysis,
+            dict,
+        )
+        else {}
+    )
 
-    base_queries = {
-        "ru": [
-            "интересные факты",
-            "новые технологии",
-            "истории которые удивляют",
-            "образование короткие видео",
-        ],
-        "en": [
-            "interesting facts",
-            "new technology",
-            "stories that surprise",
-            "educational shorts",
-        ],
-        "hi": [
-            "interesting facts",
-            "new technology",
-            "amazing stories",
-            "educational shorts",
-        ],
-        "zh": [
-            "有趣的事实",
-            "新科技",
-            "令人惊讶的故事",
-            "教育短视频",
-        ],
-    }
+    prompt = json_dumps(
+        {
+            "task": (
+                "Choose the YouTube research directions "
+                "that the Director should investigate next."
+            ),
+            "language": language,
+            "previous_analysis": previous_analysis,
+            "rules": [
+                (
+                    "There is no fixed topic catalog."
+                ),
+                (
+                    "Do not restrict research to predefined "
+                    "topics."
+                ),
+                (
+                    "You may choose completely new topics."
+                ),
+                (
+                    "You may investigate adjacent topics."
+                ),
+                (
+                    "You may investigate unrelated topics "
+                    "when that is useful for discovering "
+                    "new opportunities."
+                ),
+                (
+                    "Queries must be concrete YouTube search "
+                    "queries."
+                ),
+                (
+                    "Use the previous analysis when it provides "
+                    "useful evidence."
+                ),
+                (
+                    "Do not assume that previous topics are "
+                    "the only topics worth researching."
+                ),
+                (
+                    "Do not recommend news."
+                ),
+                (
+                    "Do not recommend politics."
+                ),
+                (
+                    "Do not recommend 18+ content."
+                ),
+                (
+                    "Do not recommend gore, torture, graphic "
+                    "injury, glorification or incitement "
+                    "of violence."
+                ),
+            ],
+        }
+    )
 
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
+    system_instruction = """
+You are the research-planning brain of an autonomous
+AI Director for YouTube.
 
-    if not previous_analysis:
-        return base_queries.get(
-            language or "en",
-            base_queries["en"],
+Your job is to decide what the Director should search
+for next.
+
+There is NO fixed topic catalog.
+
+The Director must be able to discover completely new
+topics, niches, formats, audience interests and emerging
+content directions.
+
+Previous research is evidence, not a restriction.
+
+You may:
+- continue a promising direction;
+- investigate an adjacent direction;
+- compare different niches;
+- test a hypothesis;
+- investigate a completely new subject;
+- investigate a new format;
+- investigate a new audience interest.
+
+Do not recommend:
+- news;
+- politics;
+- 18+ content;
+- gore;
+- torture;
+- graphic injury;
+- glorification or incitement of violence.
+
+Return ONLY valid JSON in this structure:
+
+{
+  "queries": [
+    "concrete YouTube search query"
+  ]
+}
+
+Do not return explanations.
+"""
+
+    if not AI_ENABLED:
+        return []
+
+    try:
+        result = openrouter_generate_json(
+            system_instruction=system_instruction,
+            prompt=prompt,
         )
 
-    # --------------------------------------------------------
-    # USE DIRECTOR'S PREVIOUS DISCOVERY
-    # --------------------------------------------------------
+    except Exception as exc:
 
-    topics = previous_analysis.get(
-        "topics",
+        logger.warning(
+            "DIRECTOR_QUERY_PLANNER_FAILED "
+            "error_type=%s",
+            type(exc).__name__,
+        )
+
+        log_event(
+            "director_query_planner_failed",
+            {
+                "error_type": type(exc).__name__,
+            },
+        )
+
+        return []
+
+    queries = result.get(
+        "queries",
         [],
     )
 
-    formats = previous_analysis.get(
-        "formats",
-        [],
-    )
+    if not isinstance(
+        queries,
+        list,
+    ):
+        return []
 
-    generated_queries = []
+    cleaned_queries = []
 
-    for topic in topics:
-        if not isinstance(topic, str):
+    for query in queries:
+
+        if not isinstance(
+            query,
+            str,
+        ):
             continue
 
-        generated_queries.append(topic)
+        query = query.strip()
 
-    for fmt in formats:
-        if not isinstance(fmt, str):
+        if not query:
             continue
 
-        generated_queries.append(fmt)
+        if query not in cleaned_queries:
+            cleaned_queries.append(
+                query
+            )
 
-    # --------------------------------------------------------
-    # SAFETY FALLBACK
-    # --------------------------------------------------------
-
-    if not generated_queries:
-        return base_queries.get(
-            language or "en",
-            base_queries["en"],
-        )
-
-    # --------------------------------------------------------
-    # LIMIT
-    # --------------------------------------------------------
-
-    return generated_queries[:8]
-        
+    return cleaned_queries     
 # ============================================================
 # DIRECTOR RUN
 # ============================================================
@@ -4208,13 +4251,21 @@ async def director_run(
             region_code=region_code,
         )
     )
-
+    
+    research_queries = (
+        choose_director_research_queries(
+            language=language,
+            previous_analysis=None,
+        )
+    )
+    
     log_event(
         "director_research_plan_created",
         {
             "language": language,
             "region_code": region_code,
             "research_languages": research_languages,
+            "research_queries": research_queries,
         },
     )
 
@@ -4226,6 +4277,7 @@ async def director_run(
         "search_radar_videos",
         {
             "languages": research_languages,
+            "queries": research_queries,
             "max_results_per_query": 10,
         },
     )

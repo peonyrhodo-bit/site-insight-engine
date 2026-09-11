@@ -4035,97 +4035,28 @@ async def director_action(
         "status": "pending",
     }
 
+class DirectorResultRequest(BaseModel):
+    action_id: int
+    summary: str
+    result_type: str = "completed"
+    run_id: int | None = None
+    data: dict[str, Any] = {}
+
 # ============================================================
 # DIRECTOR RESULT
 # ============================================================
 
 @app.post("/director/result")
 async def director_result(
-    request: Request,
+    request: DirectorResultRequest,
 ):
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    action_id = body.get(
-        "action_id"
-    )
-
-    if action_id is None:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "action_id is required",
-            },
-        )
-
-    try:
-        action_id = int(action_id)
-    except Exception:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "action_id must be an integer",
-            },
-        )
-
-    summary = str(
-        body.get(
-            "summary",
-            "",
-        )
-    ).strip()
-
-    if not summary:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "summary is required",
-            },
-        )
-
-    result_type = str(
-        body.get(
-            "result_type",
-            "completed",
-        )
-    ).strip()
-
-    run_id = body.get(
-        "run_id"
-    )
-
-    try:
-        run_id = (
-            int(run_id)
-            if run_id is not None
-            else None
-        )
-    except Exception:
-        run_id = None
-
-    data = body.get(
-        "data",
-        {},
-    )
-
-    if not isinstance(
-        data,
-        dict,
-    ):
-        data = {}
-
     result_id = supabase_save_result(
-        action_id=action_id,
-        summary=summary,
-        result_type=result_type,
-        run_id=run_id,
-        data=data,
+        action_id=request.action_id,
+        summary=request.summary,
+        result_type=request.result_type,
+        run_id=request.run_id,
+        data=request.data,
     )
 
     if result_id is None:
@@ -4133,24 +4064,27 @@ async def director_result(
             status_code=503,
             content={
                 "ok": False,
-                "error": "Result could not be saved to Supabase.",
+                "error": (
+                    "Result could not be saved "
+                    "to Supabase."
+                ),
             },
         )
 
     log_event(
         "director_action_completed",
         {
-            "action_id": action_id,
+            "action_id": request.action_id,
             "result_id": result_id,
-            "run_id": run_id,
+            "run_id": request.run_id,
         },
     )
 
     return {
         "ok": True,
         "result_id": result_id,
-        "action_id": action_id,
-        "run_id": run_id,
+        "action_id": request.action_id,
+        "run_id": request.run_id,
         "status": "completed",
     }
 

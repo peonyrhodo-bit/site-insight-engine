@@ -3892,8 +3892,7 @@ async def radar_history(
 def director_resources():
     return {
         "ok": True,
-        "youtube_quota": get_youtube_quota_status(),
-        "storage": get_storage_status(),
+        "resources": get_director_resource_status(),
     }
         
 @app.get("/database-status")
@@ -4065,16 +4064,6 @@ async def director_debug(
 
     return result
 
-# ============================================================
-# DIRECTOR RESOURCES
-# ============================================================
-
-@app.get("/director/resources")
-async def director_resources():
-    return {
-        "ok": True,
-        "resources": get_director_resource_status(),
-    }
 
 # ============================================================
 # DIRECTOR RESEARCH PLANNER

@@ -4015,17 +4015,10 @@ def choose_director_research_languages(
 ) -> list[str]:
 
     # --------------------------------------------------------
-    # MANUAL TARGETED RESEARCH
-    # --------------------------------------------------------
-
-    if language:
-        return [language]
-
-    # --------------------------------------------------------
     # AUTONOMOUS GLOBAL RESEARCH
     # --------------------------------------------------------
 
-        available_languages = [
+    available_languages = [
         "en",
         "hi",
         "zh",
@@ -4045,6 +4038,17 @@ def choose_director_research_languages(
         "ru",
     ]
 
+    # --------------------------------------------------------
+    # MANUAL TARGETED RESEARCH
+    # --------------------------------------------------------
+
+    if language:
+        return [language]
+
+    # --------------------------------------------------------
+    # QUOTA-AWARE LANGUAGE SELECTION
+    # --------------------------------------------------------
+
     quota = get_youtube_quota_status()
 
     search_remaining = int(
@@ -4057,8 +4061,6 @@ def choose_director_research_languages(
     if search_remaining <= 0:
         return []
 
-    # Один язык = несколько search.list вызовов.
-    # Поэтому не пытаемся исследовать всё сразу.
     if search_remaining >= 20:
         max_languages = 4
     elif search_remaining >= 12:
@@ -4068,9 +4070,6 @@ def choose_director_research_languages(
     else:
         max_languages = 1
 
-    # Небольшая ротация направлений.
-    # Director не будет каждый раз начинать с одного
-    # и того же языка.
     from datetime import datetime, timezone
 
     day_number = (

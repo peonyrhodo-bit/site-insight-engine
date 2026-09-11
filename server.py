@@ -4012,8 +4012,8 @@ async def director_resources():
 @app.post("/director/run")
 @app.get("/director/run")
 async def director_run(
-    language: str = "ru",
-    region_code: str = "RU",
+    language: str | None = None,
+    region_code: str | None = None,
 ):
 
     started_at = now_iso()

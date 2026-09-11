@@ -8,7 +8,7 @@ import hmac
 import secrets
 import requests
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 import requests
@@ -130,7 +130,33 @@ AUTONOMOUS = (
     == "true"
 )
 
+# ============================================================
+# YOUTUBE / STORAGE RESOURCE LIMITS
+# ============================================================
 
+YOUTUBE_DAILY_QUOTA_UNITS = int(
+    os.environ.get(
+        "YOUTUBE_DAILY_QUOTA_UNITS",
+        "10000",
+    )
+)
+
+YOUTUBE_SEARCH_COST = 100
+YOUTUBE_VIDEO_STATS_COST = 1
+
+SUPABASE_STORAGE_SOFT_LIMIT_BYTES = int(
+    os.environ.get(
+        "SUPABASE_STORAGE_SOFT_LIMIT_BYTES",
+        str(450 * 1024 * 1024),
+    )
+)
+
+SUPABASE_STORAGE_RESERVE_BYTES = int(
+    os.environ.get(
+        "SUPABASE_STORAGE_RESERVE_BYTES",
+        str(50 * 1024 * 1024),
+    )
+)
 # ============================================================
 # OPENROUTER AI
 # ============================================================
@@ -284,7 +310,7 @@ def get_db() -> sqlite3.Connection:
 def init_db() -> None:
     conn = get_db()
     cursor = conn.cursor()
-
+    
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS videos (
@@ -295,7 +321,16 @@ def init_db() -> None:
         )
         """
     )
-
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS youtube_quota_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            search_calls INTEGER NOT NULL DEFAULT 0,
+            other_units INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT
+        )
+    """)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS video_snapshots (
@@ -358,7 +393,18 @@ def init_db() -> None:
         )
         """
     )
-
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS youtube_quota_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            units INTEGER NOT NULL,
+            successful INTEGER NOT NULL DEFAULT 1,
+            metadata_json TEXT
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -374,6 +420,44 @@ def now_iso() -> str:
         timezone.utc
     ).isoformat()
 
+def get_youtube_quota_status() -> dict[str, Any]:
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT
+            COALESCE(SUM(search_calls), 0) AS search_calls,
+            COALESCE(SUM(other_units), 0) AS other_units
+        FROM youtube_quota_usage
+        WHERE created_at >= date('now')
+    """).fetchone()
+
+    conn.close()
+
+    search_calls = int(row["search_calls"] or 0)
+    other_units = int(row["other_units"] or 0)
+
+    search_limit = int(
+        os.environ.get("YOUTUBE_SEARCH_DAILY_LIMIT", "100")
+    )
+
+    other_limit = int(
+        os.environ.get("YOUTUBE_OTHER_DAILY_QUOTA_UNITS", "10000")
+    )
+
+    return {
+        "search_calls_used": search_calls,
+        "search_calls_limit": search_limit,
+        "search_calls_remaining": max(
+            0,
+            search_limit - search_calls,
+        ),
+        "other_units_used": other_units,
+        "other_units_limit": other_limit,
+        "other_units_remaining": max(
+            0,
+            other_limit - other_units,
+        ),
+    }
 
 def json_dumps(data: Any) -> str:
     return json.dumps(
@@ -394,6 +478,176 @@ def json_loads_safe(
         return json.loads(value)
     except Exception:
         return default
+
+# ============================================================
+# YOUTUBE QUOTA MANAGER
+# ============================================================
+
+def youtube_quota_day_key() -> str:
+    return datetime.now(
+        timezone.utc
+    ).strftime("%Y-%m-%d")
+
+
+def youtube_quota_reset_at() -> str:
+    now = datetime.now(timezone.utc)
+
+    next_day = (
+        now.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        + timedelta(days=1)
+    )
+
+    return next_day.isoformat()
+
+
+def get_youtube_quota_usage_today() -> int:
+    conn = get_db()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(
+                SUM(units),
+                0
+            ) AS used
+            FROM youtube_quota_usage
+            WHERE created_at >= ?
+            """,
+            (
+                youtube_quota_day_key()
+                + "T00:00:00+00:00",
+            ),
+        ).fetchone()
+
+        return int(
+            row["used"]
+            if row and row["used"] is not None
+            else 0
+        )
+
+    finally:
+        conn.close()
+
+
+def record_youtube_quota_usage(
+    operation: str,
+    units: int,
+    successful: bool = True,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    conn = get_db()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO youtube_quota_usage (
+                created_at,
+                operation,
+                units,
+                successful,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                now_iso(),
+                operation,
+                int(units),
+                1 if successful else 0,
+                json_dumps(metadata or {}),
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def get_youtube_quota_status() -> dict[str, Any]:
+    used = get_youtube_quota_usage_today()
+
+    remaining = max(
+        YOUTUBE_DAILY_QUOTA_UNITS - used,
+        0,
+    )
+
+    return {
+        "daily_limit": YOUTUBE_DAILY_QUOTA_UNITS,
+        "used": used,
+        "remaining": remaining,
+        "reset_at": youtube_quota_reset_at(),
+    }
+
+# ============================================================
+# SUPABASE STORAGE STATUS
+# ============================================================
+
+def get_storage_status() -> dict[str, Any]:
+    if not SUPABASE_ENABLED or supabase is None:
+        return {
+            "available": False,
+            "estimated_bytes": 0,
+            "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
+            "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
+            "remaining_bytes": 0,
+        }
+
+    conn = get_db()
+
+    try:
+        videos_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM videos
+            """
+        ).fetchone()[0]
+
+        snapshots_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM video_snapshots
+            """
+        ).fetchone()[0]
+
+    finally:
+        conn.close()
+
+    # --------------------------------------------------------
+    # Conservative estimate.
+    # Supabase is the primary storage for video data.
+    # --------------------------------------------------------
+
+    estimated_bytes = (
+        int(videos_count) * 8_000
+        + int(snapshots_count) * 8_000
+    )
+
+    remaining = max(
+        SUPABASE_STORAGE_SOFT_LIMIT_BYTES
+        - SUPABASE_STORAGE_RESERVE_BYTES
+        - estimated_bytes,
+        0,
+    )
+
+    return {
+        "available": True,
+        "videos": int(videos_count),
+        "snapshots": int(snapshots_count),
+        "estimated_bytes": estimated_bytes,
+        "limit_bytes": (
+            SUPABASE_STORAGE_SOFT_LIMIT_BYTES
+        ),
+        "reserve_bytes": (
+            SUPABASE_STORAGE_RESERVE_BYTES
+        ),
+        "remaining_bytes": remaining,
+    }
 
 # ============================================================
 # WEEKLY REPORTS
@@ -1476,8 +1730,8 @@ def save_snapshot(
     """
     Save YouTube video observations to Supabase.
 
-    The local SQLite database is not used as the primary
-    storage for new snapshots anymore.
+    Existing videos are updated in `videos`.
+    Every observation is preserved in `video_snapshots`.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
@@ -1485,9 +1739,12 @@ def save_snapshot(
             "Supabase is not configured"
         )
 
+    if not videos:
+        return 0
+
     created_at = now_iso()
 
-    count = 0
+    normalized: list[dict[str, Any]] = []
 
     for video in videos:
         video_id = (
@@ -1503,68 +1760,94 @@ def save_snapshot(
         if not video_id:
             continue
 
-        video_id = str(video_id)
-
-        # ----------------------------------------------------
-        # Check whether this video already exists
-        # ----------------------------------------------------
-
-        existing_result = (
-            supabase
-            .table("videos")
-            .select("first_seen")
-            .eq("video_id", video_id)
-            .limit(1)
-            .execute()
+        normalized.append(
+            {
+                "video_id": str(video_id),
+                "video": video,
+            }
         )
 
-        existing_rows = (
-            existing_result.data
-            if existing_result.data
-            else []
-        )
+    if not normalized:
+        return 0
 
-        if existing_rows:
-            first_seen = (
-                existing_rows[0].get(
-                    "first_seen"
-                )
-                or created_at
+    video_ids = [
+        item["video_id"]
+        for item in normalized
+    ]
+
+    existing_result = (
+        supabase
+        .table("videos")
+        .select(
+            "video_id,first_seen"
+        )
+        .in_(
+            "video_id",
+            video_ids,
+        )
+        .execute()
+    )
+
+    existing_rows = (
+        existing_result.data or []
+    )
+
+    first_seen_by_id = {
+        str(row.get("video_id")): (
+            row.get("first_seen")
+            or created_at
+        )
+        for row in existing_rows
+    }
+
+    video_rows = []
+
+    snapshot_rows = []
+
+    for item in normalized:
+        video_id = item["video_id"]
+        video = item["video"]
+
+        first_seen = (
+            first_seen_by_id.get(
+                video_id
             )
-        else:
-            first_seen = created_at
+            or created_at
+        )
 
-        # ----------------------------------------------------
-        # Save / update current video state
-        # ----------------------------------------------------
-
-        supabase.table("videos").upsert(
+        video_rows.append(
             {
                 "video_id": video_id,
                 "data_json": video,
                 "first_seen": first_seen,
                 "last_seen": created_at,
-            },
-            on_conflict="video_id",
-        ).execute()
+            }
+        )
 
-        # ----------------------------------------------------
-        # Save immutable snapshot
-        # ----------------------------------------------------
-
-        supabase.table(
-            "video_snapshots"
-        ).insert(
+        snapshot_rows.append(
             {
                 "created_at": created_at,
                 "video_id": video_id,
                 "data_json": video,
             }
-        ).execute()
+        )
 
-        count += 1
+    supabase.table(
+        "videos"
+    ).upsert(
+        video_rows,
+        on_conflict="video_id",
+    ).execute()
 
-    return count
+    supabase.table(
+        "video_snapshots"
+    ).insert(
+        snapshot_rows
+    ).execute()
+
+    return len(
+        snapshot_rows
+    )
 
 # ============================================================
 # NORMALIZED VIDEO METRICS
@@ -3534,6 +3817,13 @@ async def radar_history(
 # DATABASE STATUS
 # ============================================================
 
+@app.get("/director/resources")
+def director_resources():
+    return {
+        "ok": True,
+        "youtube_quota": get_youtube_quota_status(),
+    }
+        
 @app.get("/database-status")
 async def database_status():
 
@@ -3703,6 +3993,16 @@ async def director_debug(
 
     return result
 
+# ============================================================
+# DIRECTOR RESOURCES
+# ============================================================
+
+@app.get("/director/resources")
+async def director_resources():
+    return {
+        "ok": True,
+        "resources": get_director_resource_status(),
+    }
 
 # ============================================================
 # DIRECTOR RUN

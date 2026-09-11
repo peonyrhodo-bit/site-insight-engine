@@ -549,6 +549,59 @@ def get_youtube_quota_status() -> dict[str, Any]:
     finally:
         conn.close()
 
+def record_youtube_quota_usage(
+    operation: str,
+    search_calls: int = 0,
+    other_units: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+
+    search_calls = max(
+        0,
+        int(search_calls or 0),
+    )
+
+    other_units = max(
+        0,
+        int(other_units or 0),
+    )
+
+    if (
+        search_calls == 0
+        and other_units == 0
+    ):
+        return
+
+    conn = get_db()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO youtube_quota_usage (
+                created_at,
+                operation,
+                search_calls,
+                other_units,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                now_iso(),
+                operation,
+                search_calls,
+                other_units,
+                json_dumps(
+                    metadata or {}
+                ),
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
 # ============================================================
 # SUPABASE STORAGE STATUS
 # ============================================================

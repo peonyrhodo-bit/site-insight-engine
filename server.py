@@ -4132,15 +4132,6 @@ def choose_director_research_languages(
     if search_remaining <= 0:
         return []
 
-    if search_remaining >= 20:
-        max_languages = 4
-    elif search_remaining >= 12:
-        max_languages = 3
-    elif search_remaining >= 8:
-        max_languages = 2
-    else:
-        max_languages = 1
-
     from datetime import datetime, timezone
 
     day_number = (
@@ -4156,7 +4147,7 @@ def choose_director_research_languages(
         + available_languages[:offset]
     )
 
-    return rotated[:max_languages]
+    return rotated
 def choose_director_research_queries(
     language: str | None = None,
     previous_analysis: dict[str, Any] | None = None,

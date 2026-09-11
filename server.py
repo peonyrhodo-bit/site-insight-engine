@@ -579,31 +579,48 @@ def get_storage_status() -> dict[str, Any]:
     if not SUPABASE_ENABLED or supabase is None:
         return {
             "available": False,
+            "videos": 0,
+            "snapshots": 0,
             "estimated_bytes": 0,
             "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
             "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
             "remaining_bytes": 0,
         }
 
-    conn = get_db()
-
     try:
-        videos_count = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM videos
-            """
-        ).fetchone()[0]
+        videos_result = (
+            supabase
+            .table("videos")
+            .select("video_id", count="exact", head=True)
+            .execute()
+        )
 
-        snapshots_count = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM video_snapshots
-            """
-        ).fetchone()[0]
+        snapshots_result = (
+            supabase
+            .table("video_snapshots")
+            .select("id", count="exact", head=True)
+            .execute()
+        )
 
-    finally:
-        conn.close()
+        videos_count = int(videos_result.count or 0)
+        snapshots_count = int(snapshots_result.count or 0)
+
+    except Exception as exc:
+        logging.exception(
+            "Failed to read Supabase storage counts: %s",
+            exc,
+        )
+
+        return {
+            "available": False,
+            "videos": 0,
+            "snapshots": 0,
+            "estimated_bytes": 0,
+            "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
+            "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
+            "remaining_bytes": 0,
+            "error": str(exc),
+        }
 
     # --------------------------------------------------------
     # Conservative estimate.
@@ -611,8 +628,8 @@ def get_storage_status() -> dict[str, Any]:
     # --------------------------------------------------------
 
     estimated_bytes = (
-        int(videos_count) * 8_000
-        + int(snapshots_count) * 8_000
+        videos_count * 8_000
+        + snapshots_count * 8_000
     )
 
     remaining = max(
@@ -624,15 +641,11 @@ def get_storage_status() -> dict[str, Any]:
 
     return {
         "available": True,
-        "videos": int(videos_count),
-        "snapshots": int(snapshots_count),
+        "videos": videos_count,
+        "snapshots": snapshots_count,
         "estimated_bytes": estimated_bytes,
-        "limit_bytes": (
-            SUPABASE_STORAGE_SOFT_LIMIT_BYTES
-        ),
-        "reserve_bytes": (
-            SUPABASE_STORAGE_RESERVE_BYTES
-        ),
+        "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
+        "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
         "remaining_bytes": remaining,
     }
 

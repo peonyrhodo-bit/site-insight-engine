@@ -340,7 +340,7 @@ def init_db() -> None:
         )
         """
     )
-****************************************************************************************************
+
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS weekly_reports (

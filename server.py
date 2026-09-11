@@ -4225,11 +4225,12 @@ async def director_run(
     # 6. SAVE RUN
     # --------------------------------------------------------
 
-    run_data = {
+        run_data = {
         "started_at": started_at,
         "finished_at": now_iso(),
         "language": language,
         "region_code": region_code,
+        "research_languages": research_languages,
         "radar_count": len(
             radar_videos
         ),
@@ -4299,6 +4300,12 @@ async def director_run(
     return {
         "ok": True,
         "run_id": run_id,
+                "research": {
+            "languages": research_languages,
+        },
+                "research": {
+            "languages": research_languages,
+        },
         "radar": {
             "count": len(
                 radar_videos

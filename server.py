@@ -4586,11 +4586,10 @@ else:
         "ok": True,
         "run_id": run_id,
                 "research": {
-            "languages": research_languages,
-        },
-                "research": {
-            "languages": research_languages,
-        },
+            "research": {
+    "languages": research_languages,
+    "queries": research_queries,
+},
         "radar": {
             "count": len(
                 radar_videos

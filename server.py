@@ -4516,6 +4516,8 @@ else:
         "language": language,
         "region_code": region_code,
         "research_languages": research_languages,
+        "research_queries": research_queries,
+        "resource_plan": get_director_resource_status(),
         "radar_count": len(
             radar_videos
         ),

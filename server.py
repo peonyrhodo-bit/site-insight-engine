@@ -1550,27 +1550,7 @@ def log_event(
 
     conn.commit()
     conn.close()
-    conn = get_db()
-
-    conn.execute(
-        """
-        INSERT INTO system_events (
-            created_at,
-            event_type,
-            data_json
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            now_iso(),
-            event_type,
-            json_dumps(data or {}),
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
+    
 
 # ============================================================
 # MCP

@@ -330,20 +330,34 @@ def init_db() -> None:
         """
     )
 
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS system_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT,
-        event_type TEXT,
-        data_json TEXT
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            event_type TEXT,
+            data_json TEXT
+        )
+        """
     )
-    """
-)
 
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS weekly_reports (
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_start TEXT NOT NULL,
+            week_end TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            summary TEXT,
+            what_happened TEXT,
+            what_worked TEXT,
+            what_did_not_work TEXT,
+            what_changed TEXT,
+            recommendations TEXT,
+            raw_context TEXT
+        )
+        """
+    )
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         week_start TEXT NOT NULL,
         week_end TEXT NOT NULL,

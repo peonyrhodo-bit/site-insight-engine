@@ -133,15 +133,33 @@ AUTONOMOUS = (
 # YOUTUBE / STORAGE RESOURCE LIMITS
 # ============================================================
 
-YOUTUBE_DAILY_QUOTA_UNITS = int(
+YOUTUBE_SEARCH_DAILY_LIMIT = int(
     os.environ.get(
-        "YOUTUBE_DAILY_QUOTA_UNITS",
+        "YOUTUBE_SEARCH_DAILY_LIMIT",
+        "100",
+    )
+)
+
+YOUTUBE_OTHER_DAILY_QUOTA_UNITS = int(
+    os.environ.get(
+        "YOUTUBE_OTHER_DAILY_QUOTA_UNITS",
         "10000",
     )
 )
 
-YOUTUBE_SEARCH_COST = 100
-YOUTUBE_VIDEO_STATS_COST = 1
+YOUTUBE_SEARCH_RESERVE_RATIO = float(
+    os.environ.get(
+        "YOUTUBE_SEARCH_RESERVE_RATIO",
+        "0.20",
+    )
+)
+
+YOUTUBE_OTHER_RESERVE_RATIO = float(
+    os.environ.get(
+        "YOUTUBE_OTHER_RESERVE_RATIO",
+        "0.20",
+    )
+)
 
 SUPABASE_STORAGE_SOFT_LIMIT_BYTES = int(
     os.environ.get(

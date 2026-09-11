@@ -386,10 +386,10 @@ def supabase_save_chat_message(
     role: str,
     message: str,
     data: dict[str, Any] | None = None,
+    run_id: int | None = None,
 ) -> int | None:
     """
     Saves a Director chat message to Supabase.
-    Returns the Supabase row ID.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
@@ -404,6 +404,7 @@ def supabase_save_chat_message(
                     "created_at": now_iso(),
                     "role": role,
                     "message": message,
+                    "run_id": run_id,
                     "data_json": data or {},
                 }
             )
@@ -474,9 +475,10 @@ def supabase_save_director_run(
 def supabase_save_decision(
     decision: str,
     data: dict[str, Any],
+    run_id: int | None = None,
 ) -> int | None:
     """
-    Saves a user decision to Supabase.
+    Saves a user decision linked to a Director run.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
@@ -490,6 +492,7 @@ def supabase_save_decision(
                 {
                     "created_at": now_iso(),
                     "decision": decision,
+                    "run_id": run_id,
                     "data_json": data,
                 }
             )
@@ -505,13 +508,147 @@ def supabase_save_decision(
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_SAVE_DECISION_FAILED error_type=%s error=%s",
+            "SUPABASE_SAVE_DECISION_FAILED "
+            "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),
         )
 
         return None
 
+def supabase_save_action(
+    description: str,
+    action_type: str = "general",
+    run_id: int | None = None,
+    decision_id: int | None = None,
+    data: dict[str, Any] | None = None,
+) -> int | None:
+    """
+    Creates a Director action.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+        result = (
+            supabase
+            .table("director_actions")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "run_id": run_id,
+                    "decision_id": decision_id,
+                    "action_type": action_type,
+                    "description": description,
+                    "status": "pending",
+                    "data_json": data or {},
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        return rows[0].get("id")
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_ACTION_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
+
+
+def supabase_save_result(
+    action_id: int,
+    summary: str,
+    result_type: str = "completed",
+    run_id: int | None = None,
+    data: dict[str, Any] | None = None,
+) -> int | None:
+    """
+    Saves an action result and marks the action completed.
+    """
+
+    if not SUPABASE_ENABLED or supabase is None:
+        return None
+
+    try:
+
+        # Get run_id from action when it was not supplied.
+        if run_id is None:
+            action_result = (
+                supabase
+                .table("director_actions")
+                .select("run_id")
+                .eq("id", action_id)
+                .limit(1)
+                .execute()
+            )
+
+            action_rows = (
+                action_result.data or []
+            )
+
+            if action_rows:
+                run_id = action_rows[0].get(
+                    "run_id"
+                )
+
+        result = (
+            supabase
+            .table("director_results")
+            .insert(
+                {
+                    "created_at": now_iso(),
+                    "action_id": action_id,
+                    "run_id": run_id,
+                    "result_type": result_type,
+                    "summary": summary,
+                    "data_json": data or {},
+                }
+            )
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            return None
+
+        result_id = rows[0].get("id")
+
+        # Mark action as completed.
+        supabase.table(
+            "director_actions"
+        ).update(
+            {
+                "status": "completed",
+                "completed_at": now_iso(),
+            }
+        ).eq(
+            "id",
+            action_id,
+        ).execute()
+
+        return result_id
+
+    except Exception as exc:
+        logger.error(
+            "SUPABASE_SAVE_RESULT_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return None
 
 def supabase_save_event(
     event_type: str,
@@ -559,18 +696,19 @@ def supabase_get_director_context(
     limit_runs: int = 10,
     limit_decisions: int = 20,
     limit_events: int = 30,
+    limit_chat: int = 20,
+    limit_actions: int = 20,
+    limit_results: int = 20,
 ) -> dict[str, Any] | None:
     """
-    Reads Director memory from Supabase.
-
-    Returns None when Supabase memory is unavailable,
-    so the caller can use SQLite as a fallback.
+    Reads the complete Director memory from Supabase.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
         return None
 
     try:
+
         runs_result = (
             supabase
             .table("director_runs")
@@ -598,9 +736,39 @@ def supabase_get_director_context(
             .execute()
         )
 
+        chat_result = (
+            supabase
+            .table("chat_messages")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_chat)
+            .execute()
+        )
+
+        actions_result = (
+            supabase
+            .table("director_actions")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_actions)
+            .execute()
+        )
+
+        results_result = (
+            supabase
+            .table("director_results")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit_results)
+            .execute()
+        )
+
         runs = runs_result.data or []
         decisions = decisions_result.data or []
         events = events_result.data or []
+        chat_messages = chat_result.data or []
+        actions = actions_result.data or []
+        results = results_result.data or []
 
         return {
             "recent_runs": [
@@ -623,10 +791,12 @@ def supabase_get_director_context(
                 }
                 for row in runs
             ],
+
             "recent_decisions": [
                 {
                     "id": row.get("id"),
                     "created_at": row.get("created_at"),
+                    "run_id": row.get("run_id"),
                     "decision": row.get("decision"),
                     "data": (
                         row.get("data_json")
@@ -642,6 +812,77 @@ def supabase_get_director_context(
                 }
                 for row in decisions
             ],
+
+            "recent_actions": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "run_id": row.get("run_id"),
+                    "decision_id": row.get("decision_id"),
+                    "action_type": row.get("action_type"),
+                    "description": row.get("description"),
+                    "status": row.get("status"),
+                    "completed_at": row.get("completed_at"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in actions
+            ],
+
+            "recent_results": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "action_id": row.get("action_id"),
+                    "run_id": row.get("run_id"),
+                    "result_type": row.get("result_type"),
+                    "summary": row.get("summary"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in results
+            ],
+
+            "recent_chat_messages": [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "run_id": row.get("run_id"),
+                    "role": row.get("role"),
+                    "message": row.get("message"),
+                    "data": (
+                        row.get("data_json")
+                        if isinstance(
+                            row.get("data_json"),
+                            dict,
+                        )
+                        else json_loads_safe(
+                            row.get("data_json"),
+                            {},
+                        )
+                    ),
+                }
+                for row in reversed(chat_messages)
+            ],
+
             "recent_events": [
                 {
                     "id": row.get("id"),
@@ -665,12 +906,14 @@ def supabase_get_director_context(
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_GET_DIRECTOR_CONTEXT_FAILED error_type=%s error=%s",
+            "SUPABASE_GET_DIRECTOR_CONTEXT_FAILED "
+            "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),
         )
 
         return None
+  
 
 # ============================================================
 # EVENTS
@@ -687,10 +930,13 @@ def get_recent_system_context(
     # --------------------------------------------------------
 
     supabase_context = supabase_get_director_context(
-        limit_runs=limit_runs,
-        limit_decisions=limit_decisions,
-        limit_events=limit_events,
-    )
+    limit_runs=limit_runs,
+    limit_decisions=limit_decisions,
+    limit_events=limit_events,
+    limit_chat=20,
+    limit_actions=20,
+    limit_results=20,
+)
 
     if supabase_context is not None:
         supabase_context["system"] = {
@@ -2046,41 +2292,51 @@ def director_chat(
 
     context = get_recent_system_context()
 
+    recent_runs = context.get(
+        "recent_runs",
+        [],
+    )
+
+    current_run_id = None
+
+    if recent_runs:
+        current_run_id = recent_runs[0].get(
+            "id"
+        )
+
     system_instruction = """
 You are the AI Director of a YouTube content system.
 
 You are having a direct conversation with the system owner.
 
-You have access to the supplied system context, including:
+You have access to the supplied system memory, including:
 - recent YouTube analyses;
 - Director runs;
 - user decisions;
+- actions;
+- results of actions;
+- previous chat messages;
 - system events;
 - current system state.
 
 Rules:
 
-1. Use the supplied context as your source of truth.
+1. Use the supplied memory as your source of truth.
 2. Do not invent system data.
-3. If the context does not contain enough information,
-   clearly say that the information is insufficient.
-4. Historical decisions are data, not permanent rules.
-5. A previous "leave as is" decision does not permanently
-   forbid reconsidering the subject later.
-6. A previous approval does not mean that every future
+3. Historical decisions are data, not permanent rules.
+4. A previous "leave as is" decision does not permanently
+   forbid reconsidering a subject later.
+5. A previous approval does not mean that every future
    similar action is automatically approved.
-7. Distinguish facts, observations, hypotheses and recommendations.
-8. Do not claim certainty about future YouTube performance.
-9. Do not recommend news, politics or 18+ content.
-10. Do not recommend gore, torture, graphic injury,
-    glorification or incitement of violence.
-11. When useful, explain why you reached a conclusion.
-12. Answer the user's actual question directly.
-13. You are an AI Director, not merely a statistics bot.
-14. Treat previous decisions as historical context.
-15. Do not expose API keys, credentials or secrets.
-16. Do not claim that an action was performed unless the
-    supplied system context confirms that it was performed.
+6. Distinguish facts, observations, hypotheses,
+   decisions, actions and results.
+7. Connect new conclusions with previous results when evidence exists.
+8. Do not claim that an action was completed unless the memory
+   confirms that it was completed.
+9. Do not treat an old hypothesis as a current fact.
+10. Do not claim certainty about future YouTube performance.
+11. Answer the user's actual question directly.
+12. Do not expose credentials or secrets.
 
 Answer naturally in plain text.
 Do not return JSON.
@@ -2093,10 +2349,88 @@ Do not return JSON.
         }
     )
 
+    # --------------------------------------------------------
+    # SAVE USER MESSAGE
+    # --------------------------------------------------------
+
+    user_message_id = (
+        supabase_save_chat_message(
+            role="user",
+            message=message,
+            run_id=current_run_id,
+            data={
+                "provider": "openrouter",
+                "model": AI_MODEL,
+            },
+        )
+    )
+
+    # --------------------------------------------------------
+    # GENERATE DIRECTOR RESPONSE
+    # --------------------------------------------------------
+
     answer = openrouter_generate_text(
         system_instruction=system_instruction,
         prompt=prompt,
     )
+
+    # --------------------------------------------------------
+    # SAVE DIRECTOR RESPONSE
+    # --------------------------------------------------------
+
+    assistant_message_id = (
+        supabase_save_chat_message(
+            role="assistant",
+            message=answer,
+            run_id=current_run_id,
+            data={
+                "provider": "openrouter",
+                "model": AI_MODEL,
+            },
+        )
+    )
+
+    related_run_ids = [
+        run.get("id")
+        for run in context.get(
+            "recent_runs",
+            [],
+        )
+        if isinstance(run, dict)
+        and run.get("id") is not None
+    ]
+
+    related_decision_ids = [
+        decision.get("id")
+        for decision in context.get(
+            "recent_decisions",
+            [],
+        )
+        if isinstance(decision, dict)
+        and decision.get("id") is not None
+    ]
+
+    log_event(
+        "director_chat",
+        {
+            "message": message[:2000],
+            "run_id": current_run_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id,
+            "provider": "openrouter",
+            "model": AI_MODEL,
+        },
+    )
+
+    return {
+        "answer": answer,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "run_id": current_run_id,
+        "related_run_ids": related_run_ids[:20],
+        "related_decision_ids": related_decision_ids[:20],
+        "suggested_actions": [],
+    }
 
     # --------------------------------------------------------
     # SAVE USER MESSAGE
@@ -3521,9 +3855,59 @@ async def director_history(
 
 @app.post("/director/decision")
 async def director_decision(
-    decision: str,
-    data: dict[str, Any] | None = None,
+    request: Request,
+    decision: str | None = None,
+    run_id: int | None = None,
 ):
+
+    body = {}
+
+    content_type = (
+        request.headers.get(
+            "content-type",
+            "",
+        )
+        .lower()
+    )
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    decision = (
+        body.get("decision")
+        or decision
+    )
+
+    body_run_id = body.get(
+        "run_id"
+    )
+
+    if body_run_id is not None:
+        try:
+            run_id = int(body_run_id)
+        except Exception:
+            run_id = None
+
+    decision_data = body.get(
+        "data"
+    )
+
+    if not isinstance(
+        decision_data,
+        dict,
+    ):
+        decision_data = {}
+
+    if not decision:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "decision is required",
+            },
+        )
 
     allowed = {
         "approve",
@@ -3542,50 +3926,51 @@ async def director_decision(
             },
         )
 
-    decision_data = data or {}
+    # If no run was supplied, attach the decision
+    # to the latest Director run.
+    if run_id is None and SUPABASE_ENABLED and supabase is not None:
+        try:
+            latest_run = (
+                supabase
+                .table("director_runs")
+                .select("id")
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
 
-    # --------------------------------------------------------
-    # SAVE DECISION TO SUPABASE
-    # --------------------------------------------------------
+            latest_rows = (
+                latest_run.data or []
+            )
+
+            if latest_rows:
+                run_id = latest_rows[0].get(
+                    "id"
+                )
+
+        except Exception:
+            run_id = None
 
     decision_id = supabase_save_decision(
         decision=decision,
         data=decision_data,
+        run_id=run_id,
     )
 
-    # --------------------------------------------------------
-    # FALLBACK TO SQLITE
-    # --------------------------------------------------------
-
     if decision_id is None:
-
-        conn = get_db()
-
-        cursor = conn.execute(
-            """
-            INSERT INTO decisions (
-                created_at,
-                decision,
-                data_json
-            )
-            VALUES (?, ?, ?)
-            """,
-            (
-                now_iso(),
-                decision,
-                json_dumps(decision_data),
-            ),
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "Decision could not be saved to Supabase.",
+            },
         )
-
-        decision_id = cursor.lastrowid
-
-        conn.commit()
-        conn.close()
 
     log_event(
         "director_decision",
         {
             "decision_id": decision_id,
+            "run_id": run_id,
             "decision": decision,
         },
     )
@@ -3593,9 +3978,238 @@ async def director_decision(
     return {
         "ok": True,
         "decision_id": decision_id,
+        "run_id": run_id,
         "decision": decision,
     }
 
+# ============================================================
+# DIRECTOR ACTION
+# ============================================================
+
+@app.post("/director/action")
+async def director_action(
+    request: Request,
+):
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    description = str(
+        body.get(
+            "description",
+            "",
+        )
+    ).strip()
+
+    if not description:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "description is required",
+            },
+        )
+
+    action_type = str(
+        body.get(
+            "action_type",
+            "general",
+        )
+    ).strip()
+
+    run_id = body.get(
+        "run_id"
+    )
+
+    decision_id = body.get(
+        "decision_id"
+    )
+
+    data = body.get(
+        "data",
+        {},
+    )
+
+    if not isinstance(
+        data,
+        dict,
+    ):
+        data = {}
+
+    try:
+        run_id = (
+            int(run_id)
+            if run_id is not None
+            else None
+        )
+    except Exception:
+        run_id = None
+
+    try:
+        decision_id = (
+            int(decision_id)
+            if decision_id is not None
+            else None
+        )
+    except Exception:
+        decision_id = None
+
+    action_id = supabase_save_action(
+        description=description,
+        action_type=action_type,
+        run_id=run_id,
+        decision_id=decision_id,
+        data=data,
+    )
+
+    if action_id is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "Action could not be saved to Supabase.",
+            },
+        )
+
+    log_event(
+        "director_action_created",
+        {
+            "action_id": action_id,
+            "run_id": run_id,
+            "decision_id": decision_id,
+            "action_type": action_type,
+        },
+    )
+
+    return {
+        "ok": True,
+        "action_id": action_id,
+        "run_id": run_id,
+        "decision_id": decision_id,
+        "status": "pending",
+    }
+
+
+# ============================================================
+# DIRECTOR RESULT
+# ============================================================
+
+@app.post("/director/result")
+async def director_result(
+    request: Request,
+):
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action_id = body.get(
+        "action_id"
+    )
+
+    if action_id is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "action_id is required",
+            },
+        )
+
+    try:
+        action_id = int(action_id)
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "action_id must be an integer",
+            },
+        )
+
+    summary = str(
+        body.get(
+            "summary",
+            "",
+        )
+    ).strip()
+
+    if not summary:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "summary is required",
+            },
+        )
+
+    result_type = str(
+        body.get(
+            "result_type",
+            "completed",
+        )
+    ).strip()
+
+    run_id = body.get(
+        "run_id"
+    )
+
+    try:
+        run_id = (
+            int(run_id)
+            if run_id is not None
+            else None
+        )
+    except Exception:
+        run_id = None
+
+    data = body.get(
+        "data",
+        {},
+    )
+
+    if not isinstance(
+        data,
+        dict,
+    ):
+        data = {}
+
+    result_id = supabase_save_result(
+        action_id=action_id,
+        summary=summary,
+        result_type=result_type,
+        run_id=run_id,
+        data=data,
+    )
+
+    if result_id is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "Result could not be saved to Supabase.",
+            },
+        )
+
+    log_event(
+        "director_action_completed",
+        {
+            "action_id": action_id,
+            "result_id": result_id,
+            "run_id": run_id,
+        },
+    )
+
+    return {
+        "ok": True,
+        "result_id": result_id,
+        "action_id": action_id,
+        "run_id": run_id,
+        "status": "completed",
+    }
 
 # ============================================================
 # EVENTS

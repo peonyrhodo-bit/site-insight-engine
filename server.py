@@ -4353,12 +4353,34 @@ async def director_run(
         )
     )
     
-    research_queries = (
-        choose_director_research_queries(
-            language=language,
-            previous_analysis=None,
-        )
+   research_queries = (
+    choose_director_research_queries(
+        language=language,
+        previous_analysis=None,
     )
+)
+
+resources = get_director_resource_status()
+
+search_budget = int(
+    resources["youtube_quota"].get(
+        "search_available_for_research",
+        0,
+    )
+)
+
+if research_languages:
+
+    max_queries = (
+        search_budget
+        // len(research_languages)
+    )
+
+    research_queries = (
+        research_queries[:max_queries]
+    )
+else:
+    research_queries = []
     
     log_event(
         "director_research_plan_created",

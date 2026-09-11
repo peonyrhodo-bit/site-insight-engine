@@ -393,18 +393,48 @@ def init_db() -> None:
         )
         """
     )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS youtube_quota_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            units INTEGER NOT NULL,
-            successful INTEGER NOT NULL DEFAULT 1,
-            metadata_json TEXT
+
+    quota_columns = {
+        row["name"]
+        for row in cursor.execute(
+            "PRAGMA table_info(youtube_quota_usage)"
+        ).fetchall()
+    }
+
+    if "units" in quota_columns and "search_calls" not in quota_columns:
+        cursor.execute(
+            "ALTER TABLE youtube_quota_usage "
+            "RENAME TO youtube_quota_usage_legacy"
         )
-        """
-    )
+
+        cursor.execute("""
+            CREATE TABLE youtube_quota_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                search_calls INTEGER NOT NULL DEFAULT 0,
+                other_units INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT
+            )
+        """)
+
+        cursor.execute("""
+            INSERT INTO youtube_quota_usage (
+                created_at,
+                operation,
+                search_calls,
+                other_units,
+                metadata_json
+            )
+            SELECT
+                created_at,
+                operation,
+                0,
+                units,
+                metadata_json
+            FROM youtube_quota_usage_legacy
+        """)
+
     conn.commit()
     conn.close()
 

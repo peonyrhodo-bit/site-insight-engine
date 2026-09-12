@@ -1820,7 +1820,7 @@ def save_snapshot(
 
     created_at = now_iso()
 
-       normalized_by_id: dict[
+    normalized_by_id: dict[
         str,
         dict[str, Any],
     ] = {}

@@ -3088,7 +3088,6 @@ recommendations
 
 
 def make_hypothesis(
-def make_hypothesis(
     videos: list[dict[str, Any]],
     language: str,
     region_code: str,

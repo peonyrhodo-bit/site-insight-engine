@@ -1820,7 +1820,10 @@ def save_snapshot(
 
     created_at = now_iso()
 
-    normalized: list[dict[str, Any]] = []
+       normalized_by_id: dict[
+        str,
+        dict[str, Any],
+    ] = {}
 
     for video in videos:
         video_id = (
@@ -1836,12 +1839,16 @@ def save_snapshot(
         if not video_id:
             continue
 
-        normalized.append(
-            {
-                "video_id": str(video_id),
-                "video": video,
-            }
-        )
+        normalized_by_id[
+            str(video_id)
+        ] = {
+            "video_id": str(video_id),
+            "video": video,
+        }
+
+    normalized = list(
+        normalized_by_id.values()
+    )
 
     if not normalized:
         return 0

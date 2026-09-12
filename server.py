@@ -52,6 +52,10 @@ SITE_AUTH_SECRET = os.environ.get(
     "",
 ).strip()
 
+DIRECTOR_CRON_SECRET = os.environ.get(
+    "DIRECTOR_CRON_SECRET",
+    "",
+).strip()
 
 def make_auth_token() -> str:
     """
@@ -275,9 +279,10 @@ async def authentication_middleware(
 
     # Эти страницы доступны без авторизации
     public_paths = {
-        "/login",
-        "/health",
-    }
+    "/login",
+    "/health",
+    "/director/cron",
+}
 
     if path in public_paths:
         return await call_next(request)

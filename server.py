@@ -5169,6 +5169,38 @@ def api_generate_weekly_report(
         week_start=week_start,
         week_end=week_end,
     )
+@app.post("/api/weekly-reports/generate")
+def api_generate_weekly_report(
+    week_start: str | None = None,
+    week_end: str | None = None,
+):
+    today = datetime.now(timezone.utc).date()
+
+    if week_end is None:
+        week_end_date = today
+    else:
+        week_end_date = date.fromisoformat(
+            week_end
+        )
+
+    if week_start is None:
+        week_start_date = (
+            week_end_date
+            - timedelta(
+                days=week_end_date.weekday()
+            )
+        )
+    else:
+        week_start_date = date.fromisoformat(
+            week_start
+        )
+
+    return generate_weekly_report(
+        week_start=week_start_date.isoformat(),
+        week_end=week_end_date.isoformat(),
+    )
+
+
 
 # ============================================================
 # WEEKLY REPORT API

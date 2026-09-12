@@ -1,4 +1,3 @@
-```python
 """
 Supabase Memory Backend
 
@@ -598,4 +597,3 @@ class SupabaseMemoryBackend:
         return self._safe_list(
             response
         )
-```

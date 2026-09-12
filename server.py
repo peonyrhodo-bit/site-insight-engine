@@ -4331,7 +4331,7 @@ async def director_run(
         },
     )
 
-       # --------------------------------------------------------
+    # --------------------------------------------------------
     # 1. DIRECTOR RESEARCH PLAN
     # --------------------------------------------------------
 
@@ -4342,7 +4342,7 @@ async def director_run(
         )
     )
     
-   research_queries = (
+ research_queries = (
     choose_director_research_queries(
         language=language,
         previous_analysis=None,

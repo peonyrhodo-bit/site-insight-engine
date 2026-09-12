@@ -4618,6 +4618,59 @@ async def director_run(
             reverse=True,
         )[:10],
     }
+# ============================================================
+# DIRECTOR AUTOMATIC SCHEDULER ENDPOINT
+# ============================================================
+
+@app.post("/director/cron")
+async def director_cron(
+    request: Request,
+):
+    if not DIRECTOR_CRON_SECRET:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "DIRECTOR_CRON_SECRET is not configured",
+            },
+        )
+
+    provided_secret = request.headers.get(
+        "X-Director-Cron-Secret",
+        "",
+    ).strip()
+
+    if not hmac.compare_digest(
+        provided_secret,
+        DIRECTOR_CRON_SECRET,
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "ok": False,
+                "error": "Invalid scheduler secret",
+            },
+        )
+
+    log_event(
+        "director_cron_started",
+        {},
+    )
+
+    result = await director_run()
+
+    log_event(
+        "director_cron_completed",
+        {
+            "run_id": result.get(
+                "run_id"
+            )
+            if isinstance(result, dict)
+            else None,
+        },
+    )
+
+    return result
 
 # ============================================================
 # WEEKLY REPORT API

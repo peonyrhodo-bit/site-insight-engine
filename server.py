@@ -4587,11 +4587,10 @@ async def director_run(
     return {
         "ok": True,
         "run_id": run_id,
-                "research": {
-            "research": {
-    "languages": research_languages,
-    "queries": research_queries,
-},
+        "research": {
+            "languages": research_languages,
+            "queries": research_queries,
+        },
         "radar": {
             "count": len(
                 radar_videos

@@ -1,0 +1,24 @@
+name: Director Scheduler
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+
+  workflow_dispatch:
+
+jobs:
+  run-director:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Director
+        env:
+          DIRECTOR_URL: https://site-insight-engine.onrender.com/director/cron
+          DIRECTOR_CRON_SECRET: ${{ secrets.DIRECTOR_CRON_SECRET }}
+        run: |
+          curl --fail-with-body \
+            --show-error \
+            --silent \
+            --request POST \
+            --header "X-Director-Cron-Secret: ${DIRECTOR_CRON_SECRET}" \
+            "${DIRECTOR_URL}"

@@ -2858,7 +2858,236 @@ Return ONLY valid JSON with this structure:
         "confidence": confidence,
     }
 
+def generate_weekly_report(
+    week_start: str,
+    week_end: str,
+) -> dict[str, Any]:
 
+    runs: list[dict[str, Any]] = []
+
+    if SUPABASE_ENABLED and supabase is not None:
+        try:
+            result = (
+                supabase
+                .table("director_runs")
+                .select("*")
+                .gte(
+                    "created_at",
+                    f"{week_start}T00:00:00+00:00",
+                )
+                .lte(
+                    "created_at",
+                    f"{week_end}T23:59:59+00:00",
+                )
+                .order(
+                    "created_at",
+                    desc=False,
+                )
+                .execute()
+            )
+
+            runs = result.data or []
+
+        except Exception as exc:
+            logger.error(
+                "WEEKLY_REPORT_LOAD_RUNS_FAILED "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    compact_runs: list[dict[str, Any]] = []
+
+    for run in runs:
+        run_data = run.get("run_data") or {}
+
+        compact_runs.append(
+            {
+                "id": run.get("id"),
+                "created_at": run.get(
+                    "created_at"
+                ),
+                "research_languages": (
+                    run_data.get(
+                        "research_languages"
+                    )
+                ),
+                "research_queries": (
+                    run_data.get(
+                        "research_queries"
+                    )
+                ),
+                "radar_count": (
+                    run_data.get(
+                        "radar",
+                        {},
+                    ).get(
+                        "count"
+                    )
+                ),
+                "saved_count": (
+                    run_data.get(
+                        "radar",
+                        {},
+                    ).get(
+                        "saved"
+                    )
+                ),
+                "trending_count": (
+                    run_data.get(
+                        "trending",
+                        {},
+                    ).get(
+                        "count"
+                    )
+                ),
+                "analysis": run_data.get(
+                    "ai"
+                ),
+                "resource_plan": run_data.get(
+                    "resource_plan"
+                ),
+            }
+        )
+
+    system_prompt = """
+You are the Weekly Report analyst for an autonomous YouTube intelligence system.
+
+Create a concise, factual weekly report from the Director run data.
+
+Do not invent facts.
+Do not claim that a trend exists unless the supplied data supports it.
+Focus on:
+- what the Director researched,
+- what was found,
+- what worked,
+- what did not work,
+- what changed during the week,
+- resource usage or constraints,
+- useful recommendations for the next week.
+
+Return ONLY valid JSON with exactly these keys:
+
+summary
+what_happened
+what_worked
+what_did_not_work
+what_changed
+recommendations
+""".strip()
+
+    user_prompt = json_dumps(
+        {
+            "week_start": week_start,
+            "week_end": week_end,
+            "director_runs": compact_runs,
+        }
+    )
+
+    report: dict[str, Any] | None = None
+
+    try:
+        generated = openrouter_generate_json(
+            system_prompt,
+            user_prompt,
+        )
+
+        if isinstance(generated, dict):
+            report = generated
+
+    except Exception as exc:
+        logger.error(
+            "WEEKLY_REPORT_AI_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+    if report is None:
+        report = {
+            "summary": (
+                f"За период {week_start} — {week_end} "
+                f"Director выполнил {len(compact_runs)} запусков."
+            ),
+            "what_happened": (
+                f"Выполнено запусков Director: "
+                f"{len(compact_runs)}."
+            ),
+            "what_worked": (
+                "Данные запусков Director были "
+                "собраны для недельного анализа."
+            ),
+            "what_did_not_work": (
+                "Автоматический AI-анализ недельных "
+                "данных недоступен."
+            ),
+            "what_changed": (
+                "Изменения определены только на основе "
+                "доступных запусков Director."
+            ),
+            "recommendations": (
+                "Продолжить регулярные запуски Director "
+                "и сравнивать результаты между неделями."
+            ),
+        }
+
+    report_id = save_weekly_report(
+        week_start=week_start,
+        week_end=week_end,
+        summary=str(
+            report.get(
+                "summary",
+                "",
+            )
+        ),
+        what_happened=str(
+            report.get(
+                "what_happened",
+                "",
+            )
+        ),
+        what_worked=str(
+            report.get(
+                "what_worked",
+                "",
+            )
+        ),
+        what_did_not_work=str(
+            report.get(
+                "what_did_not_work",
+                "",
+            )
+        ),
+        what_changed=str(
+            report.get(
+                "what_changed",
+                "",
+            )
+        ),
+        recommendations=str(
+            report.get(
+                "recommendations",
+                "",
+            )
+        ),
+        raw_context={
+            "week_start": week_start,
+            "week_end": week_end,
+            "director_runs": compact_runs,
+        },
+    )
+
+    return {
+        "ok": True,
+        "report_id": report_id,
+        "week_start": week_start,
+        "week_end": week_end,
+        "runs_count": len(compact_runs),
+        "report": report,
+    }
+
+
+def make_hypothesis(
 def make_hypothesis(
     videos: list[dict[str, Any]],
     language: str,

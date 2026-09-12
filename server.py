@@ -760,6 +760,43 @@ def save_weekly_report(
     recommendations: str = "",
     raw_context: dict[str, Any] | None = None,
 ) -> int | None:
+
+    if SUPABASE_ENABLED and supabase is not None:
+        try:
+            result = (
+                supabase
+                .table("weekly_reports")
+                .upsert(
+                    {
+                        "week_start": week_start,
+                        "week_end": week_end,
+                        "created_at": now_iso(),
+                        "summary": summary,
+                        "what_happened": what_happened,
+                        "what_worked": what_worked,
+                        "what_did_not_work": what_did_not_work,
+                        "what_changed": what_changed,
+                        "recommendations": recommendations,
+                        "raw_context": raw_context or {},
+                    },
+                    on_conflict="week_start,week_end",
+                )
+                .execute()
+            )
+
+            rows = result.data or []
+
+            if rows:
+                return rows[0].get("id")
+
+        except Exception as exc:
+            logger.error(
+                "SUPABASE_SAVE_WEEKLY_REPORT_FAILED "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+
     conn = get_db()
 
     try:
@@ -898,6 +935,206 @@ def get_weekly_report(
 
     finally:
         conn.close()
+def generate_weekly_report(
+    week_start: str,
+    week_end: str,
+) -> dict[str, Any]:
+
+    context = {
+        "week_start": week_start,
+        "week_end": week_end,
+        "runs": [],
+    }
+
+    if SUPABASE_ENABLED and supabase is not None:
+        try:
+            result = (
+                supabase
+                .table("director_runs")
+                .select("*")
+                .gte("created_at", week_start)
+                .lte(
+                    "created_at",
+                    f"{week_end}T23:59:59+00:00",
+                )
+                .order("id", desc=False)
+                .limit(100)
+                .execute()
+            )
+
+            rows = result.data or []
+
+            for row in rows:
+                data = row.get(
+                    "data_json",
+                    {},
+                )
+
+                if not isinstance(
+                    data,
+                    dict,
+                ):
+                    data = {}
+
+                context["runs"].append(
+                    {
+                        "id": row.get("id"),
+                        "created_at": row.get(
+                            "created_at"
+                        ),
+                        "language": row.get(
+                            "language"
+                        ),
+                        "region_code": row.get(
+                            "region_code"
+                        ),
+                        "research_languages": data.get(
+                            "research_languages",
+                            [],
+                        ),
+                        "research_queries": data.get(
+                            "research_queries",
+                            [],
+                        ),
+                        "radar_count": data.get(
+                            "radar_count",
+                            0,
+                        ),
+                        "saved_count": data.get(
+                            "saved_count",
+                            0,
+                        ),
+                        "trending_count": data.get(
+                            "trending_count",
+                            0,
+                        ),
+                        "analysis": data.get(
+                            "analysis",
+                            {},
+                        ),
+                        "resource_plan": data.get(
+                            "resource_plan",
+                            {},
+                        ),
+                    }
+                )
+
+        except Exception as exc:
+            logger.error(
+                "WEEKLY_REPORT_CONTEXT_FAILED "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    system_instruction = """
+You are the Weekly Report analyst for an autonomous YouTube intelligence system.
+
+Create a concise factual weekly report from the Director runs.
+
+Return ONLY valid JSON with exactly these fields:
+
+summary
+what_happened
+what_worked
+what_did_not_work
+what_changed
+recommendations
+
+Rules:
+- Do not invent facts.
+- Use only the supplied Director data.
+- Mention meaningful topics, formats, signals and changes.
+- Mention resource or quota issues when present.
+- recommendations must be practical next steps for the Director.
+- If there is not enough evidence for a conclusion, say so.
+"""
+
+    prompt = json_dumps(context)
+
+    try:
+        report = openrouter_generate_json(
+            system_instruction=system_instruction,
+            prompt=prompt,
+        )
+    except Exception as exc:
+        logger.error(
+            "WEEKLY_REPORT_AI_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        report = {
+            "summary": (
+                "Недостаточно данных для AI-отчёта."
+            ),
+            "what_happened": (
+                f"За период {week_start} — "
+                f"{week_end} выполнено "
+                f"{len(context['runs'])} запусков Director."
+            ),
+            "what_worked": "",
+            "what_did_not_work": "",
+            "what_changed": "",
+            "recommendations": (
+                "Продолжить накопление данных "
+                "для следующего отчёта."
+            ),
+        }
+
+    report_id = save_weekly_report(
+        week_start=week_start,
+        week_end=week_end,
+        summary=str(
+            report.get(
+                "summary",
+                "",
+            )
+        ),
+        what_happened=str(
+            report.get(
+                "what_happened",
+                "",
+            )
+        ),
+        what_worked=str(
+            report.get(
+                "what_worked",
+                "",
+            )
+        ),
+        what_did_not_work=str(
+            report.get(
+                "what_did_not_work",
+                "",
+            )
+        ),
+        what_changed=str(
+            report.get(
+                "what_changed",
+                "",
+            )
+        ),
+        recommendations=str(
+            report.get(
+                "recommendations",
+                "",
+            )
+        ),
+        raw_context=context,
+    )
+
+    return {
+        "ok": True,
+        "report_id": report_id,
+        "week_start": week_start,
+        "week_end": week_end,
+        "report": report,
+        "runs_count": len(
+            context["runs"]
+        ),
+    }
 
 # ============================================================
 # SUPABASE MEMORY HELPERS
@@ -4678,6 +4915,32 @@ async def director_cron(
     )
 
     return result
+
+@app.post("/api/weekly-reports/generate")
+def api_generate_weekly_report(
+    week_start: str | None = None,
+    week_end: str | None = None,
+):
+    today = datetime.now(
+        timezone.utc
+    ).date()
+
+    if week_end is None:
+        week_end = today.isoformat()
+
+    if week_start is None:
+        start_date = (
+            today
+            - timedelta(
+                days=today.weekday()
+            )
+        )
+        week_start = start_date.isoformat()
+
+    return generate_weekly_report(
+        week_start=week_start,
+        week_end=week_end,
+    )
 
 # ============================================================
 # WEEKLY REPORT API

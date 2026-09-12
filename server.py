@@ -2474,6 +2474,11 @@ def openrouter_generate_json(
     system_instruction: str,
     prompt: str,
 ) -> dict[str, Any]:
+    system_instruction = (
+        DIRECTOR_LANGUAGE_RULE
+        + "\n\n"
+        + system_instruction
+    )
 
     if not OPENROUTER_API_KEY:
         raise RuntimeError(

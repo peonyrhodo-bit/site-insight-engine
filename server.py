@@ -18,6 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from supabase import create_client, Client
+from memory.memory import Memory
+from memory.supabase import SupabaseMemoryBackend
 
 
 # ============================================================
@@ -233,6 +235,14 @@ if SUPABASE_ENABLED:
         supabase = create_client(
             SUPABASE_URL,
             SUPABASE_KEY,
+        )
+
+        memory_backend = SupabaseMemoryBackend(
+            client=supabase
+        )
+
+        memory = Memory(
+            memory_backend
         )
 
         logger.info(

@@ -3505,6 +3505,7 @@ async def test_data_layer():
     )
 
     research = research_sets.create(
+        research_id=9001,
         title="Тестовое исследование",
         language="ru",
         region="RU",

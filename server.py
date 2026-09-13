@@ -4855,7 +4855,7 @@ async def director_run(
         },
     )
 
-    radar_videos = extract_items(
+      radar_videos = extract_items(
         radar_result
     )
 

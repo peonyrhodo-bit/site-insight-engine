@@ -5150,6 +5150,7 @@ def api_weekly_report(report_id: int):
 # DIRECTOR HISTORY
 # ============================================================
 
+```python
 @app.get("/director/history")
 async def director_history(
     limit: int = 20,
@@ -5161,54 +5162,49 @@ async def director_history(
     )
 
     # --------------------------------------------------------
-    # PRIMARY: SUPABASE
+    # PRIMARY: MEMORY
     # --------------------------------------------------------
 
     if SUPABASE_ENABLED and supabase is not None:
 
         try:
-            result = (
-                supabase
-                .table("director_runs")
-                .select("*")
-                .order("id", desc=True)
-                .limit(limit)
-                .execute()
+            runs = memory.get_recent_runs(
+                limit=limit
             )
 
-            rows = result.data or []
+            decisions = memory.get_recent_decisions(
+                limit=limit
+            )
 
-            return [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get(
-                        "created_at"
-                    ),
-                    "language": row.get(
-                        "language"
-                    ),
-                    "region_code": row.get(
-                        "region_code"
-                    ),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in rows
-            ]
+            events = memory.get_recent_events(
+                limit=limit
+            )
+
+            chat_messages = memory.get_recent_chat_messages(
+                limit=limit
+            )
+
+            actions = memory.get_recent_actions(
+                limit=limit
+            )
+
+            results = memory.get_recent_results(
+                limit=limit
+            )
+
+            return {
+                "runs": runs,
+                "decisions": decisions,
+                "events": events,
+                "chat_messages": chat_messages,
+                "actions": actions,
+                "results": results,
+            }
 
         except Exception as exc:
 
             logger.error(
-                "SUPABASE_DIRECTOR_HISTORY_FAILED error_type=%s error=%s",
+                "MEMORY_DIRECTOR_HISTORY_FAILED error_type=%s error=%s",
                 type(exc).__name__,
                 str(exc),
             )
@@ -5231,19 +5227,28 @@ async def director_history(
 
     conn.close()
 
-    return [
-        {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "language": row["language"],
-            "region_code": row["region_code"],
-            "data": json_loads_safe(
-                row["data_json"],
-                {},
-            ),
-        }
-        for row in rows
-    ]
+    return {
+        "runs": [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "language": row["language"],
+                "region_code": row["region_code"],
+                "data": json_loads_safe(
+                    row["data_json"],
+                    {},
+                ),
+            }
+            for row in rows
+        ],
+        "decisions": [],
+        "events": [],
+        "chat_messages": [],
+        "actions": [],
+        "results": [],
+    }
+
+
 # ============================================================
 # DIRECTOR DECISION
 # ============================================================

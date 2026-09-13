@@ -1,4 +1,3 @@
-```python
 """
 Director Constraints
 
@@ -132,4 +131,3 @@ class Constraint:
         self.description = self._clean_required(
             self.description,
             "description",
-```

@@ -1831,7 +1831,42 @@ async def mcp_call(
                     name,
                     arguments=args,
                 )
+                if isinstance(result, dict):
+                    quota = result.get(
+                        "_quota",
+                        {},
+                    )
 
+                    if isinstance(quota, dict):
+                        search_calls = int(
+                            quota.get(
+                                "search_calls",
+                                0,
+                            )
+                            or 0
+                        )
+
+                        other_units = int(
+                            quota.get(
+                                "other_units",
+                                0,
+                            )
+                            or 0
+                        )
+
+                        if (
+                            search_calls > 0
+                            or other_units > 0
+                        ):
+                            record_youtube_quota_usage(
+                                operation=name,
+                                search_calls=search_calls,
+                                other_units=other_units,
+                                metadata={
+                                    "mcp_tool": name,
+                                    "args": args,
+                                },
+                            )
                 logger.info(
                     "MCP_CALL_SUCCESS tool=%s",
                     name,

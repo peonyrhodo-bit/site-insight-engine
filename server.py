@@ -4855,22 +4855,10 @@ async def director_run(
         },
     )
 
-      radar_videos = extract_items(
+    radar_videos = extract_items(
         radar_result
     )
 
-        other_units=int(
-            radar_quota.get(
-                "other_units",
-                0,
-            )
-        ),
-        metadata={
-            "languages": research_languages,
-            "queries": research_queries,
-        },
-    )
-    
     quota_exceeded = (
         radar_result.get(
             "quota_exceeded",

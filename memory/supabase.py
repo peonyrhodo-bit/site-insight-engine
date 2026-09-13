@@ -597,3 +597,194 @@ class SupabaseMemoryBackend:
         return self._safe_list(
             response
         )
+    # -----------------------------------------------------------------------
+    # RECOMMENDATIONS
+    # -----------------------------------------------------------------------
+
+    TABLE_RECOMMENDATIONS = "recommendations"
+    TABLE_RECOMMENDATION_FEEDBACK = "recommendation_feedback"
+    TABLE_CONSTRAINTS = "constraints"
+
+    def save_recommendation(
+        self,
+        *,
+        recommendation: dict[str, Any],
+    ) -> int | None:
+        """
+        Save a Director recommendation.
+        """
+
+        recommendation = self._safe_dict(
+            recommendation
+        )
+
+        payload = {
+            "run_id": recommendation.get("run_id"),
+            "decision_id": recommendation.get("decision_id"),
+            "title": recommendation.get("title"),
+            "description": recommendation.get("description"),
+            "recommendation_type": recommendation.get(
+                "recommendation_type"
+            ),
+            "topic": recommendation.get("topic"),
+            "region": recommendation.get("region"),
+            "language": recommendation.get("language"),
+            "rationale": recommendation.get("rationale"),
+            "suggested_action": recommendation.get(
+                "suggested_action"
+            ),
+            "confidence": recommendation.get("confidence"),
+            "priority": recommendation.get("priority"),
+            "status": recommendation.get(
+                "status",
+                "new",
+            ),
+            "data_json": self._safe_dict(
+                recommendation.get("metadata")
+            ),
+        }
+
+        response = (
+            self.client
+            .table(self.TABLE_RECOMMENDATIONS)
+            .insert(payload)
+            .execute()
+        )
+
+        return self._first_id(
+            response
+        )
+
+    # -----------------------------------------------------------------------
+    # RECOMMENDATION FEEDBACK
+    # -----------------------------------------------------------------------
+
+    def save_recommendation_feedback(
+        self,
+        *,
+        feedback: dict[str, Any],
+    ) -> int | None:
+        """
+        Save feedback for a Director recommendation.
+        """
+
+        feedback = self._safe_dict(
+            feedback
+        )
+
+        payload = {
+            "recommendation_id": feedback.get(
+                "recommendation_id"
+            ),
+            "feedback_type": feedback.get(
+                "feedback_type"
+            ),
+            "comment": feedback.get(
+                "comment"
+            ),
+            "scope": feedback.get(
+                "scope"
+            ),
+            "topic": feedback.get(
+                "topic"
+            ),
+            "region": feedback.get(
+                "region"
+            ),
+            "language": feedback.get(
+                "language"
+            ),
+            "data_json": self._safe_dict(
+                feedback.get("metadata")
+            ),
+        }
+
+        response = (
+            self.client
+            .table(
+                self.TABLE_RECOMMENDATION_FEEDBACK
+            )
+            .insert(payload)
+            .execute()
+        )
+
+        return self._first_id(
+            response
+        )
+
+    # -----------------------------------------------------------------------
+    # APPLY RECOMMENDATION FEEDBACK
+    # -----------------------------------------------------------------------
+
+    def apply_recommendation_feedback(
+        self,
+        *,
+        feedback: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Save feedback and apply its immediate status effect
+        to the recommendation.
+        """
+
+        feedback = self._safe_dict(
+            feedback
+        )
+
+        feedback_id = (
+            self.save_recommendation_feedback(
+                feedback=feedback
+            )
+        )
+
+        recommendation_id = feedback.get(
+            "recommendation_id"
+        )
+
+        feedback_type = feedback.get(
+            "feedback_type"
+        )
+
+        status_map = {
+            "accept": "accepted",
+            "reject": "rejected",
+            "defer": "deferred",
+        }
+
+        new_status = status_map.get(
+            feedback_type
+        )
+
+        updated = False
+
+        if (
+            recommendation_id is not None
+            and new_status is not None
+        ):
+            response = (
+                self.client
+                .table(
+                    self.TABLE_RECOMMENDATIONS
+                )
+                .update(
+                    {
+                        "status": new_status,
+                    }
+                )
+                .eq(
+                    "id",
+                    recommendation_id,
+                )
+                .execute()
+            )
+
+            updated = bool(
+                self._safe_list(response)
+            )
+
+        return {
+            "feedback_id": feedback_id,
+            "recommendation_id": recommendation_id,
+            "feedback_type": feedback_type,
+            "status": new_status,
+            "updated": updated,
+        }

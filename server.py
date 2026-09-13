@@ -3539,6 +3539,7 @@ async def test_data_layer():
     relations.link_snapshot(
         research.research_id,
         9001,
+        9001,
     )
 
     return {

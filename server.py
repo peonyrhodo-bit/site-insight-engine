@@ -1462,53 +1462,28 @@ def supabase_get_director_context(
 
     try:
 
-        runs_result = (
-            supabase
-            .table("director_runs")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_runs)
-            .execute()
+        runs = memory.get_recent_runs(
+            limit=limit_runs
         )
 
         decisions_result = memory.get_recent_decisions(
            limit=limit_decisions
         )
 
-        events_result = (
-            supabase
-            .table("system_events")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_events)
-            .execute()
+        events = memory.get_recent_events(
+            limit=limit_events
         )
 
-        chat_result = (
-            supabase
-            .table("chat_messages")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_chat)
-            .execute()
+        chat_messages = memory.get_recent_chat_messages(
+            limit=limit_chat
         )
 
-        actions_result = (
-            supabase
-            .table("director_actions")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_actions)
-            .execute()
+        actions = memory.get_recent_actions(
+            limit=limit_actions
         )
 
-        results_result = (
-            supabase
-            .table("director_results")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_results)
-            .execute()
+        results = memory.get_recent_results(
+            limit=limit_results
         )
 
         runs = runs_result.data or []

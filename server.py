@@ -4859,26 +4859,6 @@ async def director_run(
         radar_result
     )
 
-    radar_quota = (
-        radar_result.get(
-            "_quota",
-            {},
-        )
-        if isinstance(
-            radar_result,
-            dict,
-        )
-        else {}
-    )
-
-    record_youtube_quota_usage(
-        operation="director_radar",
-        search_calls=int(
-            radar_quota.get(
-                "search_calls",
-                0,
-            )
-        ),
         other_units=int(
             radar_quota.get(
                 "other_units",

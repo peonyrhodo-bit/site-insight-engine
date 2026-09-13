@@ -1239,50 +1239,35 @@ def supabase_save_director_run(
 
         return None
 
-
 def supabase_save_decision(
     decision: str,
     data: dict[str, Any],
     run_id: int | None = None,
 ) -> int | None:
     """
-    Saves a user decision linked to a Director run.
+    Saves a user decision through the Director memory layer.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
         return None
 
     try:
-        result = (
-            supabase
-            .table("decisions")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "decision": decision,
-                    "run_id": run_id,
-                    "data_json": data,
-                }
-            )
-            .execute()
+        return memory.save_decision(
+            decision=decision,
+            data=data,
+            run_id=run_id,
         )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        return rows[0].get("id")
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_SAVE_DECISION_FAILED "
+            "MEMORY_SAVE_DECISION_FAILED "
             "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),
         )
 
         return None
+
 
 def supabase_save_action(
     description: str,

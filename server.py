@@ -23,6 +23,9 @@ from memory.supabase import SupabaseMemoryBackend
 from data.research_sets import ResearchSetManager
 from data.relations import DataRelations
 from quota.youtube_quota import YouTubeQuotaManager
+from director.recommendations import DirectorRecommendationManager
+from director.feedback import DirectorFeedbackManager
+from web.recommendations import RecommendationsWebService
 
 from data.youtube import (
     YouTubeDataRegistry,
@@ -274,6 +277,18 @@ research_sets = ResearchSetManager()
 relations = DataRelations()
 youtube_quota = YouTubeQuotaManager(
     db_path=str(DB_PATH),
+)
+recommendation_manager = DirectorRecommendationManager(
+    memory=memory,
+)
+
+feedback_manager = DirectorFeedbackManager(
+    memory=memory,
+)
+
+recommendations_service = RecommendationsWebService(
+    recommendation_manager=recommendation_manager,
+    feedback_manager=feedback_manager,
 )
 # ============================================================
 # FASTAPI

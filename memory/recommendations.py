@@ -1,4 +1,3 @@
-```python
 """
 Director Recommendations
 
@@ -544,4 +543,3 @@ class RecommendationManager:
             pass
 
         return recommendation
-```

@@ -1277,47 +1277,30 @@ def supabase_save_action(
     data: dict[str, Any] | None = None,
 ) -> int | None:
     """
-    Creates a Director action.
+    Creates a Director action through the Director memory layer.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
         return None
 
     try:
-        result = (
-            supabase
-            .table("director_actions")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "run_id": run_id,
-                    "decision_id": decision_id,
-                    "action_type": action_type,
-                    "description": description,
-                    "status": "pending",
-                    "data_json": data or {},
-                }
-            )
-            .execute()
+        return memory.save_action(
+            description=description,
+            action_type=action_type,
+            run_id=run_id,
+            decision_id=decision_id,
+            data=data or {},
         )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        return rows[0].get("id")
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_SAVE_ACTION_FAILED "
+            "MEMORY_SAVE_ACTION_FAILED "
             "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),
         )
 
         return None
-
 
 def supabase_save_result(
     action_id: int,

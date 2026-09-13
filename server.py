@@ -3747,6 +3747,14 @@ async def logout():
 
     return response
 
+@app.get("/test/quota-manager")
+def test_quota_manager():
+    return {
+        "ok": True,
+        "quota": youtube_quota.get_remaining(),
+        "budget": youtube_quota.get_available_budget(),
+    }
+
 # ============================================================
 # HOME
 # ============================================================

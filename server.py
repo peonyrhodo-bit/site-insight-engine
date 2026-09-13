@@ -712,7 +712,7 @@ def get_storage_status() -> dict[str, Any]:
     }
 def get_director_resource_status() -> dict[str, Any]:
 
-        quota_budget = (
+    quota_budget = (
         youtube_quota.get_available_budget()
     )
 
@@ -771,7 +771,6 @@ def get_director_resource_status() -> dict[str, Any]:
             0,
         )
     )
-
     return {
         "youtube_quota": {
             "search_remaining": search_remaining,

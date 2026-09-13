@@ -1157,38 +1157,23 @@ def supabase_save_chat_message(
     run_id: int | None = None,
 ) -> int | None:
     """
-    Saves a Director chat message to Supabase.
+    Saves a Director chat message through the Director memory layer.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
         return None
 
     try:
-        result = (
-            supabase
-            .table("chat_messages")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "role": role,
-                    "message": message,
-                    "run_id": run_id,
-                    "data_json": data or {},
-                }
-            )
-            .execute()
+        return memory.save_chat_message(
+            role=role,
+            message=message,
+            data=data or {},
+            run_id=run_id,
         )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        return rows[0].get("id")
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_SAVE_CHAT_MESSAGE_FAILED "
+            "MEMORY_SAVE_CHAT_MESSAGE_FAILED "
             "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),

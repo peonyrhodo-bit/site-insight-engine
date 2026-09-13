@@ -1310,81 +1310,31 @@ def supabase_save_result(
     data: dict[str, Any] | None = None,
 ) -> int | None:
     """
-    Saves an action result and marks the action completed.
+    Saves an action result through the Director memory layer.
     """
 
     if not SUPABASE_ENABLED or supabase is None:
         return None
 
     try:
-
-        # Get run_id from action when it was not supplied.
-        if run_id is None:
-            action_result = (
-                supabase
-                .table("director_actions")
-                .select("run_id")
-                .eq("id", action_id)
-                .limit(1)
-                .execute()
-            )
-
-            action_rows = (
-                action_result.data or []
-            )
-
-            if action_rows:
-                run_id = action_rows[0].get(
-                    "run_id"
-                )
-
-        result = (
-            supabase
-            .table("director_results")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "action_id": action_id,
-                    "run_id": run_id,
-                    "result_type": result_type,
-                    "summary": summary,
-                    "data_json": data or {},
-                }
-            )
-            .execute()
+        return memory.save_result(
+            action_id=action_id,
+            summary=summary,
+            result_type=result_type,
+            run_id=run_id,
+            data=data or {},
         )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        result_id = rows[0].get("id")
-
-        # Mark action as completed.
-        supabase.table(
-            "director_actions"
-        ).update(
-            {
-                "status": "completed",
-                "completed_at": now_iso(),
-            }
-        ).eq(
-            "id",
-            action_id,
-        ).execute()
-
-        return result_id
 
     except Exception as exc:
         logger.error(
-            "SUPABASE_SAVE_RESULT_FAILED "
+            "MEMORY_SAVE_RESULT_FAILED "
             "error_type=%s error=%s",
             type(exc).__name__,
             str(exc),
         )
 
         return None
+
 
 def supabase_save_event(
     event_type: str,

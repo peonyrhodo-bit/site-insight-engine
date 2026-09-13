@@ -554,3 +554,30 @@ class Memory:
                 self.DEFAULT_LIMIT_EVENTS,
             )
         )
+    # =========================================================
+    # RECOMMENDATIONS
+    # =========================================================
+
+    def save_recommendation(
+        self,
+        recommendation: dict[str, Any],
+    ) -> int | None:
+        return self.backend.save_recommendation(
+            recommendation=recommendation,
+        )
+
+    def save_recommendation_feedback(
+        self,
+        feedback: dict[str, Any],
+    ) -> int | None:
+        return self.backend.save_recommendation_feedback(
+            feedback=feedback,
+        )
+
+    def apply_recommendation_feedback(
+        self,
+        feedback: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self.backend.apply_recommendation_feedback(
+            feedback=feedback,
+        )

@@ -3526,10 +3526,6 @@ async def test_data_layer():
         9001,
     )
 
-    relation = relations.create(
-        research_id=research.research_id,
-    )
-
     relations.link_query(
         research.research_id,
         9001,
@@ -3552,7 +3548,6 @@ async def test_data_layer():
             "snapshot": snapshot.to_dict(),
         },
         "research_set": research.to_dict(),
-        "relation": relation.to_dict(),
         "research_for_video": relations.find_research_for_video(
             9001
         ),

@@ -1471,13 +1471,8 @@ def supabase_get_director_context(
             .execute()
         )
 
-        decisions_result = (
-            supabase
-            .table("decisions")
-            .select("*")
-            .order("id", desc=True)
-            .limit(limit_decisions)
-            .execute()
+        decisions_result = memory.get_recent_decisions(
+           limit=limit_decisions
         )
 
         events_result = (

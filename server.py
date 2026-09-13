@@ -22,6 +22,7 @@ from memory.memory import Memory
 from memory.supabase import SupabaseMemoryBackend
 from data.research_sets import ResearchSetManager
 from data.relations import DataRelations
+from quota.youtube_quota import YouTubeQuotaManager
 
 from data.youtube import (
     YouTubeDataRegistry,
@@ -271,6 +272,9 @@ if SUPABASE_ENABLED:
 youtube_data = YouTubeDataRegistry()
 research_sets = ResearchSetManager()
 relations = DataRelations()
+youtube_quota = YouTubeQuotaManager(
+    db_path=str(DB_PATH),
+)
 # ============================================================
 # FASTAPI
 # ============================================================

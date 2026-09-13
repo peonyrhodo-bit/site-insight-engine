@@ -21,6 +21,13 @@ from supabase import create_client, Client
 from memory.memory import Memory
 from memory.supabase import SupabaseMemoryBackend
 
+from data.youtube import (
+    YouTubeDataRegistry,
+    YouTubeQuery,
+    YouTubeVideo,
+    YouTubeSnapshot,
+)
+
 
 # ============================================================
 # LOGGING
@@ -259,6 +266,7 @@ if SUPABASE_ENABLED:
         SUPABASE_ENABLED = False
 
 
+youtube_data = YouTubeDataRegistry()
 # ============================================================
 # FASTAPI
 # ============================================================

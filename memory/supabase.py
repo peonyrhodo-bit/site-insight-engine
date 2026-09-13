@@ -605,6 +605,7 @@ class SupabaseMemoryBackend:
     TABLE_RECOMMENDATION_FEEDBACK = "recommendation_feedback"
     TABLE_CONSTRAINTS = "constraints"
 
+    
     def save_recommendation(
         self,
         *,
@@ -646,15 +647,19 @@ class SupabaseMemoryBackend:
 
         response = (
             self.client
-            .table(self.TABLE_RECOMMENDATIONS)
+            .table(
+                self.TABLE_RECOMMENDATIONS
+            )
             .insert(payload)
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        rows = response.data or []
 
+        if rows:
+            return rows[0].get("id")
+
+        return None
     # -----------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK
     # -----------------------------------------------------------------------

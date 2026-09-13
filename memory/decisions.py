@@ -1,4 +1,3 @@
-```python
 """
 Director Decisions
 

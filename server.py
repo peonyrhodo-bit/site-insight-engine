@@ -5150,7 +5150,6 @@ def api_weekly_report(report_id: int):
 # DIRECTOR HISTORY
 # ============================================================
 
-```python
 @app.get("/director/history")
 async def director_history(
     limit: int = 20,

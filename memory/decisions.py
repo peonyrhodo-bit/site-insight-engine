@@ -478,4 +478,3 @@ class DecisionManager:
                 ),
             ),
         )
-```

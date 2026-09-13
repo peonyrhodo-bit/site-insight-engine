@@ -712,47 +712,64 @@ def get_storage_status() -> dict[str, Any]:
     }
 def get_director_resource_status() -> dict[str, Any]:
 
-    quota = get_youtube_quota_status()
+        quota_budget = (
+        youtube_quota.get_available_budget()
+    )
+
+    quota_remaining = (
+        youtube_quota.get_remaining()
+    )
+
     storage = get_storage_status()
 
     search_remaining = int(
-        quota.get(
+        quota_remaining.get(
             "search_remaining",
             0,
         )
     )
 
     other_remaining = int(
-        quota.get(
+        quota_remaining.get(
             "other_remaining",
             0,
         )
     )
 
-    search_reserve = int(
-        math.ceil(
-            search_remaining
-            * YOUTUBE_SEARCH_RESERVE_RATIO
-        )
-    )
-
-    other_reserve = int(
-        math.ceil(
-            other_remaining
-            * YOUTUBE_OTHER_RESERVE_RATIO
-        )
-    )
-
-    searchable_calls = max(
+    search_reserve = max(
         0,
         search_remaining
-        - search_reserve,
+        - int(
+            quota_budget.get(
+                "search_available",
+                0,
+            )
+        ),
     )
 
-    usable_other_units = max(
+    other_reserve = max(
         0,
         other_remaining
-        - other_reserve,
+        - int(
+            quota_budget.get(
+                "other_available",
+                0,
+            )
+        ),
+    )
+
+    searchable_calls = int(
+        quota_budget.get(
+            "search_available",
+            0,
+        )
+    )
+
+    usable_other_units = int(
+        quota_budget.get(
+            "other_available",
+            0,
+        )
     )
 
     return {

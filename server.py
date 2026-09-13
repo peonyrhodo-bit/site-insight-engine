@@ -3549,7 +3549,7 @@ async def test_data_layer():
             "snapshot": snapshot.to_dict(),
         },
         "research_set": research.to_dict(),
-        "research_for_video": relations.find_research_for_video(
+        "research_for_video": relations.research_for_video(
             9001
         ),
         "video_for_snapshot": relations.find_video_for_snapshot(

@@ -5299,6 +5299,196 @@ async def director_history(
         "results": [],
     }
 
+# ============================================================
+# RECOMMENDATIONS
+# ============================================================
+
+@app.post("/director/recommendations")
+async def create_director_recommendation(
+    request: Request,
+):
+    body = {}
+
+    content_type = (
+        request.headers.get(
+            "content-type",
+            "",
+        )
+        .lower()
+    )
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    try:
+        recommendation = recommendations_service.create_recommendation(
+            title=body.get("title"),
+            description=body.get("description"),
+            recommendation_type=body.get(
+                "recommendation_type",
+                "research",
+            ),
+            topic=body.get("topic"),
+            region=body.get("region"),
+            language=body.get("language"),
+            rationale=body.get("rationale"),
+            suggested_action=body.get(
+                "suggested_action"
+            ),
+            confidence=body.get("confidence"),
+            priority=body.get(
+                "priority",
+                0,
+            ),
+            run_id=body.get("run_id"),
+            decision_id=body.get("decision_id"),
+            source_data=body.get(
+                "source_data",
+                {},
+            ),
+            metadata=body.get(
+                "metadata",
+                {},
+            ),
+        )
+
+        return {
+            "ok": True,
+            "recommendation": recommendation,
+        }
+
+    except Exception as exc:
+        logger.error(
+            "DIRECTOR_RECOMMENDATION_FAILED error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
+
+
+@app.post("/director/recommendations/from-analysis")
+async def create_recommendations_from_analysis(
+    request: Request,
+):
+    body = {}
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    analysis = body.get(
+        "analysis",
+        {},
+    )
+
+    if not isinstance(analysis, dict):
+        analysis = {}
+
+    try:
+        recommendations = (
+            recommendations_service
+            .recommendations_from_analysis(
+                analysis
+            )
+        )
+
+        return {
+            "ok": True,
+            "recommendations": recommendations,
+        }
+
+    except Exception as exc:
+        logger.error(
+            "DIRECTOR_RECOMMENDATIONS_FROM_ANALYSIS_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
+
+
+# ============================================================
+# RECOMMENDATION FEEDBACK
+# ============================================================
+
+@app.post("/director/recommendations/feedback")
+async def create_director_recommendation_feedback(
+    request: Request,
+):
+    body = {}
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    try:
+        feedback = recommendations_service.create_feedback(
+            recommendation_id=body.get(
+                "recommendation_id"
+            ),
+            feedback_type=body.get(
+                "feedback_type"
+            ),
+            comment=body.get(
+                "comment"
+            ),
+            scope=body.get(
+                "scope"
+            ),
+            topic=body.get(
+                "topic"
+            ),
+            region=body.get(
+                "region"
+            ),
+            language=body.get(
+                "language"
+            ),
+            metadata=body.get(
+                "metadata",
+                {},
+            ),
+        )
+
+        return {
+            "ok": True,
+            "feedback": feedback,
+        }
+
+    except Exception as exc:
+        logger.error(
+            "DIRECTOR_RECOMMENDATION_FEEDBACK_FAILED "
+            "error_type=%s error=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(exc),
+            },
+        )
 
 # ============================================================
 # DIRECTOR DECISION

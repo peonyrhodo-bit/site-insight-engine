@@ -20,6 +20,7 @@ from mcp.client.streamable_http import streamable_http_client
 from supabase import create_client, Client
 from memory.memory import Memory
 from memory.supabase import SupabaseMemoryBackend
+from data.research_sets import ResearchSetManager
 
 from data.youtube import (
     YouTubeDataRegistry,
@@ -267,6 +268,7 @@ if SUPABASE_ENABLED:
 
 
 youtube_data = YouTubeDataRegistry()
+research_sets = ResearchSetManager()
 # ============================================================
 # FASTAPI
 # ============================================================

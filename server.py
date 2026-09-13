@@ -5303,56 +5303,45 @@ async def director_history(
 # RECOMMENDATIONS
 # ============================================================
 
+class DirectorRecommendationRequest(BaseModel):
+    title: str
+    description: str
+    recommendation_type: str = "research"
+    topic: str | None = None
+    region: str | None = None
+    language: str | None = None
+    rationale: str | None = None
+    suggested_action: str | None = None
+    confidence: float | None = None
+    priority: int = 0
+    run_id: int | None = None
+    decision_id: int | None = None
+    source_data: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
+
+
 @app.post("/director/recommendations")
 async def create_director_recommendation(
-    request: Request,
+    payload: DirectorRecommendationRequest,
 ):
-    body = {}
-
-    content_type = (
-        request.headers.get(
-            "content-type",
-            "",
-        )
-        .lower()
-    )
-
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
     try:
-        recommendation = recommendations_service.create_recommendation(
-            title=body.get("title"),
-            description=body.get("description"),
-            recommendation_type=body.get(
-                "recommendation_type",
-                "research",
-            ),
-            topic=body.get("topic"),
-            region=body.get("region"),
-            language=body.get("language"),
-            rationale=body.get("rationale"),
-            suggested_action=body.get(
-                "suggested_action"
-            ),
-            confidence=body.get("confidence"),
-            priority=body.get(
-                "priority",
-                0,
-            ),
-            run_id=body.get("run_id"),
-            decision_id=body.get("decision_id"),
-            source_data=body.get(
-                "source_data",
-                {},
-            ),
-            metadata=body.get(
-                "metadata",
-                {},
-            ),
+        recommendation = (
+            recommendations_service.create_recommendation(
+                title=payload.title,
+                description=payload.description,
+                recommendation_type=payload.recommendation_type,
+                topic=payload.topic,
+                region=payload.region,
+                language=payload.language,
+                rationale=payload.rationale,
+                suggested_action=payload.suggested_action,
+                confidence=payload.confidence,
+                priority=payload.priority,
+                run_id=payload.run_id,
+                decision_id=payload.decision_id,
+                source_data=payload.source_data,
+                metadata=payload.metadata,
+            )
         )
 
         return {
@@ -5374,7 +5363,6 @@ async def create_director_recommendation(
                 "error": str(exc),
             },
         )
-
 
 @app.post("/director/recommendations/from-analysis")
 async def create_recommendations_from_analysis(

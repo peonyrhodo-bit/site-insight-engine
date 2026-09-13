@@ -3552,7 +3552,7 @@ async def test_data_layer():
         "research_for_video": relations.research_for_video(
             9001
         ),
-        "video_for_snapshot": relations.find_video_for_snapshot(
+        "video_for_snapshot": relations.video_for_snapshot(
             9001
         ),
     }

@@ -1,212 +1,197 @@
+"""
+Director recommendations.
+
+A recommendation is a user-facing proposal created from a Director decision.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Iterable
+from uuid import uuid4
+
+from .decision import DirectorDecision
+
+
+class RecommendationStatus(str, Enum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    DISCUSSED = "discussed"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class RecommendationEvidence:
+    statement: str
+    source: str | None = None
+    reference_id: str | None = None
+    strength: float = 0.5
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.strength = max(0.0, min(1.0, float(self.strength)))
+
+
+@dataclass
+class RecommendationTarget:
+    kind: str
+    title: str
+    description: str = ""
+    audience: str | None = None
+    format: str | None = None
+    language: str = "ru"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class DirectorRecommendation:
-    """
-    Recommendation produced by the Director.
-
-    This layer is responsible for the recommendation itself.
-    Storage and persistence are handled by Memory.
-    """
-
+    recommendation_id: str
     title: str
-    description: str
-    recommendation_type: str = "research"
-    topic: str | None = None
-    region: str | None = None
-    language: str | None = None
-    rationale: str | None = None
-    suggested_action: str | None = None
-    confidence: float | None = None
-    priority: int = 0
-    run_id: int | None = None
-    decision_id: int | None = None
-    source_data: dict[str, Any] = field(
-        default_factory=dict
+    summary: str
+    status: RecommendationStatus
+    target: RecommendationTarget | None
+    proposed_action: str
+    reason: str
+    confidence: float
+    evidence: list[RecommendationEvidence]
+    risks: list[str]
+    constraints: list[str]
+    decision_id: str | None = None
+    research_id: str | None = None
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    metadata: dict[str, Any] = field(
-        default_factory=dict
-    )
-    id: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.confidence = max(0.0, min(1.0, float(self.confidence)))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "description": self.description,
-            "recommendation_type": (
-                self.recommendation_type
-            ),
-            "topic": self.topic,
-            "region": self.region,
-            "language": self.language,
-            "rationale": self.rationale,
-            "suggested_action": (
-                self.suggested_action
-            ),
-            "confidence": self.confidence,
-            "priority": self.priority,
-            "run_id": self.run_id,
-            "decision_id": self.decision_id,
-            "source_data": self.source_data,
-            "metadata": self.metadata,
-        }
+        return asdict(self)
 
 
-class DirectorRecommendationManager:
+def create_recommendation(
+    *,
+    title: str,
+    summary: str,
+    proposed_action: str,
+    reason: str,
+    confidence: float,
+    target: RecommendationTarget | None = None,
+    evidence: Iterable[RecommendationEvidence] | None = None,
+    risks: Iterable[str] | None = None,
+    constraints: Iterable[str] | None = None,
+    decision: DirectorDecision | None = None,
+    research_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorRecommendation:
     """
-    Creates and prepares recommendations
-    for the Director.
-
-    The manager does not own persistence.
-    Memory remains the source of stored recommendations.
+    Create a user-facing recommendation from a Director decision.
     """
-
-    def __init__(
-        self,
-        memory: Any | None = None,
-    ):
-        self.memory = memory
-
-    def create(
-        self,
-        title: str,
-        description: str,
-        recommendation_type: str = "research",
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
-        rationale: str | None = None,
-        suggested_action: str | None = None,
-        confidence: float | None = None,
-        priority: int = 0,
-        run_id: int | None = None,
-        decision_id: int | None = None,
-        source_data: dict[str, Any] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> DirectorRecommendation:
-
-        recommendation = DirectorRecommendation(
-            title=title,
-            description=description,
-            recommendation_type=(
-                recommendation_type
-            ),
-            topic=topic,
-            region=region,
-            language=language,
-            rationale=rationale,
-            suggested_action=suggested_action,
-            confidence=confidence,
-            priority=priority,
-            run_id=run_id,
-            decision_id=decision_id,
-            source_data=source_data or {},
-            metadata=metadata or {},
-        )
-
-        if self.memory is not None:
-            saved = self.memory.save_recommendation(
-                recommendation.to_dict()
-            )
-
-            if isinstance(saved, dict):
-                recommendation.id = saved.get(
-                    "id"
-                )
-
-        return recommendation
-
-    def create_from_analysis(
-        self,
-        analysis: dict[str, Any],
-        run_id: int | None = None,
-        decision_id: int | None = None,
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
-    ) -> list[DirectorRecommendation]:
-
-        recommendations: list[
-            DirectorRecommendation
-        ] = []
-
-        experiments = analysis.get(
-            "experiments",
-            [],
-        )
-
-        if not isinstance(
-            experiments,
-            list,
-        ):
-            experiments = []
-
-        hypothesis = analysis.get(
-            "hypothesis"
-        )
-
-        reasoning = analysis.get(
-            "reasoning"
-        )
-
-        confidence = analysis.get(
-            "confidence"
-        )
-
-        for experiment in experiments:
-            if not isinstance(
-                experiment,
-                str,
-            ):
-                continue
-
-            title = (
-                experiment[:120]
-                if experiment
-                else "Director experiment"
-            )
-
-            recommendation = self.create(
-                title=title,
-                description=experiment,
-                recommendation_type="pilot",
-                topic=topic,
-                region=region,
-                language=language,
-                rationale=(
-                    reasoning
-                    or hypothesis
-                ),
-                suggested_action=experiment,
-                confidence=confidence,
-                run_id=run_id,
-                decision_id=decision_id,
-                source_data=analysis,
-            )
-
-            recommendations.append(
-                recommendation
-            )
-
-        return recommendations
-
-    def rank(
-        self,
-        recommendations: list[
-            DirectorRecommendation
+    return DirectorRecommendation(
+        recommendation_id=f"rec_{uuid4().hex[:12]}",
+        title=str(title or "").strip(),
+        summary=str(summary or "").strip(),
+        status=RecommendationStatus.PENDING,
+        target=target,
+        proposed_action=str(proposed_action or "").strip(),
+        reason=str(reason or "").strip(),
+        confidence=confidence,
+        evidence=list(evidence or []),
+        risks=[str(x) for x in (risks or []) if str(x).strip()],
+        constraints=[
+            str(x) for x in (constraints or []) if str(x).strip()
         ],
-    ) -> list[DirectorRecommendation]:
+        decision_id=decision.decision_id if decision else None,
+        research_id=research_id,
+        metadata=dict(metadata or {}),
+    )
 
-        return sorted(
-            recommendations,
-            key=lambda item: (
-                item.priority,
-                item.confidence or 0.0,
-            ),
-            reverse=True,
-        )
+
+def recommendation_from_decision(
+    decision: DirectorDecision,
+    *,
+    title: str,
+    summary: str,
+    target: RecommendationTarget | None = None,
+    evidence: Iterable[RecommendationEvidence] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorRecommendation:
+    action = decision.next_action or "Обсудить следующий шаг."
+
+    return create_recommendation(
+        title=title,
+        summary=summary,
+        proposed_action=action,
+        reason=decision.rationale,
+        confidence=decision.confidence,
+        target=target,
+        evidence=evidence,
+        risks=decision.risks,
+        constraints=decision.missing_data,
+        decision=decision,
+        metadata=metadata,
+    )
+
+
+def accept_recommendation(
+    recommendation: DirectorRecommendation,
+    *,
+    feedback: str | None = None,
+) -> DirectorRecommendation:
+    recommendation.status = RecommendationStatus.ACCEPTED
+
+    if feedback:
+        recommendation.metadata["acceptance_feedback"] = feedback
+
+    return recommendation
+
+
+def reject_recommendation(
+    recommendation: DirectorRecommendation,
+    *,
+    reason: str | None = None,
+) -> DirectorRecommendation:
+    recommendation.status = RecommendationStatus.REJECTED
+
+    if reason:
+        recommendation.metadata["rejection_reason"] = reason
+
+    return recommendation
+
+
+def discuss_recommendation(
+    recommendation: DirectorRecommendation,
+    *,
+    message: str | None = None,
+) -> DirectorRecommendation:
+    recommendation.status = RecommendationStatus.DISCUSSED
+
+    if message:
+        recommendation.metadata.setdefault("discussion", []).append(message)
+
+    return recommendation
+
+
+def complete_recommendation(
+    recommendation: DirectorRecommendation,
+    *,
+    result: Any = None,
+) -> DirectorRecommendation:
+    recommendation.status = RecommendationStatus.COMPLETED
+
+    if result is not None:
+        recommendation.metadata["result"] = result
+
+    return recommendation
+
+
+def recommendation_to_dict(
+    recommendation: DirectorRecommendation,
+) -> dict[str, Any]:
+    return recommendation.to_dict()

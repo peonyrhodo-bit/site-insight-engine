@@ -660,6 +660,37 @@ class SupabaseMemoryBackend:
             return rows[0].get("id")
 
         return None
+
+    def get_recent_recommendations(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Read the most recent Director recommendations.
+
+        This is a read-only storage accessor used by the
+        dashboard and by the memory layer.
+        """
+
+        try:
+            response = (
+                self.client
+                .table(
+                    self.TABLE_RECOMMENDATIONS
+                )
+                .select("*")
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+            return self._safe_list(
+                response
+            )
+
+        except Exception:
+            return []
     # -----------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK
     # -----------------------------------------------------------------------
@@ -793,3 +824,111 @@ class SupabaseMemoryBackend:
             "status": new_status,
             "updated": updated,
         }
+
+    # -----------------------------------------------------------------------
+    # CONSTRAINTS
+    # -----------------------------------------------------------------------
+
+    def save_constraint(
+        self,
+        *,
+        constraint: dict[str, Any],
+    ) -> int | None:
+        """
+        Save a Director constraint learned from user feedback.
+        """
+
+        constraint = self._safe_dict(
+            constraint
+        )
+
+        payload = {
+            "title": constraint.get("title"),
+            "description": constraint.get(
+                "description"
+            ),
+            "constraint_type": constraint.get(
+                "constraint_type",
+                "avoid",
+            ),
+            "scope": constraint.get(
+                "scope",
+                "recommendation",
+            ),
+            "status": constraint.get(
+                "status",
+                "proposed",
+            ),
+            "topic": constraint.get("topic"),
+            "region": constraint.get("region"),
+            "language": constraint.get("language"),
+            "execution_condition": constraint.get(
+                "execution_condition"
+            ),
+            "reason": constraint.get("reason"),
+            "confidence": constraint.get(
+                "confidence",
+                0.5,
+            ),
+            "priority": constraint.get(
+                "priority",
+                0,
+            ),
+            "source_recommendation_id": (
+                constraint.get(
+                    "source_recommendation_id"
+                )
+            ),
+            "source_feedback_id": constraint.get(
+                "source_feedback_id"
+            ),
+            "source_run_id": constraint.get(
+                "source_run_id"
+            ),
+            "data_json": self._safe_dict(
+                constraint.get("metadata")
+            ),
+        }
+
+        response = (
+            self.client
+            .table(
+                self.TABLE_CONSTRAINTS
+            )
+            .insert(payload)
+            .execute()
+        )
+
+        return self._first_id(
+            response
+        )
+
+    def get_recent_constraints(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Read the most recent constraints.
+
+        Read-only accessor used by Director context and dashboard.
+        """
+
+        try:
+            response = (
+                self.client
+                .table(
+                    self.TABLE_CONSTRAINTS
+                )
+                .select("*")
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+            return self._safe_list(
+                response
+            )
+
+        except Exception:
+            return []

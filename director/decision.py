@@ -1,206 +1,260 @@
 """
 Director decision layer.
 
-This module converts available evidence, opportunities, constraints,
-resources and previous experience into a structured Director decision.
-
-Important architectural rule:
-- analytics calculates;
-- research gathers;
-- memory stores experience;
-- decision.py decides;
-- recommendations.py turns a decision into a human-facing recommendation.
-
-This is intentionally a small first-stage decision layer.
-It is not the final autonomous Director.
+Decision is a structured interpretation of analytical evidence.
+It does not gather data and does not itself perform actions.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Iterable
+from uuid import uuid4
+
+
+class DecisionType(str, Enum):
+    RESEARCH = "research"
+    ANALYZE = "analyze"
+    TEST = "test"
+    CREATE = "create"
+    PUBLISH = "publish"
+    EVALUATE = "evaluate"
+    WAIT = "wait"
+    ASK_USER = "ask_user"
+    SLEEP = "sleep"
+    NONE = "none"
+
+
+class DecisionStatus(str, Enum):
+    PROPOSED = "proposed"
+    CONFIRMED = "confirmed"
+    EXECUTED = "executed"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class DecisionEvidence:
+    source: str
+    statement: str
+    strength: float = 0.5
+    reference_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.strength = max(0.0, min(1.0, float(self.strength)))
 
 
 @dataclass
 class DirectorDecision:
-    """
-    Structured decision made by the Director.
-
-    The object is deliberately independent from Supabase, FastAPI
-    and UI code.
-    """
-
-    decision_type: str
-    opportunity: str | None = None
-    applicable: bool = True
-    confidence: float | None = None
+    decision_id: str
+    decision_type: DecisionType
+    status: DecisionStatus
+    objective: str
+    rationale: str
+    confidence: float
+    opportunity_score: float | None = None
+    applicability_score: float | None = None
+    evidence: list[DecisionEvidence] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    missing_data: list[str] = field(default_factory=list)
     next_action: str | None = None
-    rationale: str | None = None
-
-    evidence: list[Any] = field(default_factory=list)
-    constraints: list[Any] = field(default_factory=list)
-    resources: dict[str, Any] = field(default_factory=dict)
-    previous_decisions: list[Any] = field(default_factory=list)
-
-    run_id: int | None = None
-    id: int | None = None
-
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "decision_type": self.decision_type,
-            "opportunity": self.opportunity,
-            "applicable": self.applicable,
-            "confidence": self.confidence,
-            "next_action": self.next_action,
-            "rationale": self.rationale,
-            "evidence": self.evidence,
-            "constraints": self.constraints,
-            "resources": self.resources,
-            "previous_decisions": self.previous_decisions,
-            "run_id": self.run_id,
-            "metadata": self.metadata,
-        }
+    def __post_init__(self) -> None:
+        self.confidence = max(0.0, min(1.0, float(self.confidence)))
 
-
-class DirectorDecisionManager:
-    """
-    Creates structured decisions for the Director.
-
-    Persistence remains the responsibility of Memory.
-
-    The manager does not perform research and does not calculate
-    analytics. It only structures the decision from already available
-    information.
-    """
-
-    def __init__(self, memory: Any | None = None) -> None:
-        self.memory = memory
-
-    def decide(
-        self,
-        *,
-        decision_type: str,
-        opportunity: str | None = None,
-        applicable: bool = True,
-        confidence: float | None = None,
-        next_action: str | None = None,
-        rationale: str | None = None,
-        evidence: list[Any] | None = None,
-        constraints: list[Any] | None = None,
-        resources: dict[str, Any] | None = None,
-        previous_decisions: list[Any] | None = None,
-        run_id: int | None = None,
-        metadata: dict[str, Any] | None = None,
-        persist: bool = True,
-    ) -> DirectorDecision:
-        if not isinstance(decision_type, str):
-            raise TypeError("decision_type must be a string")
-
-        decision_type = decision_type.strip()
-
-        if not decision_type:
-            raise ValueError("decision_type cannot be empty")
-
-        if confidence is not None:
-            try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = None
-
-        if confidence is not None:
-            confidence = max(0.0, min(1.0, confidence))
-
-        decision = DirectorDecision(
-            decision_type=decision_type,
-            opportunity=opportunity,
-            applicable=bool(applicable),
-            confidence=confidence,
-            next_action=next_action,
-            rationale=rationale,
-            evidence=list(evidence or []),
-            constraints=list(constraints or []),
-            resources=dict(resources or {}),
-            previous_decisions=list(previous_decisions or []),
-            run_id=run_id,
-            metadata=dict(metadata or {}),
-        )
-
-        if persist and self.memory is not None:
-            saved = self.memory.save_decision(
-                decision=decision_type,
-                data=decision.to_dict(),
-                run_id=run_id,
+        if self.opportunity_score is not None:
+            self.opportunity_score = max(
+                0.0, min(1.0, float(self.opportunity_score))
             )
 
-            if isinstance(saved, int):
-                decision.id = saved
+        if self.applicability_score is not None:
+            self.applicability_score = max(
+                0.0, min(1.0, float(self.applicability_score))
+            )
 
-        return decision
+    @property
+    def is_actionable(self) -> bool:
+        return self.decision_type not in {
+            DecisionType.NONE,
+            DecisionType.WAIT,
+            DecisionType.SLEEP,
+        }
 
-    def from_context(
-        self,
-        context: dict[str, Any] | None,
-        *,
-        decision_type: str,
-        opportunity: str | None = None,
-        next_action: str | None = None,
-        rationale: str | None = None,
-        confidence: float | None = None,
-        run_id: int | None = None,
-        persist: bool = True,
-    ) -> DirectorDecision:
-        """
-        Build a decision using an already prepared Director context.
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
-        This method intentionally does not invent a strategy.
-        The caller supplies the actual decision and rationale.
-        """
 
-        context = context if isinstance(context, dict) else {}
+def _value(source: Any, name: str, default: Any = None) -> Any:
+    if source is None:
+        return default
 
-        evidence = context.get("evidence", [])
-        constraints = context.get("constraints", [])
-        resources = context.get("resources", {})
-        previous_decisions = context.get(
-            "previous_decisions",
-            context.get("decisions", []),
-        )
+    if isinstance(source, dict):
+        return source.get(name, default)
 
-        applicable = context.get("applicable", True)
+    return getattr(source, name, default)
 
-        return self.decide(
-            decision_type=decision_type,
-            opportunity=opportunity,
-            applicable=bool(applicable),
+
+def _dimension_score(assessment: Any, name: str) -> float | None:
+    value = _value(assessment, name)
+
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        value = value.get("score")
+
+    if hasattr(value, "score"):
+        value = value.score
+
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_decision(
+    *,
+    decision_type: DecisionType | str,
+    objective: str,
+    rationale: str,
+    confidence: float,
+    opportunity: Any = None,
+    evidence: Iterable[DecisionEvidence] | None = None,
+    risks: Iterable[str] | None = None,
+    missing_data: Iterable[str] | None = None,
+    next_action: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorDecision:
+    if not isinstance(decision_type, DecisionType):
+        decision_type = DecisionType(str(decision_type))
+
+    return DirectorDecision(
+        decision_id=f"dec_{uuid4().hex[:12]}",
+        decision_type=decision_type,
+        status=DecisionStatus.PROPOSED,
+        objective=str(objective or "").strip(),
+        rationale=str(rationale or "").strip(),
+        confidence=confidence,
+        opportunity_score=_dimension_score(opportunity, "overall_score"),
+        applicability_score=_dimension_score(opportunity, "applicability"),
+        evidence=list(evidence or []),
+        risks=[str(x) for x in (risks or []) if str(x).strip()],
+        missing_data=[
+            str(x) for x in (missing_data or []) if str(x).strip()
+        ],
+        next_action=str(next_action).strip() if next_action else None,
+        metadata=dict(metadata or {}),
+    )
+
+
+def decide_from_opportunity(
+    opportunity: Any,
+    *,
+    objective: str = "",
+    research_if_confidence_below: float = 0.55,
+) -> DirectorDecision:
+    """
+    Translate an OpportunityAssessment into a Director-level next action.
+
+    Important:
+    This function does NOT choose a content niche by itself.
+    It decides what kind of next step is justified by the evidence.
+    """
+    score = _dimension_score(opportunity, "overall_score") or 0.0
+    confidence = _dimension_score(opportunity, "confidence") or 0.0
+    applicability = _dimension_score(opportunity, "applicability") or 0.0
+
+    risks = list(_value(opportunity, "risks", []) or [])
+    missing = list(_value(opportunity, "missing_data", []) or [])
+
+    if missing or confidence < research_if_confidence_below:
+        return build_decision(
+            decision_type=DecisionType.RESEARCH,
+            objective=objective or "Уточнить перспективность направления.",
+            rationale=(
+                "Текущих данных недостаточно для уверенного решения. "
+                "Сначала нужно закрыть ключевые исследовательские пробелы."
+            ),
             confidence=confidence,
-            next_action=next_action,
-            rationale=rationale,
-            evidence=(
-                evidence
-                if isinstance(evidence, list)
-                else [evidence]
-            ),
-            constraints=(
-                constraints
-                if isinstance(constraints, list)
-                else [constraints]
-            ),
-            resources=(
-                resources
-                if isinstance(resources, dict)
-                else {}
-            ),
-            previous_decisions=(
-                previous_decisions
-                if isinstance(previous_decisions, list)
-                else [previous_decisions]
-            ),
-            run_id=run_id,
-            metadata={
-                "source": "director_context",
-            },
-            persist=persist,
+            opportunity=opportunity,
+            risks=risks,
+            missing_data=missing,
+            next_action="Провести дополнительное исследование.",
         )
+
+    if score >= 0.72 and applicability >= 0.60:
+        return build_decision(
+            decision_type=DecisionType.TEST,
+            objective=objective or "Проверить перспективное направление.",
+            rationale=(
+                "Сочетание спроса, динамики, применимости и качества "
+                "доказательств позволяет перейти от исследования к тесту."
+            ),
+            confidence=confidence,
+            opportunity=opportunity,
+            risks=risks,
+            missing_data=missing,
+            next_action="Сформировать небольшой проверочный эксперимент.",
+        )
+
+    if score >= 0.50:
+        return build_decision(
+            decision_type=DecisionType.ANALYZE,
+            objective=objective or "Уточнить потенциально интересное направление.",
+            rationale=(
+                "Есть положительные сигналы, но их пока недостаточно "
+                "для перехода к практическому тесту."
+            ),
+            confidence=confidence,
+            opportunity=opportunity,
+            risks=risks,
+            missing_data=missing,
+            next_action="Сравнить направление с альтернативами.",
+        )
+
+    return build_decision(
+        decision_type=DecisionType.WAIT,
+        objective=objective or "Не переходить к действию преждевременно.",
+        rationale=(
+            "Текущая совокупность сигналов не даёт достаточного основания "
+            "для перехода к следующему этапу."
+        ),
+        confidence=confidence,
+        opportunity=opportunity,
+        risks=risks,
+        missing_data=missing,
+        next_action="Наблюдать за изменением данных.",
+    )
+
+
+def confirm_decision(decision: DirectorDecision) -> DirectorDecision:
+    decision.status = DecisionStatus.CONFIRMED
+    return decision
+
+
+def mark_executed(decision: DirectorDecision) -> DirectorDecision:
+    decision.status = DecisionStatus.EXECUTED
+    return decision
+
+
+def reject_decision(
+    decision: DirectorDecision,
+    reason: str | None = None,
+) -> DirectorDecision:
+    decision.status = DecisionStatus.REJECTED
+
+    if reason:
+        decision.metadata["rejection_reason"] = reason
+
+    return decision
+
+
+def decision_to_dict(decision: DirectorDecision) -> dict[str, Any]:
+    return decision.to_dict()

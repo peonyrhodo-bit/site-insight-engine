@@ -1,32 +1,25 @@
 """
-Director Decisions
+Director Decisions — Memory 2.0
 
-This module defines the memory model for decisions made by the Director.
+A decision is an internal strategic choice made by Director.
 
-Important:
-- Director does not know about Supabase.
-- Director does not know about SQL.
-- Director does not know table names.
-- Storage is handled by Memory / MemoryBackend.
+Decision != recommendation.
 
-A decision is different from a recommendation.
+A decision answers:
+    "What did I decide?"
 
-Decision:
-    What the Director decided to do or not to do.
+A recommendation answers:
+    "What am I proposing to the user?"
 
-Recommendation:
-    What the Director proposes to the user.
+Memory 2.0 also allows a decision to become an experience:
 
-Example:
-
-    Decision:
-        "Research historical video opportunities in China."
-
-    Recommendation:
-        "Run a pilot with 3 Shorts and 2 long-form videos."
-
-The decision may exist even when there is no user-facing
-recommendation.
+    decision
+        ↓
+    expected outcome
+        ↓
+    actual outcome
+        ↓
+    lesson
 """
 
 from __future__ import annotations
@@ -34,10 +27,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# DECISION TYPES
-# ---------------------------------------------------------------------------
 
 DECISION_TYPES = {
     "research",
@@ -54,11 +43,6 @@ DECISION_TYPES = {
     "system",
 }
 
-
-# ---------------------------------------------------------------------------
-# DECISION STATUSES
-# ---------------------------------------------------------------------------
-
 DECISION_STATUSES = {
     "proposed",
     "active",
@@ -68,23 +52,11 @@ DECISION_STATUSES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# DECISION
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Decision:
-    """
-    A decision made by the Director.
-
-    The object stores the decision itself together with enough context
-    to understand why it was made and what it was connected to.
-    """
-
     decision: str
 
     decision_type: str = "research"
-
     status: str = "proposed"
 
     reason: str | None = None
@@ -97,18 +69,18 @@ class Decision:
     confidence: float | None = None
 
     run_id: int | None = None
-
     recommendation_id: int | None = None
-
     parent_decision_id: int | None = None
 
-    data: dict[str, Any] = field(
-        default_factory=dict
-    )
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    alternatives: list[dict[str, Any]] = field(default_factory=list)
 
-    metadata: dict[str, Any] = field(
-        default_factory=dict
-    )
+    expected_outcome: str | None = None
+    actual_outcome: str | None = None
+    lesson: str | None = None
+
+    data: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     id: int | None = None
 
@@ -118,12 +90,10 @@ class Decision:
             "decision",
         )
 
-        self.decision_type = (
-            self._validate_choice(
-                self.decision_type,
-                DECISION_TYPES,
-                "decision_type",
-            )
+        self.decision_type = self._validate_choice(
+            self.decision_type,
+            DECISION_TYPES,
+            "decision_type",
         )
 
         self.status = self._validate_choice(
@@ -132,33 +102,25 @@ class Decision:
             "status",
         )
 
-        self.confidence = (
-            self._validate_confidence(
-                self.confidence
-            )
+        self.confidence = self._validate_confidence(
+            self.confidence
         )
 
-        self.priority = (
-            self._validate_priority(
-                self.priority
-            )
+        self.priority = self._validate_priority(
+            self.priority
         )
 
-        if not isinstance(
-            self.data,
-            dict,
-        ):
+        if not isinstance(self.evidence, list):
+            self.evidence = []
+
+        if not isinstance(self.alternatives, list):
+            self.alternatives = []
+
+        if not isinstance(self.data, dict):
             self.data = {}
 
-        if not isinstance(
-            self.metadata,
-            dict,
-        ):
+        if not isinstance(self.metadata, dict):
             self.metadata = {}
-
-    # -----------------------------------------------------------------------
-    # VALIDATION
-    # -----------------------------------------------------------------------
 
     @staticmethod
     def _clean_required(
@@ -166,9 +128,7 @@ class Decision:
         field_name: str,
     ) -> str:
         if not isinstance(value, str):
-            raise TypeError(
-                f"{field_name} must be a string"
-            )
+            raise TypeError(f"{field_name} must be a string")
 
         value = value.strip()
 
@@ -201,81 +161,95 @@ class Decision:
 
     @staticmethod
     def _validate_confidence(
-        confidence: float | None,
+        value: float | None,
     ) -> float | None:
-        if confidence is None:
+        if value is None:
             return None
 
         try:
-            confidence = float(confidence)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "confidence must be a number"
-            ) from exc
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
 
-        if confidence < 0:
-            confidence = 0.0
-
-        if confidence > 1:
-            confidence = 1.0
-
-        return confidence
+        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _validate_priority(
-        priority: int | None,
+        value: int | None,
     ) -> int | None:
-        if priority is None:
+        if value is None:
             return None
 
         try:
-            return int(priority)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "priority must be an integer"
-            ) from exc
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
-    # -----------------------------------------------------------------------
-    # STATE
-    # -----------------------------------------------------------------------
+    def set_status(self, status: str) -> None:
+        self.status = self._validate_choice(
+            status,
+            DECISION_STATUSES,
+            "status",
+        )
 
     def activate(self) -> None:
-        """
-        Mark the decision as active.
-        """
-
         self.status = "active"
 
-    def complete(self) -> None:
-        """
-        Mark the decision as completed.
-        """
+    def complete(
+        self,
+        *,
+        actual_outcome: str | None = None,
+        lesson: str | None = None,
+    ) -> None:
+        self.status = "completed"
+
+        if actual_outcome is not None:
+            self.actual_outcome = actual_outcome.strip()
+
+        if lesson is not None:
+            self.lesson = lesson.strip()
+
+    def defer(self) -> None:
+        self.status = "deferred"
+
+    def cancel(self) -> None:
+        self.status = "cancelled"
+
+    def add_evidence(
+        self,
+        evidence: dict[str, Any],
+    ) -> None:
+        if isinstance(evidence, dict):
+            self.evidence.append(dict(evidence))
+
+    def add_alternative(
+        self,
+        alternative: dict[str, Any],
+    ) -> None:
+        if isinstance(alternative, dict):
+            self.alternatives.append(dict(alternative))
+
+    def learn(
+        self,
+        *,
+        actual_outcome: str,
+        lesson: str,
+    ) -> None:
+        self.actual_outcome = (
+            actual_outcome.strip()
+            if actual_outcome
+            else None
+        )
+
+        self.lesson = (
+            lesson.strip()
+            if lesson
+            else None
+        )
 
         self.status = "completed"
 
-    def cancel(self) -> None:
-        """
-        Cancel the decision.
-        """
-
-        self.status = "cancelled"
-
-    def defer(self) -> None:
-        """
-        Defer the decision.
-        """
-
-        self.status = "deferred"
-
-    # -----------------------------------------------------------------------
-    # SERIALIZATION
-    # -----------------------------------------------------------------------
-
     def to_dict(self) -> dict[str, Any]:
-        """
-        Convert the decision into a storage-independent dictionary.
-        """
-
         return {
             "id": self.id,
             "decision": self.decision,
@@ -288,31 +262,20 @@ class Decision:
             "priority": self.priority,
             "confidence": self.confidence,
             "run_id": self.run_id,
-            "recommendation_id": (
-                self.recommendation_id
-            ),
-            "parent_decision_id": (
-                self.parent_decision_id
-            ),
-            "data": self.data,
-            "metadata": self.metadata,
+            "recommendation_id": self.recommendation_id,
+            "parent_decision_id": self.parent_decision_id,
+            "evidence": list(self.evidence),
+            "alternatives": list(self.alternatives),
+            "expected_outcome": self.expected_outcome,
+            "actual_outcome": self.actual_outcome,
+            "lesson": self.lesson,
+            "data": dict(self.data),
+            "metadata": dict(self.metadata),
         }
 
 
-# ---------------------------------------------------------------------------
-# DECISION MANAGER
-# ---------------------------------------------------------------------------
-
 class DecisionManager:
-    """
-    Director-facing manager for decisions.
-
-    This class creates and evaluates decision objects.
-
-    It does not persist anything.
-
-    Persistence will later be provided by the memory layer.
-    """
+    """Factory and lifecycle helper for Decision objects."""
 
     def create(
         self,
@@ -329,13 +292,14 @@ class DecisionManager:
         run_id: int | None = None,
         recommendation_id: int | None = None,
         parent_decision_id: int | None = None,
+        evidence: list[dict[str, Any]] | None = None,
+        alternatives: list[dict[str, Any]] | None = None,
+        expected_outcome: str | None = None,
+        actual_outcome: str | None = None,
+        lesson: str | None = None,
         data: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Decision:
-        """
-        Create a validated decision.
-        """
-
         return Decision(
             decision=decision,
             decision_type=decision_type,
@@ -347,134 +311,57 @@ class DecisionManager:
             priority=priority,
             confidence=confidence,
             run_id=run_id,
-            recommendation_id=(
-                recommendation_id
-            ),
-            parent_decision_id=(
-                parent_decision_id
-            ),
-            data=(
-                data
-                if isinstance(data, dict)
-                else {}
-            ),
-            metadata=(
-                metadata
-                if isinstance(metadata, dict)
-                else {}
-            ),
+            recommendation_id=recommendation_id,
+            parent_decision_id=parent_decision_id,
+            evidence=evidence or [],
+            alternatives=alternatives or [],
+            expected_outcome=expected_outcome,
+            actual_outcome=actual_outcome,
+            lesson=lesson,
+            data=data or {},
+            metadata=metadata or {},
         )
 
-    @staticmethod
-    def active(
-        decisions: list[Decision],
-    ) -> list[Decision]:
-        """
-        Return only currently active decisions.
-        """
 
-        return [
-            item
-            for item in decisions
-            if item.status == "active"
-        ]
-
-    @staticmethod
-    def relevant(
-        decisions: list[Decision],
-        *,
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
-    ) -> list[Decision]:
-        """
-        Return decisions relevant to the supplied research context.
-
-        Matching is deliberately conservative.
-
-        A decision with a specific topic is not considered relevant
-        to an unrelated topic.
-
-        A decision with no topic, region, or language is treated as
-        general and remains relevant.
-        """
-
-        result: list[Decision] = []
-
-        normalized_topic = (
-            topic.strip().casefold()
-            if isinstance(topic, str)
-            else None
-        )
-
-        normalized_region = (
-            region.strip().casefold()
-            if isinstance(region, str)
-            else None
-        )
-
-        normalized_language = (
-            language.strip().casefold()
-            if isinstance(language, str)
-            else None
-        )
-
-        for item in decisions:
-            if item.status not in {
-                "proposed",
-                "active",
-            }:
-                continue
-
-            if (
-                item.topic is not None
-                and normalized_topic is not None
-                and item.topic.strip().casefold()
-                != normalized_topic
-            ):
-                continue
-
-            if (
-                item.region is not None
-                and normalized_region is not None
-                and item.region.strip().casefold()
-                != normalized_region
-            ):
-                continue
-
-            if (
-                item.language is not None
-                and normalized_language is not None
-                and item.language.strip().casefold()
-                != normalized_language
-            ):
-                continue
-
-            result.append(item)
-
-        return result
-
-    @staticmethod
-    def rank(
-        decisions: list[Decision],
-    ) -> list[Decision]:
-        """
-        Rank decisions by status, priority, and confidence.
-        """
-
-        return sorted(
-            decisions,
-            key=lambda item: (
-                item.status != "active",
-                -(
-                    item.priority
-                    if item.priority is not None
-                    else 0
-                ),
-                -(
-                    item.confidence
-                    if item.confidence is not None
-                    else 0
-                ),
-            ),
-        )
+def decision_from_dict(
+    data: dict[str, Any],
+) -> Decision:
+    return Decision(
+        decision=data.get("decision", ""),
+        decision_type=data.get(
+            "decision_type",
+            "research",
+        ),
+        status=data.get(
+            "status",
+            "proposed",
+        ),
+        reason=data.get("reason"),
+        topic=data.get("topic"),
+        region=data.get("region"),
+        language=data.get("language"),
+        priority=data.get("priority"),
+        confidence=data.get("confidence"),
+        run_id=data.get("run_id"),
+        recommendation_id=data.get(
+            "recommendation_id"
+        ),
+        parent_decision_id=data.get(
+            "parent_decision_id"
+        ),
+        evidence=data.get("evidence", []),
+        alternatives=data.get(
+            "alternatives",
+            [],
+        ),
+        expected_outcome=data.get(
+            "expected_outcome"
+        ),
+        actual_outcome=data.get(
+            "actual_outcome"
+        ),
+        lesson=data.get("lesson"),
+        data=data.get("data", {}),
+        metadata=data.get("metadata", {}),
+        id=data.get("id"),
+    )

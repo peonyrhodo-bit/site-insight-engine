@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import sqlite3
 
 from datetime import datetime, timezone
+from typing import Any
 
 
 class YouTubeQuotaManager:
@@ -123,6 +125,104 @@ class YouTubeQuotaManager:
                 0,
             ),
         }
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    def get_status(self) -> dict[str, int]:
+        """
+        Full quota status for the web layer and the Director.
+
+        Combines current usage with the configured daily limits
+        so callers do not need to know the limit configuration.
+        """
+
+        usage = self.get_usage()
+
+        return {
+            "search_calls": usage["search_calls"],
+            "search_limit": self.search_daily_limit,
+            "search_remaining": max(
+                self.search_daily_limit
+                - usage["search_calls"],
+                0,
+            ),
+            "other_units": usage["other_units"],
+            "other_limit": self.other_daily_limit,
+            "other_remaining": max(
+                self.other_daily_limit
+                - usage["other_units"],
+                0,
+            ),
+        }
+
+    # ========================================================
+    # USAGE RECORDING
+    # ========================================================
+
+    def record_usage(
+        self,
+        operation: str,
+        search_calls: int = 0,
+        other_units: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Persist one quota usage event.
+
+        Events with zero consumption are ignored.
+        """
+
+        search_calls = max(
+            0,
+            int(search_calls or 0),
+        )
+
+        other_units = max(
+            0,
+            int(other_units or 0),
+        )
+
+        if (
+            search_calls == 0
+            and other_units == 0
+        ):
+            return
+
+        conn = self._get_db()
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO youtube_quota_usage (
+                    created_at,
+                    operation,
+                    search_calls,
+                    other_units,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    operation,
+                    search_calls,
+                    other_units,
+                    json.dumps(
+                        metadata or {},
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                ),
+            )
+
+            conn.commit()
+
+        finally:
+            conn.close()
 
     # ========================================================
     # TIME UNTIL RESET

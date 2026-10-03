@@ -25,7 +25,11 @@ from data.relations import DataRelations
 from quota.youtube_quota import YouTubeQuotaManager
 from director.recommendations import DirectorRecommendationManager
 from director.feedback import DirectorFeedbackManager
+from director.decision import DirectorDecisionManager
+from director.autonomy import DirectorAutonomy, AutonomyConfig
+from scheduler.wakeup import DirectorWakeup
 from web.recommendations import RecommendationsWebService
+from web.dashboard import Dashboard
 
 from data.youtube import (
     YouTubeDataRegistry,
@@ -242,6 +246,11 @@ SUPABASE_ENABLED = bool(
 
 supabase: Client | None = None
 
+# Memory facade is only available when Supabase is configured.
+# A None value keeps the application importable in free/local mode;
+# every caller already guards on SUPABASE_ENABLED / memory is not None.
+memory = None
+
 
 if SUPABASE_ENABLED:
     try:
@@ -289,6 +298,144 @@ feedback_manager = DirectorFeedbackManager(
 recommendations_service = RecommendationsWebService(
     recommendation_manager=recommendation_manager,
     feedback_manager=feedback_manager,
+)
+
+
+# ============================================================
+# DIRECTOR DECISION / AUTONOMY / WAKEUP / DASHBOARD
+# ============================================================
+
+decision_manager = DirectorDecisionManager(
+    memory=memory
+)
+
+
+class DirectorBoundary:
+    """
+    Explicit adapter between the autonomy loop / dashboard and the
+    existing Director flow of this application.
+
+    It does not contain strategy. Research and analytics remain in
+    director_run(); this boundary only exposes:
+
+    - decide(): a bounded, context-driven decision call for the
+      autonomy cycle (no research is performed here);
+    - get_status(): read-only status for the dashboard.
+    """
+
+    def __init__(
+        self,
+        *,
+        decision_manager: Any,
+        memory: Any | None = None,
+    ) -> None:
+        self.decision_manager = decision_manager
+        self.memory = memory
+
+    def decide(
+        self,
+        *,
+        context: dict[str, Any] | None = None,
+        run_id: int | None = None,
+    ) -> Any:
+        """
+        Produce a bounded decision from the supplied context only.
+        """
+
+        context = (
+            context
+            if isinstance(context, dict)
+            else {}
+        )
+
+        opportunity = context.get(
+            "opportunity"
+        )
+
+        next_action = context.get(
+            "next_action"
+        )
+
+        return self.decision_manager.decide(
+            decision_type=context.get(
+                "decision_type",
+                "autonomous_wakeup",
+            ),
+            opportunity=(
+                str(opportunity)
+                if opportunity is not None
+                else None
+            ),
+            applicable=True,
+            confidence=context.get(
+                "confidence"
+            ),
+            next_action=(
+                str(next_action)
+                if next_action is not None
+                else None
+            ),
+            rationale=context.get(
+                "rationale"
+            ),
+            evidence=(
+                context.get("evidence")
+                if isinstance(
+                    context.get("evidence"),
+                    list,
+                )
+                else []
+            ),
+            constraints=[],
+            resources=(
+                context.get("resources")
+                if isinstance(
+                    context.get("resources"),
+                    dict,
+                )
+                else {}
+            ),
+            previous_decisions=[],
+            run_id=run_id,
+            persist=False,
+        )
+
+    def get_status(self) -> dict[str, Any]:
+        """
+        Read-only status for the dashboard.
+        """
+
+        return {
+            "status": "idle",
+            "mode": "explicit_wakeup_only",
+        }
+
+
+director_boundary = DirectorBoundary(
+    decision_manager=decision_manager,
+    memory=memory,
+)
+
+# Safe default: autonomy never starts by itself.
+# It can only be invoked explicitly (see /director/wakeup).
+autonomy_config = AutonomyConfig(
+    enabled=False,
+)
+
+autonomy = DirectorAutonomy(
+    director=director_boundary,
+    memory=memory,
+    config=autonomy_config,
+)
+
+wakeup = DirectorWakeup(
+    autonomy=autonomy,
+)
+
+dashboard = Dashboard(
+    memory=memory,
+    director=director_boundary,
+    recommendations=recommendations_service,
 )
 # ============================================================
 # FASTAPI
@@ -5017,6 +5164,138 @@ async def director_run(
         conn.commit()
         conn.close()
 
+    # --------------------------------------------------------
+    # 6B. STRUCTURED DIRECTOR DECISION
+    # (director/decision.py -> memory)
+    # --------------------------------------------------------
+
+    decision = decision_manager.from_context(
+        context={
+            "evidence": [
+                {
+                    "radar_count": len(
+                        radar_videos
+                    ),
+                    "trending_count": len(
+                        trending_videos
+                    ),
+                    "saved_count": saved_count,
+                    "quota_exceeded": (
+                        quota_exceeded
+                    ),
+                }
+            ],
+            "constraints": [],
+            "resources": resources,
+            "previous_decisions": (
+                memory.get_recent_decisions(
+                    limit=10
+                )
+                if memory is not None
+                else []
+            ),
+            "applicable": True,
+        },
+        decision_type="research_direction",
+        opportunity=(
+            analysis.get("hypothesis")
+            if isinstance(
+                analysis,
+                dict,
+            )
+            else None
+        ),
+        next_action=next_action,
+        rationale=(
+            analysis.get("reasoning")
+            if isinstance(
+                analysis,
+                dict,
+            )
+            else None
+        ),
+        confidence=(
+            analysis.get("confidence")
+            if isinstance(
+                analysis,
+                dict,
+            )
+            else None
+        ),
+        run_id=run_id,
+    )
+
+    # --------------------------------------------------------
+    # 6C. RECOMMENDATION FROM DECISION
+    # (director/recommendations.py)
+    # --------------------------------------------------------
+
+    analysis_topics = []
+
+    if isinstance(analysis, dict):
+        raw_topics = analysis.get("topics")
+
+        if isinstance(raw_topics, list):
+            analysis_topics = [
+                str(topic)
+                for topic in raw_topics
+                if str(topic).strip()
+            ]
+
+    recommendation_title = (
+        analysis.get("hypothesis")
+        if isinstance(
+            analysis,
+            dict,
+        )
+        and analysis.get("hypothesis")
+        else "Director research direction"
+    )
+
+    recommendation = recommendation_manager.create(
+        title=str(
+            recommendation_title
+        )[:200],
+        description=(
+            analysis.get("reasoning")
+            if isinstance(
+                analysis,
+                dict,
+            )
+            and analysis.get("reasoning")
+            else "Decision recorded by Director."
+        ),
+        recommendation_type="research",
+        topic=(
+            analysis_topics[0]
+            if analysis_topics
+            else None
+        ),
+        region=region_code,
+        language=language,
+        rationale=(
+            analysis.get("reasoning")
+            if isinstance(
+                analysis,
+                dict,
+            )
+            else None
+        ),
+        suggested_action=(
+            decision.next_action
+        ),
+        confidence=decision.confidence,
+        run_id=run_id,
+        decision_id=decision.id,
+        source_data={
+            "analysis": analysis,
+            "decision": decision.to_dict(),
+        },
+        metadata={
+            "source": "director_run",
+        },
+    )
+
     log_event(
         "director_run_completed",
         {
@@ -5051,6 +5330,10 @@ async def director_run(
         "next_action": next_action,
         "free_mode": FREE_MODE,
         "autonomous": AUTONOMOUS,
+        "decision": decision.to_dict(),
+        "recommendation": (
+            recommendation.to_dict()
+        ),
         "top_videos": sorted(
             radar_videos,
             key=score,
@@ -5110,6 +5393,64 @@ async def director_cron(
     )
 
     return result
+
+# ============================================================
+# DIRECTOR WAKEUP
+# (scheduler/wakeup.py -> director/autonomy.py)
+# ============================================================
+
+class DirectorWakeupRequest(BaseModel):
+    reason: str = "scheduled"
+    run_id: int | None = None
+    context: dict[str, Any] = {}
+
+
+@app.post("/director/wakeup")
+async def director_wakeup_endpoint(
+    payload: DirectorWakeupRequest,
+):
+    """
+    Explicit wakeup call for an external cron / scheduler.
+
+    Autonomy stays disabled by default (AutonomyConfig.enabled=False).
+    With the safe default this endpoint only reports that the
+    autonomous cycle is disabled; nothing runs on its own.
+    """
+
+    result = wakeup.wake(
+        reason=payload.reason,
+        context=payload.context,
+        run_id=payload.run_id,
+    )
+
+    if hasattr(result, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        result = asdict(result)
+
+    return {
+        "ok": True,
+        "wakeup": result,
+    }
+
+# ============================================================
+# DASHBOARD
+# (web/dashboard.py -> read-only state)
+# ============================================================
+
+@app.get("/dashboard")
+async def dashboard_snapshot():
+    """
+    Read-only dashboard snapshot for the web UI.
+
+    The dashboard never mutates state: it does not perform research,
+    does not create recommendations and does not start any cycle.
+    """
+
+    return {
+        "ok": True,
+        "dashboard": dashboard.get_snapshot(),
+    }
 
 @app.post("/api/weekly-reports/generate")
 def api_generate_weekly_report(

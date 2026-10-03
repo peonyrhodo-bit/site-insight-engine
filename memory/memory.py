@@ -19,6 +19,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from memory.constraints import ConstraintManager
+from memory.recommendations import (
+    RecommendationManager as MemoryRecommendationManager,
+)
+
 
 class MemoryBackend(Protocol):
     """
@@ -171,6 +176,34 @@ class MemoryBackend(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
+    # ---------------------------------------------------------
+    # Recommendations
+    # ---------------------------------------------------------
+
+    def get_recent_recommendations(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    # ---------------------------------------------------------
+    # Constraints
+    # ---------------------------------------------------------
+
+    def save_constraint(
+        self,
+        constraint: dict[str, Any],
+    ) -> int | None:
+        ...
+
+    def get_recent_constraints(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        ...
+
 
 class Memory:
     """
@@ -202,6 +235,7 @@ class Memory:
     DEFAULT_LIMIT_CHAT = 20
     DEFAULT_LIMIT_ACTIONS = 20
     DEFAULT_LIMIT_RESULTS = 20
+    DEFAULT_LIMIT_RECOMMENDATIONS = 20
 
     MAX_LIMIT = 100
 
@@ -562,8 +596,83 @@ class Memory:
         self,
         recommendation: dict[str, Any],
     ) -> int | None:
+        """
+        Save a Director recommendation.
+
+        The recommendation is validated and normalized through the
+        memory-layer recommendation model (memory/recommendations.py)
+        before it reaches the storage backend.
+        """
+
+        if not isinstance(
+            recommendation,
+            dict,
+        ):
+            recommendation = {}
+
+        model = MemoryRecommendationManager().create(
+            title=recommendation.get(
+                "title",
+                "",
+            ),
+            description=recommendation.get(
+                "description",
+                "",
+            ),
+            recommendation_type=recommendation.get(
+                "recommendation_type",
+                "research",
+            ),
+            topic=recommendation.get("topic"),
+            region=recommendation.get("region"),
+            language=recommendation.get("language"),
+            rationale=recommendation.get(
+                "rationale"
+            ),
+            suggested_action=recommendation.get(
+                "suggested_action"
+            ),
+            confidence=recommendation.get(
+                "confidence"
+            ),
+            priority=recommendation.get(
+                "priority"
+            ),
+            run_id=recommendation.get("run_id"),
+            decision_id=recommendation.get(
+                "decision_id"
+            ),
+            source_data=recommendation.get(
+                "source_data"
+            ),
+            metadata=recommendation.get(
+                "metadata"
+            ),
+        )
+
+        status = recommendation.get("status")
+
+        if status is not None:
+            model.set_status(status)
+
         return self.backend.save_recommendation(
-            recommendation=recommendation,
+            recommendation=model.to_dict()
+        )
+
+    def get_recent_recommendations(
+        self,
+        *,
+        limit: int = DEFAULT_LIMIT_RECOMMENDATIONS,
+    ) -> list[dict[str, Any]]:
+        """
+        Read the most recent Director recommendations.
+        """
+
+        return self.backend.get_recent_recommendations(
+            limit=self._limit(
+                limit,
+                self.DEFAULT_LIMIT_RECOMMENDATIONS,
+            )
         )
 
     def save_recommendation_feedback(
@@ -580,4 +689,87 @@ class Memory:
     ) -> dict[str, Any]:
         return self.backend.apply_recommendation_feedback(
             feedback=feedback,
+        )
+
+    # =========================================================
+    # CONSTRAINTS
+    # =========================================================
+
+    def save_constraint(
+        self,
+        constraint: dict[str, Any],
+    ) -> int | None:
+        """
+        Save a constraint learned from user feedback.
+
+        The constraint is validated and normalized through the
+        memory-layer constraint model (memory/constraints.py).
+        """
+
+        if not isinstance(constraint, dict):
+            constraint = {}
+
+        model = ConstraintManager().create(
+            title=constraint.get("title", ""),
+            description=constraint.get(
+                "description",
+                "",
+            ),
+            constraint_type=constraint.get(
+                "constraint_type",
+                "avoid",
+            ),
+            scope=constraint.get(
+                "scope",
+                "recommendation",
+            ),
+            status=constraint.get(
+                "status",
+                "proposed",
+            ),
+            topic=constraint.get("topic"),
+            region=constraint.get("region"),
+            language=constraint.get("language"),
+            execution_condition=constraint.get(
+                "execution_condition"
+            ),
+            reason=constraint.get("reason"),
+            confidence=constraint.get(
+                "confidence",
+                0.5,
+            ),
+            priority=constraint.get(
+                "priority",
+                0,
+            ),
+            source_recommendation_id=constraint.get(
+                "source_recommendation_id"
+            ),
+            source_feedback_id=constraint.get(
+                "source_feedback_id"
+            ),
+            source_run_id=constraint.get(
+                "source_run_id"
+            ),
+            metadata=constraint.get("metadata"),
+        )
+
+        return self.backend.save_constraint(
+            constraint=model.to_dict()
+        )
+
+    def get_recent_constraints(
+        self,
+        *,
+        limit: int = DEFAULT_LIMIT_RECOMMENDATIONS,
+    ) -> list[dict[str, Any]]:
+        """
+        Read the most recent constraints.
+        """
+
+        return self.backend.get_recent_constraints(
+            limit=self._limit(
+                limit,
+                self.DEFAULT_LIMIT_RECOMMENDATIONS,
+            )
         )

@@ -99,6 +99,31 @@ class RecommendationsWebService:
 
         return feedback.to_dict()
 
+    def get_recent(
+        self,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Read-only accessor for the dashboard.
+
+        Returns the most recent stored recommendations without
+        changing any state.
+        """
+
+        memory = (
+            self.recommendation_manager.memory
+        )
+
+        if memory is None:
+            return []
+
+        try:
+            return memory.get_recent_recommendations(
+                limit=limit
+            )
+        except Exception:
+            return []
+
     def recommendations_from_analysis(
         self,
         analysis: dict[str, Any],

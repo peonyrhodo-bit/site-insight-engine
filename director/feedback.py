@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from memory.constraints import (
+    CONSTRAINT_SCOPES,
+    ConstraintManager,
+)
+
 
 @dataclass
 class DirectorFeedback:
@@ -139,4 +144,117 @@ class DirectorFeedbackManager:
                 feedback.to_dict()
             )
 
+            self._record_constraint(
+                feedback
+            )
+
         return feedback
+
+    def _record_constraint(
+        self,
+        feedback: DirectorFeedback,
+    ) -> None:
+        """
+        Persist a constraint only when the user explicitly scoped
+        the feedback.
+
+        Important:
+        - A rejection without an explicit scope is NOT turned into
+          a constraint.
+        - A rejected recommendation is never automatically turned
+          into a global ban.
+        - Saved constraints start as "proposed"; activating them
+          remains the Director's decision.
+        """
+
+        if self.memory is None:
+            return
+
+        scope = feedback.scope
+
+        if not isinstance(scope, str):
+            return
+
+        scope = scope.strip().lower()
+
+        if scope not in CONSTRAINT_SCOPES:
+            # The scope is unclear/unsupported.
+            # Do not invent one.
+            return
+
+        if feedback.feedback_type == "reject":
+            constraint_type = "avoid"
+        elif feedback.feedback_type == "accept":
+            constraint_type = "prefer"
+        else:
+            # Other feedback types do not express a reusable
+            # constraint by themselves.
+            return
+
+        comment = (
+            feedback.comment
+            if isinstance(feedback.comment, str)
+            else ""
+        ).strip()
+
+        title = (
+            comment[:120]
+            if comment
+            else f"Feedback {feedback.feedback_type}"
+        )
+
+        description = (
+            comment
+            or "Constraint recorded from user feedback."
+        )
+
+        source_run_id = None
+
+        if isinstance(
+            feedback.metadata,
+            dict,
+        ):
+            try:
+                source_run_id = int(
+                    feedback.metadata.get(
+                        "run_id"
+                    )
+                )
+            except (TypeError, ValueError):
+                source_run_id = None
+
+        constraint = ConstraintManager().create(
+            title=title,
+            description=description,
+            constraint_type=constraint_type,
+            scope=scope,
+            status="proposed",
+            topic=feedback.topic,
+            region=feedback.region,
+            language=feedback.language,
+            reason=comment or None,
+            confidence=0.5,
+            priority=0,
+            source_recommendation_id=(
+                feedback.recommendation_id
+            ),
+            source_feedback_id=feedback.id,
+            source_run_id=source_run_id,
+            metadata={
+                "feedback_type": (
+                    feedback.feedback_type
+                ),
+                **(
+                    feedback.metadata
+                    if isinstance(
+                        feedback.metadata,
+                        dict,
+                    )
+                    else {}
+                ),
+            },
+        )
+
+        self.memory.save_constraint(
+            constraint.to_dict()
+        )

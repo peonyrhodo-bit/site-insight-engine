@@ -1,267 +1,658 @@
 """
-Director autonomy cycle.
+Director autonomous cycle.
 
-This module defines the execution shell around the Director.
-
-The autonomy layer does NOT make strategic decisions itself.
-
-Its responsibility is only to control the cycle:
-
-WAKE
-→ LOAD STATE
-→ ASK DIRECTOR WHAT TO DO
-→ EXECUTE ALLOWED ACTION
-→ SAVE RESULT
-→ EVALUATE
-→ CONTINUE OR STOP
+The autonomous loop is intentionally bounded and state-driven.
+It must never research forever or execute uncontrolled actions.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Callable
+from uuid import uuid4
+
+
+class DirectorPhase(str, Enum):
+    SLEEP = "sleep"
+    WAKE = "wake"
+    INSPECT = "inspect"
+    UNDERSTAND = "understand"
+    RESEARCH = "research"
+    ANALYZE = "analyze"
+    ASSESS = "assess"
+    DECIDE = "decide"
+    ACT = "act"
+    RECOMMEND = "recommend"
+    WAIT = "wait"
+    EVALUATE = "evaluate"
+    LEARN = "learn"
+    COMPLETE = "complete"
+    ERROR = "error"
+
+
+class CycleStatus(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    SLEEPING = "sleeping"
+    ERROR = "error"
+    STOPPED = "stopped"
+
+
+@dataclass
+class DirectorState:
+    project_id: str | None = None
+    phase: DirectorPhase = DirectorPhase.SLEEP
+    status: CycleStatus = CycleStatus.IDLE
+
+    objective: str | None = None
+
+    current_research_id: str | None = None
+    current_decision_id: str | None = None
+    current_recommendation_id: str | None = None
+
+    last_action: str | None = None
+    last_result: Any = None
+
+    evidence_available: bool = False
+    evidence_sufficient: bool = False
+
+    cycle_count: int = 0
+    actions_taken: int = 0
+
+    sleep_reason: str | None = None
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class CycleEvent:
+    event_id: str
+    phase: DirectorPhase
+    event: str
+    message: str
+    data: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
 class AutonomyConfig:
-    max_steps: int = 5
     enabled: bool = False
-    stop_on_error: bool = True
+    max_steps_per_cycle: int = 8
+    max_research_steps: int = 2
+    max_action_steps: int = 3
+    allow_external_actions: bool = False
+    sleep_after_recommendation: bool = True
+    sleep_after_insufficient_data: bool = False
 
 
 @dataclass
-class AutonomyResult:
-    run_id: int | None
-    status: str
-    steps: int = 0
-    results: list[dict[str, Any]] = field(default_factory=list)
-    error: str | None = None
+class DirectorCycle:
+    cycle_id: str
+    status: CycleStatus
+    state: DirectorState
+    events: list[CycleEvent] = field(default_factory=list)
+    started_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    finished_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class DirectorAutonomy:
     """
-    Thin execution loop around the Director.
+    Orchestrates the Director lifecycle.
 
-    The actual strategic choice belongs to director.py.
+    The actual intelligence is injected through callbacks.
+    This prevents autonomy.py from becoming a second Director.
     """
 
     def __init__(
         self,
         *,
-        director: Any,
-        memory: Any | None = None,
         config: AutonomyConfig | None = None,
+        inspect: Callable[[DirectorState], Any] | None = None,
+        understand: Callable[[DirectorState, Any], Any] | None = None,
+        research: Callable[[DirectorState, Any], Any] | None = None,
+        analyze: Callable[[DirectorState, Any], Any] | None = None,
+        assess: Callable[[DirectorState, Any], Any] | None = None,
+        decide: Callable[[DirectorState, Any], Any] | None = None,
+        act: Callable[[DirectorState, Any], Any] | None = None,
+        recommend: Callable[[DirectorState, Any], Any] | None = None,
+        evaluate: Callable[[DirectorState, Any], Any] | None = None,
+        learn: Callable[[DirectorState, Any], Any] | None = None,
     ) -> None:
-        self.director = director
-        self.memory = memory
         self.config = config or AutonomyConfig()
 
-        self._running = False
+        self.inspect_handler = inspect
+        self.understand_handler = understand
+        self.research_handler = research
+        self.analyze_handler = analyze
+        self.assess_handler = assess
+        self.decide_handler = decide
+        self.act_handler = act
+        self.recommend_handler = recommend
+        self.evaluate_handler = evaluate
+        self.learn_handler = learn
 
-    @property
-    def running(self) -> bool:
-        return self._running
+    def _event(
+        self,
+        cycle: DirectorCycle,
+        phase: DirectorPhase,
+        event: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        cycle.events.append(
+            CycleEvent(
+                event_id=f"evt_{uuid4().hex[:12]}",
+                phase=phase,
+                event=event,
+                message=message,
+                data=dict(data or {}),
+            )
+        )
+
+    def _set_phase(
+        self,
+        cycle: DirectorCycle,
+        phase: DirectorPhase,
+        message: str,
+    ) -> None:
+        cycle.state.phase = phase
+
+        self._event(
+            cycle,
+            phase,
+            "phase_changed",
+            message,
+        )
+
+    def _safe_call(
+        self,
+        handler: Callable | None,
+        state: DirectorState,
+        payload: Any,
+    ) -> Any:
+        if handler is None:
+            return None
+
+        return handler(state, payload)
 
     def run(
         self,
         *,
-        run_id: int | None = None,
-        context: dict[str, Any] | None = None,
-        action_executor: Callable[[Any], Any] | None = None,
-    ) -> AutonomyResult:
-        """
-        Run a bounded Director cycle.
-
-        This first implementation is intentionally conservative:
-        autonomy must be explicitly enabled and every run is bounded.
-        """
-
-        if not self.config.enabled:
-            return AutonomyResult(
-                run_id=run_id,
-                status="disabled",
-            )
-
-        if self._running:
-            return AutonomyResult(
-                run_id=run_id,
-                status="already_running",
-            )
-
-        self._running = True
-
-        result = AutonomyResult(
-            run_id=run_id,
-            status="running",
+        project_id: str | None = None,
+        objective: str | None = None,
+        initial_state: DirectorState | None = None,
+    ) -> DirectorCycle:
+        cycle = DirectorCycle(
+            cycle_id=f"cycle_{uuid4().hex[:12]}",
+            status=CycleStatus.RUNNING,
+            state=initial_state
+            or DirectorState(),
         )
+
+        cycle.state.project_id = (
+            project_id or cycle.state.project_id
+        )
+        cycle.state.objective = (
+            objective or cycle.state.objective
+        )
+        cycle.state.status = CycleStatus.RUNNING
+        cycle.state.cycle_count += 1
 
         try:
-            current_context = dict(context or {})
-
-            for step in range(self.config.max_steps):
-                result.steps += 1
-
-                decision = self._ask_director(
-                    context=current_context,
-                    run_id=run_id,
-                )
-
-                if decision is None:
-                    result.status = "stopped"
-                    break
-
-                if not self._should_continue(decision):
-                    result.status = "completed"
-                    break
-
-                action_result = self._execute_action(
-                    decision,
-                    action_executor=action_executor,
-                )
-
-                normalized_result = self._normalize_result(
-                    action_result
-                )
-
-                result.results.append(normalized_result)
-
-                if self.memory is not None:
-                    self.memory.save_result(
-                        result_type="autonomy_step",
-                        summary=normalized_result.get(
-                            "summary",
-                            "",
-                        ),
-                        run_id=run_id,
-                        data=normalized_result,
-                    )
-
-                current_context["last_result"] = normalized_result
-
-            else:
-                result.status = "max_steps_reached"
-
+            return self._run_cycle(cycle)
         except Exception as exc:
-            result.status = "error"
-            result.error = str(exc)
+            cycle.status = CycleStatus.ERROR
+            cycle.state.status = CycleStatus.ERROR
+            cycle.state.phase = DirectorPhase.ERROR
 
-            if self.memory is not None:
-                try:
-                    self.memory.save_result(
-                        result_type="autonomy_error",
-                        summary=str(exc),
-                        run_id=run_id,
-                        data={
-                            "error": str(exc),
-                        },
-                    )
-                except Exception:
-                    pass
+            self._event(
+                cycle,
+                DirectorPhase.ERROR,
+                "cycle_error",
+                f"Цикл завершился с ошибкой: {exc}",
+            )
 
-            if self.config.stop_on_error:
-                return result
+            cycle.finished_at = datetime.now(
+                timezone.utc
+            ).isoformat()
 
-        finally:
-            self._running = False
+            return cycle
 
-        return result
-
-    def _ask_director(
+    def _run_cycle(
         self,
-        *,
-        context: dict[str, Any],
-        run_id: int | None,
-    ) -> Any:
-        """
-        Delegate the actual decision to Director.
+        cycle: DirectorCycle,
+    ) -> DirectorCycle:
+        steps = 0
+        research_steps = 0
+        action_steps = 0
 
-        Different Director implementations may expose different
-        method names during migration, so this adapter supports the
-        currently expected forms without implementing strategy here.
-        """
-
-        if hasattr(self.director, "decide_next_action"):
-            return self.director.decide_next_action(
-                context=context,
-                run_id=run_id,
-            )
-
-        if hasattr(self.director, "decide"):
-            return self.director.decide(
-                context=context,
-                run_id=run_id,
-            )
-
-        if hasattr(self.director, "run"):
-            return self.director.run(
-                context=context,
-                run_id=run_id,
-            )
-
-        raise AttributeError(
-            "Director does not expose a supported decision method"
+        # ---------------------------------------------------------
+        # WAKE
+        # ---------------------------------------------------------
+        self._set_phase(
+            cycle,
+            DirectorPhase.WAKE,
+            "Валерий проснулся и проверяет состояние проекта.",
         )
 
-    @staticmethod
-    def _should_continue(decision: Any) -> bool:
-        if decision is None:
-            return False
+        # ---------------------------------------------------------
+        # INSPECT
+        # ---------------------------------------------------------
+        self._set_phase(
+            cycle,
+            DirectorPhase.INSPECT,
+            "Проверяю текущее состояние проекта.",
+        )
 
-        if isinstance(decision, dict):
-            if decision.get("continue") is False:
-                return False
+        state_data = self._safe_call(
+            self.inspect_handler,
+            cycle.state,
+            None,
+        )
 
-            if decision.get("should_continue") is False:
-                return False
+        steps += 1
 
-            if decision.get("next_action") is None:
-                return False
+        if state_data is None:
+            state_data = {}
 
-            return True
+        cycle.state.evidence_available = bool(
+            state_data.get("evidence_available", False)
+            if isinstance(state_data, dict)
+            else False
+        )
 
-        if hasattr(decision, "next_action"):
-            return getattr(
-                decision,
-                "next_action",
+        # ---------------------------------------------------------
+        # UNDERSTAND
+        # ---------------------------------------------------------
+        self._set_phase(
+            cycle,
+            DirectorPhase.UNDERSTAND,
+            "Определяю, на каком этапе сейчас находится задача.",
+        )
+
+        understanding = self._safe_call(
+            self.understand_handler,
+            cycle.state,
+            state_data,
+        )
+
+        steps += 1
+
+        if understanding is None:
+            understanding = state_data
+
+        # ---------------------------------------------------------
+        # MAIN LOOP
+        # ---------------------------------------------------------
+        while steps < self.config.max_steps_per_cycle:
+            if research_steps >= self.config.max_research_steps:
+                cycle.state.metadata["research_limit_reached"] = True
+
+            # -----------------------------------------------------
+            # ASSESS
+            # -----------------------------------------------------
+            self._set_phase(
+                cycle,
+                DirectorPhase.ASSESS,
+                "Оцениваю, достаточно ли текущих данных.",
+            )
+
+            assessment = self._safe_call(
+                self.assess_handler,
+                cycle.state,
+                understanding,
+            )
+
+            steps += 1
+
+            sufficient = False
+
+            if isinstance(assessment, dict):
+                sufficient = bool(
+                    assessment.get(
+                        "evidence_sufficient",
+                        assessment.get("sufficient", False),
+                    )
+                )
+
+            cycle.state.evidence_sufficient = sufficient
+
+            # -----------------------------------------------------
+            # RESEARCH
+            # -----------------------------------------------------
+            if not sufficient:
+                if research_steps < self.config.max_research_steps:
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.RESEARCH,
+                        "Данных пока недостаточно — планирую следующий этап исследования.",
+                    )
+
+                    research_result = self._safe_call(
+                        self.research_handler,
+                        cycle.state,
+                        assessment,
+                    )
+
+                    research_steps += 1
+                    steps += 1
+
+                    cycle.state.last_action = "research"
+                    cycle.state.actions_taken += 1
+                    cycle.state.last_result = research_result
+
+                    if research_result is not None:
+                        understanding = research_result
+
+                    continue
+
+                # We have researched enough for this wake cycle.
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.WAIT,
+                    "В рамках текущего цикла дополнительных данных получить не удалось.",
+                )
+
+                cycle.state.status = CycleStatus.WAITING
+                cycle.state.sleep_reason = (
+                    "research_limit_reached"
+                )
+
+                cycle.status = CycleStatus.WAITING
+                break
+
+            # -----------------------------------------------------
+            # ANALYZE
+            # -----------------------------------------------------
+            self._set_phase(
+                cycle,
+                DirectorPhase.ANALYZE,
+                "Анализирую собранные данные.",
+            )
+
+            analysis = self._safe_call(
+                self.analyze_handler,
+                cycle.state,
+                understanding,
+            )
+
+            steps += 1
+
+            if analysis is not None:
+                understanding = analysis
+
+            # -----------------------------------------------------
+            # DECIDE
+            # -----------------------------------------------------
+            self._set_phase(
+                cycle,
+                DirectorPhase.DECIDE,
+                "Принимаю решение о следующем шаге.",
+            )
+
+            decision = self._safe_call(
+                self.decide_handler,
+                cycle.state,
+                understanding,
+            )
+
+            steps += 1
+
+            if decision is None:
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.WAIT,
+                    "Решение не сформировано — останавливаю цикл.",
+                )
+
+                cycle.status = CycleStatus.WAITING
+                cycle.state.status = CycleStatus.WAITING
+                cycle.state.sleep_reason = "no_decision"
+                break
+
+            decision_type = None
+
+            if isinstance(decision, dict):
+                decision_type = decision.get("decision_type")
+                cycle.state.current_decision_id = decision.get(
+                    "decision_id"
+                )
+            else:
+                decision_type = getattr(
+                    decision,
+                    "decision_type",
+                    None,
+                )
+                cycle.state.current_decision_id = getattr(
+                    decision,
+                    "decision_id",
+                    None,
+                )
+
+            decision_type = (
+                getattr(decision_type, "value", decision_type)
+            )
+
+            # -----------------------------------------------------
+            # WAIT / SLEEP
+            # -----------------------------------------------------
+            if decision_type in {
+                "wait",
+                "sleep",
+                "none",
                 None,
-            ) is not None
+            }:
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.SLEEP,
+                    "Сейчас полезнее остановиться и дождаться новых данных.",
+                )
 
-        return True
+                cycle.status = CycleStatus.SLEEPING
+                cycle.state.status = CycleStatus.SLEEPING
+                cycle.state.sleep_reason = (
+                    "decision_requires_wait"
+                )
+                break
 
-    @staticmethod
-    def _execute_action(
-        decision: Any,
-        *,
-        action_executor: Callable[[Any], Any] | None,
-    ) -> Any:
-        if action_executor is not None:
-            return action_executor(decision)
+            # -----------------------------------------------------
+            # RECOMMEND
+            # -----------------------------------------------------
+            if decision_type in {
+                "recommend",
+                "test",
+                "create",
+                "publish",
+                "ask_user",
+            }:
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.RECOMMEND,
+                    "Формирую понятное предложение для пользователя.",
+                )
 
-        if isinstance(decision, dict):
-            return {
-                "status": "pending",
-                "summary": "Action selected but no executor configured.",
-                "decision": decision,
-            }
+                recommendation = self._safe_call(
+                    self.recommend_handler,
+                    cycle.state,
+                    decision,
+                )
 
-        return {
-            "status": "pending",
-            "summary": "Action selected but no executor configured.",
-            "decision": getattr(
-                decision,
-                "next_action",
-                None,
-            ),
-        }
+                steps += 1
+                cycle.state.last_action = "recommend"
+                cycle.state.actions_taken += 1
 
-    @staticmethod
-    def _normalize_result(
-        value: Any,
-    ) -> dict[str, Any]:
-        if isinstance(value, dict):
-            return value
+                if recommendation is not None:
+                    cycle.state.current_recommendation_id = (
+                        recommendation.get("recommendation_id")
+                        if isinstance(recommendation, dict)
+                        else getattr(
+                            recommendation,
+                            "recommendation_id",
+                            None,
+                        )
+                    )
 
-        return {
-            "status": "completed",
-            "summary": str(value),
-        }
+                cycle.state.last_result = recommendation
+
+                if self.config.sleep_after_recommendation:
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.SLEEP,
+                        "Рекомендация сформирована. Жду решения пользователя.",
+                    )
+
+                    cycle.status = CycleStatus.WAITING
+                    cycle.state.status = CycleStatus.WAITING
+                    cycle.state.sleep_reason = (
+                        "waiting_for_user"
+                    )
+                    break
+
+            # -----------------------------------------------------
+            # ACT
+            # -----------------------------------------------------
+            elif self.config.allow_external_actions:
+                if action_steps >= self.config.max_action_steps:
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.WAIT,
+                        "Достигнут лимит действий текущего цикла.",
+                    )
+
+                    cycle.status = CycleStatus.WAITING
+                    cycle.state.status = CycleStatus.WAITING
+                    cycle.state.sleep_reason = (
+                        "action_limit_reached"
+                    )
+                    break
+
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.ACT,
+                    "Выполняю разрешённое действие.",
+                )
+
+                result = self._safe_call(
+                    self.act_handler,
+                    cycle.state,
+                    decision,
+                )
+
+                action_steps += 1
+                steps += 1
+
+                cycle.state.last_action = decision_type
+                cycle.state.actions_taken += 1
+                cycle.state.last_result = result
+
+                # Evaluate action result.
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.EVALUATE,
+                    "Проверяю результат выполненного действия.",
+                )
+
+                evaluation = self._safe_call(
+                    self.evaluate_handler,
+                    cycle.state,
+                    result,
+                )
+
+                steps += 1
+
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.LEARN,
+                    "Фиксирую результат для следующего цикла.",
+                )
+
+                self._safe_call(
+                    self.learn_handler,
+                    cycle.state,
+                    evaluation,
+                )
+
+                steps += 1
+
+                if evaluation is not None:
+                    understanding = evaluation
+
+                continue
+
+            else:
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.RECOMMEND,
+                    "Действие требует внешнего исполнения, поэтому формирую предложение.",
+                )
+
+                recommendation = self._safe_call(
+                    self.recommend_handler,
+                    cycle.state,
+                    decision,
+                )
+
+                steps += 1
+                cycle.state.last_action = "recommend"
+                cycle.state.actions_taken += 1
+                cycle.state.last_result = recommendation
+
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.WAIT,
+                    "Жду разрешения или результата.",
+                )
+
+                cycle.status = CycleStatus.WAITING
+                cycle.state.status = CycleStatus.WAITING
+                cycle.state.sleep_reason = (
+                    "external_action_requires_confirmation"
+                )
+                break
+
+        else:
+            cycle.status = CycleStatus.WAITING
+            cycle.state.status = CycleStatus.WAITING
+            cycle.state.sleep_reason = "step_limit_reached"
+
+        if cycle.status == CycleStatus.RUNNING:
+            cycle.status = CycleStatus.COMPLETED
+            cycle.state.status = CycleStatus.COMPLETED
+
+        cycle.finished_at = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        return cycle
+
+
+def create_autonomous_director(
+    *,
+    enabled: bool = False,
+    **handlers: Callable | None,
+) -> DirectorAutonomy:
+    config = AutonomyConfig(
+        enabled=enabled,
+    )
+
+    return DirectorAutonomy(
+        config=config,
+        **handlers,
+    )

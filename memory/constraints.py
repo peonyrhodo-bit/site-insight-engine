@@ -1,35 +1,25 @@
 """
-Director Constraints
+Director Constraints — Memory 2.0
 
-This module defines constraints learned from user feedback.
+Constraints are reusable knowledge that influences future decisions.
 
-Important:
-- Director does not know about Supabase.
-- Director does not know about SQL.
-- Director does not know table names.
-- Storage is handled by Memory / MemoryBackend.
+A rejected recommendation is NOT automatically a constraint.
 
-A constraint is not the same thing as a rejected recommendation.
+Constraint lifecycle:
 
-Recommendation:
-    "This particular idea is not suitable."
+    proposed
+       ↓
+    active
+       ↓
+    paused / expired
 
-Constraint:
-    "Do not spend resources researching this type of idea."
-
-The Director must be careful about the scope of a constraint.
-
-For example:
-
-    topic
-    region
-    language
-    topic + region
-    execution
-    global
-
-A rejection of one recommendation must NOT automatically become
-a global prohibition.
+Every constraint has:
+- scope
+- reason
+- confidence
+- source
+- optional execution condition
+- optional review/expiration information
 """
 
 from __future__ import annotations
@@ -37,10 +27,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# CONSTRAINT SCOPES
-# ---------------------------------------------------------------------------
 
 CONSTRAINT_SCOPES = {
     "recommendation",
@@ -54,22 +40,12 @@ CONSTRAINT_SCOPES = {
     "global",
 }
 
-
-# ---------------------------------------------------------------------------
-# CONSTRAINT TYPES
-# ---------------------------------------------------------------------------
-
 CONSTRAINT_TYPES = {
     "avoid",
     "prefer",
     "require",
     "resource_limit",
 }
-
-
-# ---------------------------------------------------------------------------
-# CONSTRAINT STATUSES
-# ---------------------------------------------------------------------------
 
 CONSTRAINT_STATUSES = {
     "proposed",
@@ -80,19 +56,8 @@ CONSTRAINT_STATUSES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# CONSTRAINT
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Constraint:
-    """
-    A rule that influences future Director research and decisions.
-
-    A constraint should describe a reusable condition, not merely
-    repeat the text of a user's comment.
-    """
-
     title: str
     description: str
 
@@ -109,12 +74,15 @@ class Constraint:
     reason: str | None = None
 
     confidence: float = 0.5
-
     priority: int = 0
 
     source_recommendation_id: int | None = None
     source_feedback_id: int | None = None
     source_run_id: int | None = None
+
+    active_from: str | None = None
+    review_at: str | None = None
+    expires_at: str | None = None
 
     metadata: dict[str, Any] = field(
         default_factory=dict
@@ -155,7 +123,10 @@ class Constraint:
             self.priority
         )
 
-        if not isinstance(self.metadata, dict):
+        if not isinstance(
+            self.metadata,
+            dict,
+        ):
             self.metadata = {}
 
     @staticmethod
@@ -179,108 +150,163 @@ class Constraint:
 
     @staticmethod
     def _validate_constraint_type(
-        constraint_type: str,
+        value: str,
     ) -> str:
-        if not isinstance(
-            constraint_type,
-            str,
-        ):
+        if not isinstance(value, str):
             raise TypeError(
                 "constraint_type must be a string"
             )
 
-        constraint_type = (
-            constraint_type
-            .strip()
-            .lower()
-        )
+        value = value.strip().lower()
 
-        if (
-            constraint_type
-            not in CONSTRAINT_TYPES
-        ):
+        if value not in CONSTRAINT_TYPES:
             raise ValueError(
-                f"Unknown constraint type: "
-                f"{constraint_type}"
+                f"Unknown constraint type: {value}"
             )
 
-        return constraint_type
+        return value
 
     @staticmethod
     def _validate_scope(
-        scope: str,
+        value: str,
     ) -> str:
-        if not isinstance(scope, str):
+        if not isinstance(value, str):
             raise TypeError(
                 "scope must be a string"
             )
 
-        scope = scope.strip().lower()
+        value = value.strip().lower()
 
-        if scope not in CONSTRAINT_SCOPES:
+        if value not in CONSTRAINT_SCOPES:
             raise ValueError(
-                f"Unknown constraint scope: "
-                f"{scope}"
+                f"Unknown constraint scope: {value}"
             )
 
-        return scope
+        return value
 
     @staticmethod
     def _validate_status(
-        status: str,
+        value: str,
     ) -> str:
-        if not isinstance(status, str):
+        if not isinstance(value, str):
             raise TypeError(
                 "status must be a string"
             )
 
-        status = status.strip().lower()
+        value = value.strip().lower()
 
-        if status not in CONSTRAINT_STATUSES:
+        if value not in CONSTRAINT_STATUSES:
             raise ValueError(
-                f"Unknown constraint status: "
-                f"{status}"
+                f"Unknown constraint status: {value}"
             )
 
-        return status
+        return value
 
     @staticmethod
     def _validate_confidence(
-        confidence: float,
+        value: float,
     ) -> float:
         try:
-            confidence = float(confidence)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "confidence must be a number"
-            ) from exc
+            value = float(value)
+        except (TypeError, ValueError):
+            value = 0.5
 
-        if confidence < 0.0:
-            confidence = 0.0
-
-        if confidence > 1.0:
-            confidence = 1.0
-
-        return confidence
+        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _validate_priority(
-        priority: int,
+        value: int,
     ) -> int:
         try:
-            priority = int(priority)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "priority must be an integer"
-            ) from exc
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
-        return priority
+    def activate(
+        self,
+        *,
+        timestamp: str | None = None,
+    ) -> None:
+        self.status = "active"
+
+        if timestamp:
+            self.active_from = timestamp
+
+    def pause(self) -> None:
+        self.status = "paused"
+
+    def expire(self) -> None:
+        self.status = "expired"
+
+    def reject(self) -> None:
+        self.status = "rejected"
+
+    def applies_to(
+        self,
+        *,
+        topic: str | None = None,
+        region: str | None = None,
+        language: str | None = None,
+    ) -> bool:
+        """
+        Conservative scope matching.
+
+        A constraint only applies when its defined dimensions match.
+
+        Missing dimensions do not create a global match.
+        """
+
+        if self.status != "active":
+            return False
+
+        if self.scope == "global":
+            return True
+
+        if self.scope in {
+            "topic",
+            "topic_region",
+            "topic_language",
+        }:
+            if not self.topic:
+                return False
+
+            if not topic:
+                return False
+
+            if self.topic.lower() != topic.lower():
+                return False
+
+        if self.scope in {
+            "region",
+            "topic_region",
+            "region_language",
+        }:
+            if not self.region:
+                return False
+
+            if not region:
+                return False
+
+            if self.region.lower() != region.lower():
+                return False
+
+        if self.scope in {
+            "language",
+            "topic_language",
+            "region_language",
+        }:
+            if not self.language:
+                return False
+
+            if not language:
+                return False
+
+            if self.language.lower() != language.lower():
+                return False
+
+        return True
 
     def to_dict(self) -> dict[str, Any]:
-        """
-        Convert the constraint into a storage-independent dictionary.
-        """
-
         return {
             "id": self.id,
             "title": self.title,
@@ -291,9 +317,7 @@ class Constraint:
             "topic": self.topic,
             "region": self.region,
             "language": self.language,
-            "execution_condition": (
-                self.execution_condition
-            ),
+            "execution_condition": self.execution_condition,
             "reason": self.reason,
             "confidence": self.confidence,
             "priority": self.priority,
@@ -304,27 +328,15 @@ class Constraint:
                 self.source_feedback_id
             ),
             "source_run_id": self.source_run_id,
-            "metadata": self.metadata,
+            "active_from": self.active_from,
+            "review_at": self.review_at,
+            "expires_at": self.expires_at,
+            "metadata": dict(self.metadata),
         }
 
 
-# ---------------------------------------------------------------------------
-# CONSTRAINT MANAGER
-# ---------------------------------------------------------------------------
-
 class ConstraintManager:
-    """
-    Director-facing constraint manager.
-
-    This class creates and validates constraint objects.
-
-    It does not persist anything itself; storage is handled by
-    the memory layer (Memory / MemoryBackend).
-
-    Important:
-    A rejected recommendation is not automatically a global
-    constraint. The scope must be explicit.
-    """
+    """Factory and lifecycle helper."""
 
     def create(
         self,
@@ -344,12 +356,11 @@ class ConstraintManager:
         source_recommendation_id: int | None = None,
         source_feedback_id: int | None = None,
         source_run_id: int | None = None,
+        active_from: str | None = None,
+        review_at: str | None = None,
+        expires_at: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Constraint:
-        """
-        Create a validated constraint.
-        """
-
         return Constraint(
             title=title,
             description=description,
@@ -359,9 +370,7 @@ class ConstraintManager:
             topic=topic,
             region=region,
             language=language,
-            execution_condition=(
-                execution_condition
-            ),
+            execution_condition=execution_condition,
             reason=reason,
             confidence=confidence,
             priority=priority,
@@ -370,9 +379,67 @@ class ConstraintManager:
             ),
             source_feedback_id=source_feedback_id,
             source_run_id=source_run_id,
-            metadata=(
-                metadata
-                if isinstance(metadata, dict)
-                else {}
-            ),
+            active_from=active_from,
+            review_at=review_at,
+            expires_at=expires_at,
+            metadata=metadata or {},
         )
+
+
+def constraint_from_dict(
+    data: dict[str, Any],
+) -> Constraint:
+    return Constraint(
+        title=data.get("title", ""),
+        description=data.get("description", ""),
+        constraint_type=data.get(
+            "constraint_type",
+            "avoid",
+        ),
+        scope=data.get(
+            "scope",
+            "recommendation",
+        ),
+        status=data.get(
+            "status",
+            "proposed",
+        ),
+        topic=data.get("topic"),
+        region=data.get("region"),
+        language=data.get("language"),
+        execution_condition=data.get(
+            "execution_condition"
+        ),
+        reason=data.get("reason"),
+        confidence=data.get(
+            "confidence",
+            0.5,
+        ),
+        priority=data.get(
+            "priority",
+            0,
+        ),
+        source_recommendation_id=data.get(
+            "source_recommendation_id"
+        ),
+        source_feedback_id=data.get(
+            "source_feedback_id"
+        ),
+        source_run_id=data.get(
+            "source_run_id"
+        ),
+        active_from=data.get(
+            "active_from"
+        ),
+        review_at=data.get(
+            "review_at"
+        ),
+        expires_at=data.get(
+            "expires_at"
+        ),
+        metadata=data.get(
+            "metadata",
+            {},
+        ),
+        id=data.get("id"),
+    )

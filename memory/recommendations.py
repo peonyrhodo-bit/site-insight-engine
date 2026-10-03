@@ -1,26 +1,27 @@
 """
-Director Recommendations
+Director Recommendations — Memory 2.0
 
-This module defines the Director-facing model for recommendations.
+A recommendation is a strategic proposal made by Director.
 
-Important:
-- Director does not know about Supabase.
-- Director does not know about SQL.
-- Director does not know table names.
-- Storage is handled by Memory / MemoryBackend.
+It is not the same as:
+- a decision;
+- user feedback;
+- an action;
+- a result.
 
-A recommendation is a strategic proposal made by the Director.
+The lifecycle can be:
 
-Examples:
-- investigate a niche;
-- run a pilot;
-- increase research priority;
-- revisit a previously discovered direction.
-
-User feedback is stored separately from the recommendation itself.
-
-The purpose of this module is to give recommendations a stable
-structure before connecting them to the actual storage backend.
+    NEW
+      ↓
+    ACTIVE
+      ↓
+    ACCEPTED / REJECTED / DEFERRED
+      ↓
+    COMPLETED
+      ↓
+    RESULT
+      ↓
+    LESSON
 """
 
 from __future__ import annotations
@@ -28,10 +29,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# RECOMMENDATION STATUSES
-# ---------------------------------------------------------------------------
 
 RECOMMENDATION_STATUSES = {
     "new",
@@ -43,11 +40,6 @@ RECOMMENDATION_STATUSES = {
     "archived",
 }
 
-
-# ---------------------------------------------------------------------------
-# FEEDBACK TYPES
-# ---------------------------------------------------------------------------
-
 FEEDBACK_TYPES = {
     "accept",
     "reject",
@@ -58,27 +50,80 @@ FEEDBACK_TYPES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# RECOMMENDATION
-# ---------------------------------------------------------------------------
+@dataclass
+class RecommendationFeedback:
+    recommendation_id: int
+
+    feedback_type: str
+    message: str | None = None
+
+    reason: str | None = None
+    priority: int | None = None
+
+    scope: str | None = None
+
+    creates_constraint: bool = False
+
+    run_id: int | None = None
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    id: int | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            self.recommendation_id = int(
+                self.recommendation_id
+            )
+        except (TypeError, ValueError):
+            raise ValueError(
+                "recommendation_id must be an integer"
+            )
+
+        self.feedback_type = self._validate_type(
+            self.feedback_type
+        )
+
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
+
+    @staticmethod
+    def _validate_type(value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError(
+                "feedback_type must be a string"
+            )
+
+        value = value.strip().lower()
+
+        if value not in FEEDBACK_TYPES:
+            raise ValueError(
+                f"Unknown feedback type: {value}"
+            )
+
+        return value
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "recommendation_id": self.recommendation_id,
+            "feedback_type": self.feedback_type,
+            "message": self.message,
+            "reason": self.reason,
+            "priority": self.priority,
+            "scope": self.scope,
+            "creates_constraint": self.creates_constraint,
+            "run_id": self.run_id,
+            "metadata": dict(self.metadata),
+        }
+
 
 @dataclass
 class Recommendation:
-    """
-    A strategic recommendation produced by the Director.
-
-    The object intentionally contains both human-readable information
-    and structured fields.
-
-    Structured fields are important because later the Director must be
-    able to reason about recommendations without relying only on text.
-    """
-
     title: str
     description: str
 
     recommendation_type: str = "research_direction"
-
     status: str = "new"
 
     topic: str | None = None
@@ -86,7 +131,6 @@ class Recommendation:
     language: str | None = None
 
     rationale: str | None = None
-
     suggested_action: str | None = None
 
     confidence: float | None = None
@@ -102,6 +146,15 @@ class Recommendation:
     metadata: dict[str, Any] = field(
         default_factory=dict
     )
+
+    user_response: str | None = None
+    result_summary: str | None = None
+    lesson: str | None = None
+
+    shown_at: str | None = None
+    accepted_at: str | None = None
+    rejected_at: str | None = None
+    completed_at: str | None = None
 
     id: int | None = None
 
@@ -133,10 +186,16 @@ class Recommendation:
             self.priority
         )
 
-        if not isinstance(self.source_data, dict):
+        if not isinstance(
+            self.source_data,
+            dict,
+        ):
             self.source_data = {}
 
-        if not isinstance(self.metadata, dict):
+        if not isinstance(
+            self.metadata,
+            dict,
+        ):
             self.metadata = {}
 
     @staticmethod
@@ -178,71 +237,104 @@ class Recommendation:
 
     @staticmethod
     def _validate_confidence(
-        confidence: float | None,
+        value: float | None,
     ) -> float | None:
-        if confidence is None:
+        if value is None:
             return None
 
         try:
-            confidence = float(confidence)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "confidence must be a number"
-            ) from exc
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
 
-        if confidence < 0:
-            confidence = 0.0
-
-        if confidence > 1:
-            confidence = 1.0
-
-        return confidence
+        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _validate_priority(
-        priority: int | None,
+        value: int | None,
     ) -> int | None:
-        if priority is None:
+        if value is None:
             return None
 
         try:
-            priority = int(priority)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "priority must be an integer"
-            ) from exc
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
-        return priority
+    def set_status(self, status: str) -> None:
+        self.status = self._validate_status(status)
 
-    def set_status(
+    def activate(self) -> None:
+        self.status = "active"
+
+    def mark_shown(
         self,
-        status: str,
+        *,
+        timestamp: str | None = None,
     ) -> None:
-        """
-        Change recommendation status.
-        """
+        self.status = "active"
 
-        self.status = self._validate_status(
-            status
-        )
+        if timestamp:
+            self.shown_at = timestamp
 
-    def set_priority(
+    def accept(
         self,
-        priority: int | None,
+        *,
+        message: str | None = None,
+        timestamp: str | None = None,
     ) -> None:
-        """
-        Change research priority of this recommendation.
-        """
+        self.status = "accepted"
+        self.user_response = message
 
-        self.priority = self._validate_priority(
-            priority
-        )
+        if timestamp:
+            self.accepted_at = timestamp
+
+    def reject(
+        self,
+        *,
+        reason: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        self.status = "rejected"
+        self.user_response = reason
+
+        if timestamp:
+            self.rejected_at = timestamp
+
+    def defer(
+        self,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        self.status = "deferred"
+        self.user_response = reason
+
+    def complete(
+        self,
+        *,
+        result_summary: str | None = None,
+        lesson: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        self.status = "completed"
+
+        self.result_summary = result_summary
+        self.lesson = lesson
+
+        if timestamp:
+            self.completed_at = timestamp
+
+    def learn(
+        self,
+        *,
+        result_summary: str,
+        lesson: str,
+    ) -> None:
+        self.result_summary = result_summary
+        self.lesson = lesson
+        self.status = "completed"
 
     def to_dict(self) -> dict[str, Any]:
-        """
-        Convert recommendation into a storage-independent dictionary.
-        """
-
         return {
             "id": self.id,
             "title": self.title,
@@ -258,145 +350,20 @@ class Recommendation:
             "priority": self.priority,
             "run_id": self.run_id,
             "decision_id": self.decision_id,
-            "source_data": self.source_data,
-            "metadata": self.metadata,
+            "source_data": dict(self.source_data),
+            "metadata": dict(self.metadata),
+            "user_response": self.user_response,
+            "result_summary": self.result_summary,
+            "lesson": self.lesson,
+            "shown_at": self.shown_at,
+            "accepted_at": self.accepted_at,
+            "rejected_at": self.rejected_at,
+            "completed_at": self.completed_at,
         }
 
-
-# ---------------------------------------------------------------------------
-# FEEDBACK
-# ---------------------------------------------------------------------------
-
-@dataclass
-class RecommendationFeedback:
-    """
-    User feedback about a recommendation.
-
-    This is deliberately separate from Recommendation.
-
-    A rejection is not automatically interpreted as rejection of the
-    entire topic, region, or thematic cluster.
-
-    The scope of the feedback can later be clarified by the Director.
-
-    Examples:
-
-        scope="topic"
-
-        scope="region"
-
-        scope="topic_region"
-
-        scope="execution"
-
-        scope="global"
-    """
-
-    recommendation_id: int | None
-
-    feedback_type: str
-
-    comment: str = ""
-
-    scope: str | None = None
-
-    topic: str | None = None
-    region: str | None = None
-    language: str | None = None
-
-    metadata: dict[str, Any] = field(
-        default_factory=dict
-    )
-
-    id: int | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(
-            self.feedback_type,
-            str,
-        ):
-            raise TypeError(
-                "feedback_type must be a string"
-            )
-
-        self.feedback_type = (
-            self.feedback_type
-            .strip()
-            .lower()
-        )
-
-        if (
-            self.feedback_type
-            not in FEEDBACK_TYPES
-        ):
-            raise ValueError(
-                f"Unknown feedback type: "
-                f"{self.feedback_type}"
-            )
-
-        if not isinstance(
-            self.comment,
-            str,
-        ):
-            self.comment = str(
-                self.comment
-            )
-
-        self.comment = self.comment.strip()
-
-        if self.scope is not None:
-            if not isinstance(
-                self.scope,
-                str,
-            ):
-                raise TypeError(
-                    "scope must be a string or None"
-                )
-
-            self.scope = (
-                self.scope
-                .strip()
-                .lower()
-            )
-
-        if not isinstance(
-            self.metadata,
-            dict,
-        ):
-            self.metadata = {}
-
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Convert feedback into a storage-independent dictionary.
-        """
-
-        return {
-            "id": self.id,
-            "recommendation_id": self.recommendation_id,
-            "feedback_type": self.feedback_type,
-            "comment": self.comment,
-            "scope": self.scope,
-            "topic": self.topic,
-            "region": self.region,
-            "language": self.language,
-            "metadata": self.metadata,
-        }
-
-
-# ---------------------------------------------------------------------------
-# RECOMMENDATION MANAGER
-# ---------------------------------------------------------------------------
 
 class RecommendationManager:
-    """
-    Director-facing recommendation manager.
-
-    This class does NOT save anything to Supabase or SQLite.
-
-    It prepares and validates recommendation objects.
-
-    Actual persistence will be connected later through the memory layer.
-    """
+    """Factory and lifecycle manager."""
 
     def create(
         self,
@@ -404,6 +371,7 @@ class RecommendationManager:
         title: str,
         description: str,
         recommendation_type: str = "research_direction",
+        status: str = "new",
         topic: str | None = None,
         region: str | None = None,
         language: str | None = None,
@@ -416,14 +384,11 @@ class RecommendationManager:
         source_data: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Recommendation:
-        """
-        Create a validated recommendation.
-        """
-
         return Recommendation(
             title=title,
             description=description,
             recommendation_type=recommendation_type,
+            status=status,
             topic=topic,
             region=region,
             language=language,
@@ -433,113 +398,76 @@ class RecommendationManager:
             priority=priority,
             run_id=run_id,
             decision_id=decision_id,
-            source_data=(
-                source_data
-                if isinstance(source_data, dict)
-                else {}
-            ),
-            metadata=(
-                metadata
-                if isinstance(metadata, dict)
-                else {}
-            ),
+            source_data=source_data or {},
+            metadata=metadata or {},
         )
 
     def create_feedback(
         self,
         *,
-        recommendation_id: int | None,
+        recommendation_id: int,
         feedback_type: str,
-        comment: str = "",
+        message: str | None = None,
+        reason: str | None = None,
+        priority: int | None = None,
         scope: str | None = None,
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
+        creates_constraint: bool = False,
+        run_id: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> RecommendationFeedback:
-        """
-        Create validated feedback for a recommendation.
-        """
-
         return RecommendationFeedback(
             recommendation_id=recommendation_id,
             feedback_type=feedback_type,
-            comment=comment,
+            message=message,
+            reason=reason,
+            priority=priority,
             scope=scope,
-            topic=topic,
-            region=region,
-            language=language,
-            metadata=(
-                metadata
-                if isinstance(metadata, dict)
-                else {}
-            ),
+            creates_constraint=creates_constraint,
+            run_id=run_id,
+            metadata=metadata or {},
         )
 
-    @staticmethod
-    def apply_feedback(
-        recommendation: Recommendation,
-        feedback: RecommendationFeedback,
-    ) -> Recommendation:
-        """
-        Apply the immediate status effect of user feedback.
 
-        Important:
-        This method does NOT decide the long-term meaning of rejection.
-
-        For example:
-
-            "I don't want gardening in Central England"
-
-        does not automatically become:
-
-            "gardening is forbidden"
-
-        The scope of such a constraint must be determined separately.
-        """
-
-        if (
-            feedback.feedback_type == "accept"
-        ):
-            recommendation.set_status(
-                "accepted"
-            )
-
-        elif (
-            feedback.feedback_type == "reject"
-        ):
-            recommendation.set_status(
-                "rejected"
-            )
-
-        elif (
-            feedback.feedback_type == "defer"
-        ):
-            recommendation.set_status(
-                "deferred"
-            )
-
-        elif (
-            feedback.feedback_type
-            == "investigate"
-        ):
-            recommendation.set_status(
-                "active"
-            )
-
-        elif (
-            feedback.feedback_type
-            == "change_priority"
-        ):
-            recommendation.set_status(
-                "active"
-            )
-
-        elif (
-            feedback.feedback_type == "comment"
-        ):
-            # A comment alone does not change the
-            # recommendation's status.
-            pass
-
-        return recommendation
+def recommendation_from_dict(
+    data: dict[str, Any],
+) -> Recommendation:
+    return Recommendation(
+        title=data.get("title", ""),
+        description=data.get("description", ""),
+        recommendation_type=data.get(
+            "recommendation_type",
+            "research_direction",
+        ),
+        status=data.get("status", "new"),
+        topic=data.get("topic"),
+        region=data.get("region"),
+        language=data.get("language"),
+        rationale=data.get("rationale"),
+        suggested_action=data.get(
+            "suggested_action"
+        ),
+        confidence=data.get("confidence"),
+        priority=data.get("priority"),
+        run_id=data.get("run_id"),
+        decision_id=data.get("decision_id"),
+        source_data=data.get(
+            "source_data",
+            {},
+        ),
+        metadata=data.get(
+            "metadata",
+            {},
+        ),
+        user_response=data.get(
+            "user_response"
+        ),
+        result_summary=data.get(
+            "result_summary"
+        ),
+        lesson=data.get("lesson"),
+        shown_at=data.get("shown_at"),
+        accepted_at=data.get("accepted_at"),
+        rejected_at=data.get("rejected_at"),
+        completed_at=data.get("completed_at"),
+        id=data.get("id"),
+    )

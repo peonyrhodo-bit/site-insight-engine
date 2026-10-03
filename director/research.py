@@ -1,289 +1,315 @@
 """
-Director research planning.
+Director research strategy.
 
-This module decides WHAT the Director will research next:
-- which research languages to use;
-- which concrete YouTube search queries to run.
-
-It is a pure planning helper. It does not perform research,
-does not store state and does not make strategic decisions.
-All decisions remain in the Director flow.
-
-Dependencies (quota status, AI availability, JSON generation,
-event logging) are injected by the caller so that this module
-stays free of server-level configuration and circular imports.
+Research planning only.
+Actual data acquisition belongs to data/youtube.py and youtube-mcp.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from enum import Enum
+from typing import Any, Iterable
+from uuid import uuid4
 
 
-logger = logging.getLogger(
-    "site-insight-engine"
-)
+class ResearchPriority(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 
-def choose_director_research_languages(
-    language: str | None = None,
-    region_code: str | None = None,
-    *,
-    quota_status: dict[str, Any] | None = None,
+class ResearchStatus(str, Enum):
+    PLANNED = "planned"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class ResearchQuery:
+    query: str
+    language: str = "en"
+    region_code: str | None = None
+    purpose: str = ""
+    priority: ResearchPriority = ResearchPriority.MEDIUM
+    max_results: int = 25
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResearchGap:
+    description: str
+    importance: float = 0.5
+    suggested_method: str = ""
+    topic: str | None = None
+
+    def __post_init__(self) -> None:
+        self.importance = max(0.0, min(1.0, float(self.importance)))
+
+
+@dataclass
+class ResearchPlan:
+    research_id: str
+    objective: str
+    status: ResearchStatus
+    priorities: list[str]
+    languages: list[str]
+    directions: list[str]
+    queries: list[ResearchQuery]
+    gaps: list[ResearchGap]
+    reason: str
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _get(source: Any, key: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+
+    if isinstance(source, dict):
+        return source.get(key, default)
+
+    return getattr(source, key, default)
+
+
+def normalize_languages(
+    languages: Iterable[str] | None,
 ) -> list[str]:
+    result: list[str] = []
 
-    # --------------------------------------------------------
-    # AUTONOMOUS GLOBAL RESEARCH
-    # --------------------------------------------------------
+    for language in languages or []:
+        value = str(language).strip().lower()
 
-    available_languages = [
-        "en",
-        "hi",
-        "zh",
-        "ja",
-        "ko",
-        "es",
-        "pt",
-        "ar",
-        "de",
-        "fr",
-        "it",
-        "tr",
-        "id",
-        "vi",
-        "th",
-        "pl",
-        "ru",
+        if value and value not in result:
+            result.append(value)
+
+    return result
+
+
+def choose_research_languages(
+    *,
+    preferred: Iterable[str] | None = None,
+    observed_languages: Iterable[str] | None = None,
+    defaults: Iterable[str] = ("en", "ru"),
+) -> list[str]:
+    """
+    Build a research language set.
+
+    Preference:
+    1. explicit user/project preference
+    2. languages already producing useful evidence
+    3. conservative defaults
+    """
+    result = normalize_languages(preferred)
+
+    for language in normalize_languages(observed_languages):
+        if language not in result:
+            result.append(language)
+
+    for language in normalize_languages(defaults):
+        if language not in result:
+            result.append(language)
+
+    return result[:8]
+
+
+def build_query(
+    *,
+    query: str,
+    language: str,
+    purpose: str,
+    priority: ResearchPriority = ResearchPriority.MEDIUM,
+    region_code: str | None = None,
+    max_results: int = 25,
+    metadata: dict[str, Any] | None = None,
+) -> ResearchQuery:
+    return ResearchQuery(
+        query=str(query).strip(),
+        language=language,
+        purpose=str(purpose).strip(),
+        priority=priority,
+        region_code=region_code,
+        max_results=max(1, min(int(max_results), 100)),
+        metadata=dict(metadata or {}),
+    )
+
+
+def build_research_plan(
+    *,
+    objective: str,
+    directions: Iterable[str] | None = None,
+    queries: Iterable[ResearchQuery] | None = None,
+    gaps: Iterable[ResearchGap] | None = None,
+    languages: Iterable[str] | None = None,
+    reason: str = "",
+    priorities: Iterable[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ResearchPlan:
+    return ResearchPlan(
+        research_id=f"research_{uuid4().hex[:12]}",
+        objective=str(objective or "").strip(),
+        status=ResearchStatus.PLANNED,
+        priorities=[str(x) for x in (priorities or []) if str(x).strip()],
+        languages=normalize_languages(languages),
+        directions=[
+            str(x) for x in (directions or []) if str(x).strip()
+        ],
+        queries=list(queries or []),
+        gaps=list(gaps or []),
+        reason=str(reason or "").strip(),
+        metadata=dict(metadata or {}),
+    )
+
+
+def research_from_gaps(
+    gaps: Iterable[Any],
+    *,
+    objective: str,
+    languages: Iterable[str] = ("en", "ru"),
+) -> ResearchPlan:
+    """
+    Turn analytical missing-data signals into a concrete research plan.
+    """
+    normalized_languages = choose_research_languages(
+        preferred=languages
+    )
+
+    research_gaps: list[ResearchGap] = []
+    directions: list[str] = []
+    queries: list[ResearchQuery] = []
+
+    for gap in gaps:
+        description = _get(gap, "description", "") or _get(
+            gap, "reason", ""
+        )
+        topic = _get(gap, "topic")
+        importance = _get(gap, "importance", 0.5)
+
+        if not description:
+            continue
+
+        research_gap = ResearchGap(
+            description=str(description),
+            importance=float(importance or 0.5),
+            topic=topic,
+            suggested_method=_get(gap, "suggested_method", ""),
+        )
+
+        research_gaps.append(research_gap)
+
+        direction = topic or str(description)
+        if direction not in directions:
+            directions.append(direction)
+
+        for language in normalized_languages:
+            queries.append(
+                build_query(
+                    query=str(direction),
+                    language=language,
+                    purpose=str(description),
+                    priority=(
+                        ResearchPriority.HIGH
+                        if research_gap.importance >= 0.7
+                        else ResearchPriority.MEDIUM
+                    ),
+                )
+            )
+
+    return build_research_plan(
+        objective=objective,
+        directions=directions,
+        queries=queries,
+        gaps=research_gaps,
+        languages=normalized_languages,
+        priorities=["close_missing_data", "validate_signal"],
+        reason=(
+            "Исследование сформировано из пробелов в текущей доказательной базе."
+        ),
+    )
+
+
+def plan_next_research(
+    *,
+    objective: str,
+    missing_data: Iterable[Any] | None = None,
+    current_topics: Iterable[str] | None = None,
+    preferred_languages: Iterable[str] | None = None,
+) -> ResearchPlan:
+    """
+    Main entry point for the Director's research strategy.
+    """
+    gaps = list(missing_data or [])
+
+    if gaps:
+        return research_from_gaps(
+            gaps,
+            objective=objective,
+            languages=preferred_languages or ("en", "ru"),
+        )
+
+    topics = [
+        str(x).strip()
+        for x in (current_topics or [])
+        if str(x).strip()
     ]
 
-    # --------------------------------------------------------
-    # MANUAL TARGETED RESEARCH
-    # --------------------------------------------------------
-
-    if language:
-        return [language]
-
-    # --------------------------------------------------------
-    # QUOTA-AWARE LANGUAGE SELECTION
-    # --------------------------------------------------------
-
-    quota = (
-        quota_status
-        if isinstance(quota_status, dict)
-        else {}
+    languages = choose_research_languages(
+        preferred=preferred_languages
     )
 
-    search_remaining = int(
-        quota.get(
-            "search_remaining",
-            0,
+    queries = [
+        build_query(
+            query=topic,
+            language=language,
+            purpose="Проверить текущее состояние направления.",
         )
+        for topic in topics
+        for language in languages
+    ]
+
+    return build_research_plan(
+        objective=objective,
+        directions=topics,
+        queries=queries,
+        languages=languages,
+        priorities=["explore"],
+        reason=(
+            "Явных пробелов не найдено; исследование направлено "
+            "на проверку текущих направлений."
+        ),
     )
 
-    if search_remaining <= 0:
-        return []
 
-    day_number = (
-        datetime.now(timezone.utc).timetuple().tm_yday
-    )
-
-    offset = day_number % len(
-        available_languages
-    )
-
-    rotated = (
-        available_languages[offset:]
-        + available_languages[:offset]
-    )
-
-    return rotated
+def mark_running(plan: ResearchPlan) -> ResearchPlan:
+    plan.status = ResearchStatus.RUNNING
+    return plan
 
 
-def choose_director_research_queries(
-    language: str | None = None,
-    previous_analysis: dict[str, Any] | None = None,
-    *,
-    ai_enabled: bool = True,
-    generate_json: Callable[[str, str], dict[str, Any]] | None = None,
-    log_event_fn: Callable[[str, dict[str, Any]], None] | None = None,
-) -> list[str]:
+def mark_completed(plan: ResearchPlan) -> ResearchPlan:
+    plan.status = ResearchStatus.COMPLETED
+    return plan
 
-    previous_analysis = (
-        previous_analysis
-        if isinstance(
-            previous_analysis,
-            dict,
-        )
-        else {}
-    )
 
-    prompt = json.dumps(
-        {
-            "task": (
-                "Choose the YouTube research directions "
-                "that the Director should investigate next."
-            ),
-            "language": language,
-            "previous_analysis": previous_analysis,
-            "rules": [
-                (
-                    "There is no fixed topic catalog."
-                ),
-                (
-                    "Do not restrict research to predefined "
-                    "topics."
-                ),
-                (
-                    "You may choose completely new topics."
-                ),
-                (
-                    "You may investigate adjacent topics."
-                ),
-                (
-                    "You may investigate unrelated topics "
-                    "when that is useful for discovering "
-                    "new opportunities."
-                ),
-                (
-                    "Queries must be concrete YouTube search "
-                    "queries."
-                ),
-                (
-                    "Use the previous analysis when it provides "
-                    "useful evidence."
-                ),
-                (
-                    "Do not assume that previous topics are "
-                    "the only topics worth researching."
-                ),
-                (
-                    "Do not recommend news."
-                ),
-                (
-                    "Do not recommend politics."
-                ),
-                (
-                    "Do not recommend 18+ content."
-                ),
-                (
-                    "Do not recommend gore, torture, graphic "
-                    "injury, glorification or incitement "
-                    "of violence."
-                ),
-            ],
-        },
-        ensure_ascii=False,
-        default=str,
-    )
+def mark_blocked(
+    plan: ResearchPlan,
+    reason: str | None = None,
+) -> ResearchPlan:
+    plan.status = ResearchStatus.BLOCKED
 
-    system_instruction = """
-You are the research-planning brain of an autonomous
-AI Director for YouTube.
+    if reason:
+        plan.metadata["blocked_reason"] = reason
 
-Your job is to decide what the Director should search
-for next.
+    return plan
 
-There is NO fixed topic catalog.
 
-The Director must be able to discover completely new
-topics, niches, formats, audience interests and emerging
-content directions.
-
-Previous research is evidence, not a restriction.
-
-You may:
-- continue a promising direction;
-- investigate an adjacent direction;
-- compare different niches;
-- test a hypothesis;
-- investigate a completely new subject;
-- investigate a new format;
-- investigate a new audience interest.
-
-Do not recommend:
-- news;
-- politics;
-- 18+ content;
-- gore;
-- torture;
-- graphic injury;
-- glorification or incitement of violence.
-
-Return ONLY valid JSON in this structure:
-
-{
-  "queries": [
-    "concrete YouTube search query"
-  ]
-}
-
-Do not return explanations.
-"""
-
-    if not ai_enabled:
-        return []
-
-    if generate_json is None:
-        raise RuntimeError(
-            "generate_json dependency is not configured"
-        )
-
-    try:
-        result = generate_json(
-            system_instruction=system_instruction,
-            prompt=prompt,
-        )
-
-    except Exception as exc:
-
-        logger.warning(
-            "DIRECTOR_QUERY_PLANNER_FAILED "
-            "error_type=%s",
-            type(exc).__name__,
-        )
-
-        if log_event_fn is not None:
-            log_event_fn(
-                "director_query_planner_failed",
-                {
-                    "error_type": type(exc).__name__,
-                },
-            )
-
-        return []
-
-    queries = result.get(
-        "queries",
-        [],
-    )
-
-    if not isinstance(
-        queries,
-        list,
-    ):
-        return []
-
-    cleaned_queries = []
-
-    for query in queries:
-
-        if not isinstance(
-            query,
-            str,
-        ):
-            continue
-
-        query = query.strip()
-
-        if not query:
-            continue
-
-        if query not in cleaned_queries:
-            cleaned_queries.append(
-                query
-            )
-
-    return cleaned_queries
+def research_to_dict(plan: ResearchPlan) -> dict[str, Any]:
+    return plan.to_dict()

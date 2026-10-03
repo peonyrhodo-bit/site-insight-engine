@@ -1,9 +1,9 @@
 """
-Supabase Memory Backend
+Supabase Memory Backend — Memory 2.0
 
-This module implements the MemoryBackend contract using Supabase.
+Storage adapter for Director Memory.
 
-Important architecture rule:
+Architecture:
 
     Director
         ↓
@@ -13,27 +13,13 @@ Important architecture rule:
         ↓
     Supabase
 
-Director must never know:
-- Supabase client details;
-- table names;
-- SQL;
-- storage-specific field names.
+This file contains all storage-specific knowledge.
 
-This module is the storage adapter.
+IMPORTANT:
+No database migration is performed here.
 
-The initial implementation deliberately uses the existing
-tables already present in site-insight-engine:
-
-    director_runs
-    decisions
-    chat_messages
-    director_actions
-    director_results
-    system_events
-
-The existing database schema is therefore preserved.
-
-No database migration is performed by this file.
+Existing tables are preserved.
+Rich Memory 2.0 fields are stored inside data_json where possible.
 """
 
 from __future__ import annotations
@@ -45,16 +31,7 @@ from supabase import Client, create_client
 
 
 class SupabaseMemoryBackend:
-    """
-    Supabase implementation of MemoryBackend.
-
-    The class contains all Supabase-specific knowledge required
-    by the Director memory layer.
-    """
-
-    # -----------------------------------------------------------------------
-    # EXISTING TABLES
-    # -----------------------------------------------------------------------
+    """Supabase implementation of MemoryBackend."""
 
     TABLE_RUNS = "director_runs"
     TABLE_DECISIONS = "decisions"
@@ -63,36 +40,22 @@ class SupabaseMemoryBackend:
     TABLE_RESULTS = "director_results"
     TABLE_EVENTS = "system_events"
 
-    # -----------------------------------------------------------------------
-    # INITIALIZATION
-    # -----------------------------------------------------------------------
+    TABLE_RECOMMENDATIONS = "recommendations"
+    TABLE_RECOMMENDATION_FEEDBACK = (
+        "recommendation_feedback"
+    )
+    TABLE_CONSTRAINTS = "constraints"
 
     def __init__(
         self,
         client: Client | None = None,
     ) -> None:
-        """
-        Create the backend.
-
-        If a Supabase client is supplied, it is used directly.
-
-        Otherwise the backend tries to create a client from:
-
-            SUPABASE_URL
-            SUPABASE_KEY
-        """
-
         if client is not None:
             self.client = client
             return
 
-        supabase_url = os.getenv(
-            "SUPABASE_URL"
-        )
-
-        supabase_key = os.getenv(
-            "SUPABASE_KEY"
-        )
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_KEY")
 
         if not supabase_url:
             raise ValueError(
@@ -109,31 +72,20 @@ class SupabaseMemoryBackend:
             supabase_key,
         )
 
-    # -----------------------------------------------------------------------
-    # INTERNAL HELPERS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # HELPERS
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _safe_dict(
         value: Any,
     ) -> dict[str, Any]:
-        """
-        Ensure metadata/data values are dictionaries.
-        """
-
-        if isinstance(value, dict):
-            return value
-
-        return {}
+        return value if isinstance(value, dict) else {}
 
     @staticmethod
     def _safe_list(
         response: Any,
     ) -> list[dict[str, Any]]:
-        """
-        Extract rows from a Supabase response safely.
-        """
-
         if response is None:
             return []
 
@@ -152,17 +104,12 @@ class SupabaseMemoryBackend:
             if isinstance(row, dict)
         ]
 
-    @staticmethod
+    @classmethod
     def _first_id(
+        cls,
         response: Any,
     ) -> int | None:
-        """
-        Extract an inserted row ID from a Supabase response.
-        """
-
-        rows = SupabaseMemoryBackend._safe_list(
-            response
-        )
+        rows = cls._safe_list(response)
 
         if not rows:
             return None
@@ -177,9 +124,21 @@ class SupabaseMemoryBackend:
         except (TypeError, ValueError):
             return None
 
-    # -----------------------------------------------------------------------
-    # GENERAL CONTEXT
-    # -----------------------------------------------------------------------
+    @staticmethod
+    def _limit(
+        value: int,
+        default: int = 20,
+    ) -> int:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = default
+
+        return max(1, min(value, 100))
+
+    # ------------------------------------------------------------------
+    # CONTEXT
+    # ------------------------------------------------------------------
 
     def get_context(
         self,
@@ -190,21 +149,25 @@ class SupabaseMemoryBackend:
         limit_chat: int = 20,
         limit_actions: int = 20,
         limit_results: int = 20,
+        limit_recommendations: int = 20,
+        limit_constraints: int = 20,
     ) -> dict[str, Any]:
-        """
-        Load recent Director memory.
-
-        This intentionally mirrors the context that the existing
-        server.py already collects, but moves all storage knowledge
-        into this backend.
-        """
-
         return {
             "runs": self.get_recent_runs(
                 limit=limit_runs
             ),
             "decisions": self.get_recent_decisions(
                 limit=limit_decisions
+            ),
+            "recommendations": (
+                self.get_recent_recommendations(
+                    limit=limit_recommendations
+                )
+            ),
+            "constraints": (
+                self.get_recent_constraints(
+                    limit=limit_constraints
+                )
             ),
             "events": self.get_recent_events(
                 limit=limit_events
@@ -220,9 +183,9 @@ class SupabaseMemoryBackend:
             ),
         }
 
-    # -----------------------------------------------------------------------
-    # DIRECTOR RUNS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # RUNS
+    # ------------------------------------------------------------------
 
     def save_run(
         self,
@@ -231,17 +194,6 @@ class SupabaseMemoryBackend:
         region_code: str | None = None,
         data: dict[str, Any] | None = None,
     ) -> int | None:
-        """
-        Save a Director run.
-
-        Existing schema:
-
-            created_at
-            language
-            region_code
-            data_json
-        """
-
         payload = {
             "language": language,
             "region_code": region_code,
@@ -255,19 +207,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_runs(
         self,
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent Director runs.
-        """
-
         response = (
             self.client
             .table(self.TABLE_RUNS)
@@ -276,17 +222,15 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit, 10))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
+        return self._safe_list(response)
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # DECISIONS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_decision(
         self,
@@ -295,17 +239,6 @@ class SupabaseMemoryBackend:
         data: dict[str, Any] | None = None,
         run_id: int | None = None,
     ) -> int | None:
-        """
-        Save a Director decision.
-
-        Existing schema:
-
-            created_at
-            decision
-            run_id
-            data_json
-        """
-
         payload = {
             "decision": decision,
             "run_id": run_id,
@@ -319,19 +252,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_decisions(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent Director decisions.
-        """
-
         response = (
             self.client
             .table(self.TABLE_DECISIONS)
@@ -340,17 +267,15 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
+        return self._safe_list(response)
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # CHAT
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_chat_message(
         self,
@@ -360,18 +285,6 @@ class SupabaseMemoryBackend:
         run_id: int | None = None,
         data: dict[str, Any] | None = None,
     ) -> int | None:
-        """
-        Save a Director chat message.
-
-        Existing schema:
-
-            created_at
-            role
-            message
-            run_id
-            data_json
-        """
-
         payload = {
             "role": role,
             "message": message,
@@ -386,19 +299,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_chat_messages(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent Director chat messages.
-        """
-
         response = (
             self.client
             .table(self.TABLE_CHAT)
@@ -407,17 +314,15 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
+        return self._safe_list(response)
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # ACTIONS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_action(
         self,
@@ -429,12 +334,6 @@ class SupabaseMemoryBackend:
         status: str = "pending",
         data: dict[str, Any] | None = None,
     ) -> int | None:
-        """
-        Save a Director action.
-
-        The table is already used by the existing system.
-        """
-
         payload = {
             "action_type": action_type,
             "description": description,
@@ -451,19 +350,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_actions(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent Director actions.
-        """
-
         response = (
             self.client
             .table(self.TABLE_ACTIONS)
@@ -472,17 +365,15 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
+        return self._safe_list(response)
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # RESULTS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_result(
         self,
@@ -493,10 +384,6 @@ class SupabaseMemoryBackend:
         run_id: int | None = None,
         data: dict[str, Any] | None = None,
     ) -> int | None:
-        """
-        Save a result produced by a Director action.
-        """
-
         payload = {
             "result_type": result_type,
             "summary": summary,
@@ -512,19 +399,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_results(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent Director results.
-        """
-
         response = (
             self.client
             .table(self.TABLE_RESULTS)
@@ -533,17 +414,15 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
+        return self._safe_list(response)
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # EVENTS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_event(
         self,
@@ -551,12 +430,6 @@ class SupabaseMemoryBackend:
         event_type: str,
         data: dict[str, Any] | None = None,
     ) -> int | None:
-        """
-        Save a system event.
-
-        Existing system_events table is used here.
-        """
-
         payload = {
             "event_type": event_type,
             "data_json": self._safe_dict(data),
@@ -569,19 +442,13 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_events(
         self,
         *,
         limit: int = 30,
     ) -> list[dict[str, Any]]:
-        """
-        Load recent system events.
-        """
-
         response = (
             self.client
             .table(self.TABLE_EVENTS)
@@ -590,89 +457,115 @@ class SupabaseMemoryBackend:
                 "created_at",
                 desc=True,
             )
-            .limit(limit)
+            .limit(self._limit(limit, 30))
             .execute()
         )
 
-        return self._safe_list(
-            response
-        )
-    # -----------------------------------------------------------------------
+        return self._safe_list(response)
+
+    # ------------------------------------------------------------------
     # RECOMMENDATIONS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
-    TABLE_RECOMMENDATIONS = "recommendations"
-    TABLE_RECOMMENDATION_FEEDBACK = "recommendation_feedback"
-    TABLE_CONSTRAINTS = "constraints"
-
-    
     def save_recommendation(
         self,
         *,
         recommendation: dict[str, Any],
     ) -> int | None:
-        """
-        Save a Director recommendation.
-        """
-
         recommendation = self._safe_dict(
             recommendation
         )
 
         payload = {
-            "run_id": recommendation.get("run_id"),
-            "decision_id": recommendation.get("decision_id"),
-            "title": recommendation.get("title"),
-            "description": recommendation.get("description"),
+            "run_id": recommendation.get(
+                "run_id"
+            ),
+            "decision_id": recommendation.get(
+                "decision_id"
+            ),
+            "title": recommendation.get(
+                "title"
+            ),
+            "description": recommendation.get(
+                "description"
+            ),
             "recommendation_type": recommendation.get(
                 "recommendation_type"
             ),
-            "topic": recommendation.get("topic"),
-            "region": recommendation.get("region"),
-            "language": recommendation.get("language"),
-            "rationale": recommendation.get("rationale"),
+            "topic": recommendation.get(
+                "topic"
+            ),
+            "region": recommendation.get(
+                "region"
+            ),
+            "language": recommendation.get(
+                "language"
+            ),
+            "rationale": recommendation.get(
+                "rationale"
+            ),
             "suggested_action": recommendation.get(
                 "suggested_action"
             ),
-            "confidence": recommendation.get("confidence"),
-            "priority": recommendation.get("priority"),
+            "confidence": recommendation.get(
+                "confidence"
+            ),
+            "priority": recommendation.get(
+                "priority"
+            ),
             "status": recommendation.get(
                 "status",
                 "new",
             ),
-            "data_json": self._safe_dict(
-                recommendation.get("metadata")
-            ),
+            "data_json": {
+                "source_data": self._safe_dict(
+                    recommendation.get(
+                        "source_data"
+                    )
+                ),
+                "metadata": self._safe_dict(
+                    recommendation.get(
+                        "metadata"
+                    )
+                ),
+                "user_response": recommendation.get(
+                    "user_response"
+                ),
+                "result_summary": recommendation.get(
+                    "result_summary"
+                ),
+                "lesson": recommendation.get(
+                    "lesson"
+                ),
+                "shown_at": recommendation.get(
+                    "shown_at"
+                ),
+                "accepted_at": recommendation.get(
+                    "accepted_at"
+                ),
+                "rejected_at": recommendation.get(
+                    "rejected_at"
+                ),
+                "completed_at": recommendation.get(
+                    "completed_at"
+                ),
+            },
         }
 
         response = (
             self.client
-            .table(
-                self.TABLE_RECOMMENDATIONS
-            )
+            .table(self.TABLE_RECOMMENDATIONS)
             .insert(payload)
             .execute()
         )
 
-        rows = response.data or []
-
-        if rows:
-            return rows[0].get("id")
-
-        return None
+        return self._first_id(response)
 
     def get_recent_recommendations(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Read the most recent Director recommendations.
-
-        This is a read-only storage accessor used by the
-        dashboard and by the memory layer.
-        """
-
         try:
             response = (
                 self.client
@@ -680,33 +573,69 @@ class SupabaseMemoryBackend:
                     self.TABLE_RECOMMENDATIONS
                 )
                 .select("*")
-                .order("id", desc=True)
-                .limit(limit)
+                .order(
+                    "id",
+                    desc=True,
+                )
+                .limit(self._limit(limit))
                 .execute()
             )
 
-            return self._safe_list(
-                response
-            )
+            rows = self._safe_list(response)
+
+            for row in rows:
+                data = row.get("data_json")
+
+                if isinstance(data, dict):
+                    source_data = data.get(
+                        "source_data"
+                    )
+
+                    metadata = data.get(
+                        "metadata"
+                    )
+
+                    if isinstance(
+                        source_data,
+                        dict,
+                    ):
+                        row["source_data"] = (
+                            source_data
+                        )
+
+                    if isinstance(
+                        metadata,
+                        dict,
+                    ):
+                        row["metadata"] = metadata
+
+                    for key in (
+                        "user_response",
+                        "result_summary",
+                        "lesson",
+                        "shown_at",
+                        "accepted_at",
+                        "rejected_at",
+                        "completed_at",
+                    ):
+                        if key in data:
+                            row[key] = data[key]
+
+            return rows
 
         except Exception:
             return []
-    # -----------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_recommendation_feedback(
         self,
         *,
         feedback: dict[str, Any],
     ) -> int | None:
-        """
-        Save feedback for a Director recommendation.
-        """
-
-        feedback = self._safe_dict(
-            feedback
-        )
+        feedback = self._safe_dict(feedback)
 
         payload = {
             "recommendation_id": feedback.get(
@@ -715,20 +644,26 @@ class SupabaseMemoryBackend:
             "feedback_type": feedback.get(
                 "feedback_type"
             ),
-            "comment": feedback.get(
-                "comment"
+            "message": feedback.get(
+                "message"
+            ),
+            "reason": feedback.get(
+                "reason"
+            ),
+            "priority": feedback.get(
+                "priority"
             ),
             "scope": feedback.get(
                 "scope"
             ),
-            "topic": feedback.get(
-                "topic"
+            "creates_constraint": bool(
+                feedback.get(
+                    "creates_constraint",
+                    False,
+                )
             ),
-            "region": feedback.get(
-                "region"
-            ),
-            "language": feedback.get(
-                "language"
+            "run_id": feedback.get(
+                "run_id"
             ),
             "data_json": self._safe_dict(
                 feedback.get("metadata")
@@ -744,13 +679,7 @@ class SupabaseMemoryBackend:
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
-
-    # -----------------------------------------------------------------------
-    # APPLY RECOMMENDATION FEEDBACK
-    # -----------------------------------------------------------------------
+        return self._first_id(response)
 
     def apply_recommendation_feedback(
         self,
@@ -758,13 +687,13 @@ class SupabaseMemoryBackend:
         feedback: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Save feedback and apply its immediate status effect
-        to the recommendation.
+        Persist feedback and return a normalized result.
+
+        Recommendation status updates are deliberately handled
+        conservatively. This method does not invent global constraints.
         """
 
-        feedback = self._safe_dict(
-            feedback
-        )
+        feedback = self._safe_dict(feedback)
 
         feedback_id = (
             self.save_recommendation_feedback(
@@ -772,13 +701,12 @@ class SupabaseMemoryBackend:
             )
         )
 
-        recommendation_id = feedback.get(
-            "recommendation_id"
-        )
-
-        feedback_type = feedback.get(
-            "feedback_type"
-        )
+        feedback_type = str(
+            feedback.get(
+                "feedback_type",
+                ""
+            )
+        ).lower()
 
         status_map = {
             "accept": "accepted",
@@ -786,64 +714,68 @@ class SupabaseMemoryBackend:
             "defer": "deferred",
         }
 
-        new_status = status_map.get(
+        recommendation_id = feedback.get(
+            "recommendation_id"
+        )
+
+        updated_status = status_map.get(
             feedback_type
         )
 
-        updated = False
+        update_result = None
 
-        if (
-            recommendation_id is not None
-            and new_status is not None
-        ):
-            response = (
-                self.client
-                .table(
-                    self.TABLE_RECOMMENDATIONS
+        if recommendation_id and updated_status:
+            try:
+                update_result = (
+                    self.client
+                    .table(
+                        self.TABLE_RECOMMENDATIONS
+                    )
+                    .update(
+                        {
+                            "status": updated_status
+                        }
+                    )
+                    .eq(
+                        "id",
+                        recommendation_id,
+                    )
+                    .execute()
                 )
-                .update(
-                    {
-                        "status": new_status,
-                    }
-                )
-                .eq(
-                    "id",
-                    recommendation_id,
-                )
-                .execute()
-            )
-
-            updated = bool(
-                self._safe_list(response)
-            )
+            except Exception:
+                update_result = None
 
         return {
             "feedback_id": feedback_id,
             "recommendation_id": recommendation_id,
             "feedback_type": feedback_type,
-            "status": new_status,
-            "updated": updated,
+            "status": updated_status,
+            "updated": update_result is not None,
+            "creates_constraint": bool(
+                feedback.get(
+                    "creates_constraint",
+                    False,
+                )
+            ),
         }
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # CONSTRAINTS
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def save_constraint(
         self,
         *,
         constraint: dict[str, Any],
     ) -> int | None:
-        """
-        Save a Director constraint learned from user feedback.
-        """
-
         constraint = self._safe_dict(
             constraint
         )
 
         payload = {
-            "title": constraint.get("title"),
+            "title": constraint.get(
+                "title"
+            ),
             "description": constraint.get(
                 "description"
             ),
@@ -859,13 +791,21 @@ class SupabaseMemoryBackend:
                 "status",
                 "proposed",
             ),
-            "topic": constraint.get("topic"),
-            "region": constraint.get("region"),
-            "language": constraint.get("language"),
+            "topic": constraint.get(
+                "topic"
+            ),
+            "region": constraint.get(
+                "region"
+            ),
+            "language": constraint.get(
+                "language"
+            ),
             "execution_condition": constraint.get(
                 "execution_condition"
             ),
-            "reason": constraint.get("reason"),
+            "reason": constraint.get(
+                "reason"
+            ),
             "confidence": constraint.get(
                 "confidence",
                 0.5,
@@ -874,10 +814,8 @@ class SupabaseMemoryBackend:
                 "priority",
                 0,
             ),
-            "source_recommendation_id": (
-                constraint.get(
-                    "source_recommendation_id"
-                )
+            "source_recommendation_id": constraint.get(
+                "source_recommendation_id"
             ),
             "source_feedback_id": constraint.get(
                 "source_feedback_id"
@@ -885,50 +823,75 @@ class SupabaseMemoryBackend:
             "source_run_id": constraint.get(
                 "source_run_id"
             ),
-            "data_json": self._safe_dict(
-                constraint.get("metadata")
-            ),
+            "data_json": {
+                "active_from": constraint.get(
+                    "active_from"
+                ),
+                "review_at": constraint.get(
+                    "review_at"
+                ),
+                "expires_at": constraint.get(
+                    "expires_at"
+                ),
+                "metadata": self._safe_dict(
+                    constraint.get(
+                        "metadata"
+                    )
+                ),
+            },
         }
 
         response = (
             self.client
-            .table(
-                self.TABLE_CONSTRAINTS
-            )
+            .table(self.TABLE_CONSTRAINTS)
             .insert(payload)
             .execute()
         )
 
-        return self._first_id(
-            response
-        )
+        return self._first_id(response)
 
     def get_recent_constraints(
         self,
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Read the most recent constraints.
-
-        Read-only accessor used by Director context and dashboard.
-        """
-
         try:
             response = (
                 self.client
-                .table(
-                    self.TABLE_CONSTRAINTS
-                )
+                .table(self.TABLE_CONSTRAINTS)
                 .select("*")
-                .order("id", desc=True)
-                .limit(limit)
+                .order(
+                    "id",
+                    desc=True,
+                )
+                .limit(self._limit(limit))
                 .execute()
             )
 
-            return self._safe_list(
-                response
-            )
+            rows = self._safe_list(response)
+
+            for row in rows:
+                data = row.get("data_json")
+
+                if not isinstance(data, dict):
+                    continue
+
+                for key in (
+                    "active_from",
+                    "review_at",
+                    "expires_at",
+                ):
+                    if key in data:
+                        row[key] = data[key]
+
+                metadata = data.get(
+                    "metadata"
+                )
+
+                if isinstance(metadata, dict):
+                    row["metadata"] = metadata
+
+            return rows
 
         except Exception:
             return []

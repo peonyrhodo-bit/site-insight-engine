@@ -1,260 +1,204 @@
+"""
+Human feedback for the Director.
+
+Feedback is treated as system state and future knowledge.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
+from uuid import uuid4
 
-from memory.constraints import (
-    CONSTRAINT_SCOPES,
-    ConstraintManager,
-)
+
+class FeedbackType(str, Enum):
+    ACCEPT = "accept"
+    REJECT = "reject"
+    MODIFY = "modify"
+    CLARIFY = "clarify"
+    PREFER = "prefer"
+    AVOID = "avoid"
+
+
+class FeedbackScope(str, Enum):
+    RECOMMENDATION = "recommendation"
+    TOPIC = "topic"
+    FORMAT = "format"
+    AUDIENCE = "audience"
+    LANGUAGE = "language"
+    CHANNEL = "channel"
+    STRATEGY = "strategy"
+    RESOURCE = "resource"
+    CONSTRAINT = "constraint"
+    GENERAL = "general"
 
 
 @dataclass
 class DirectorFeedback:
-    """
-    Structured feedback from a human about a recommendation.
-    """
-
-    recommendation_id: int
-    feedback_type: str
-    comment: str | None = None
-    scope: str | None = None
-    topic: str | None = None
-    region: str | None = None
-    language: str | None = None
-    metadata: dict[str, Any] = field(
-        default_factory=dict
+    feedback_id: str
+    feedback_type: FeedbackType
+    scope: FeedbackScope
+    message: str
+    recommendation_id: str | None = None
+    decision_id: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    constraint: str | None = None
+    preference: str | None = None
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    id: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "recommendation_id": (
-                self.recommendation_id
-            ),
-            "feedback_type": self.feedback_type,
-            "comment": self.comment,
-            "scope": self.scope,
-            "topic": self.topic,
-            "region": self.region,
-            "language": self.language,
-            "metadata": self.metadata,
-        }
+        return asdict(self)
 
 
-class DirectorFeedbackManager:
+def create_feedback(
+    *,
+    feedback_type: FeedbackType | str,
+    scope: FeedbackScope | str,
+    message: str,
+    recommendation_id: str | None = None,
+    decision_id: str | None = None,
+    target: str | None = None,
+    reason: str | None = None,
+    constraint: str | None = None,
+    preference: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    if not isinstance(feedback_type, FeedbackType):
+        feedback_type = FeedbackType(str(feedback_type))
+
+    if not isinstance(scope, FeedbackScope):
+        scope = FeedbackScope(str(scope))
+
+    return DirectorFeedback(
+        feedback_id=f"fb_{uuid4().hex[:12]}",
+        feedback_type=feedback_type,
+        scope=scope,
+        message=str(message or "").strip(),
+        recommendation_id=recommendation_id,
+        decision_id=decision_id,
+        target=target,
+        reason=reason,
+        constraint=constraint,
+        preference=preference,
+        metadata=dict(metadata or {}),
+    )
+
+
+def accept(
+    *,
+    message: str = "",
+    recommendation_id: str | None = None,
+    decision_id: str | None = None,
+    scope: FeedbackScope = FeedbackScope.RECOMMENDATION,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.ACCEPT,
+        scope=scope,
+        message=message or "Рекомендация принята.",
+        recommendation_id=recommendation_id,
+        decision_id=decision_id,
+        metadata=metadata,
+    )
+
+
+def reject(
+    *,
+    reason: str,
+    recommendation_id: str | None = None,
+    decision_id: str | None = None,
+    scope: FeedbackScope = FeedbackScope.RECOMMENDATION,
+    target: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.REJECT,
+        scope=scope,
+        message=reason,
+        recommendation_id=recommendation_id,
+        decision_id=decision_id,
+        target=target,
+        reason=reason,
+        metadata=metadata,
+    )
+
+
+def modify(
+    *,
+    message: str,
+    recommendation_id: str | None = None,
+    decision_id: str | None = None,
+    scope: FeedbackScope = FeedbackScope.RECOMMENDATION,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.MODIFY,
+        scope=scope,
+        message=message,
+        recommendation_id=recommendation_id,
+        decision_id=decision_id,
+        metadata=metadata,
+    )
+
+
+def preference(
+    *,
+    message: str,
+    scope: FeedbackScope = FeedbackScope.GENERAL,
+    target: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.PREFER,
+        scope=scope,
+        message=message,
+        target=target,
+        preference=message,
+        metadata=metadata,
+    )
+
+
+def constraint(
+    *,
+    message: str,
+    scope: FeedbackScope = FeedbackScope.CONSTRAINT,
+    target: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.AVOID,
+        scope=scope,
+        message=message,
+        target=target,
+        constraint=message,
+        metadata=metadata,
+    )
+
+
+def feedback_to_memory_record(
+    feedback: DirectorFeedback,
+) -> dict[str, Any]:
     """
-    Converts human feedback into structured
-    data and sends it to Memory.
-
-    This layer does not decide whether the feedback
-    is strategically correct. It records the human
-    decision and lets Memory apply the corresponding
-    state change.
+    Stable representation for the future Memory layer.
     """
-
-    VALID_TYPES = {
-        "accept",
-        "reject",
-        "defer",
-        "investigate",
-        "change_priority",
-        "comment",
+    return {
+        "type": "director_feedback",
+        "feedback_id": feedback.feedback_id,
+        "feedback_type": feedback.feedback_type.value,
+        "scope": feedback.scope.value,
+        "message": feedback.message,
+        "recommendation_id": feedback.recommendation_id,
+        "decision_id": feedback.decision_id,
+        "target": feedback.target,
+        "reason": feedback.reason,
+        "constraint": feedback.constraint,
+        "preference": feedback.preference,
+        "created_at": feedback.created_at,
+        "metadata": feedback.metadata,
     }
-
-    def __init__(
-        self,
-        memory: Any | None = None,
-    ):
-        self.memory = memory
-
-    def create(
-        self,
-        recommendation_id: int,
-        feedback_type: str,
-        comment: str | None = None,
-        scope: str | None = None,
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> DirectorFeedback:
-
-        if feedback_type not in self.VALID_TYPES:
-            raise ValueError(
-                "Unsupported feedback type: "
-                f"{feedback_type}"
-            )
-
-        feedback = DirectorFeedback(
-            recommendation_id=int(
-                recommendation_id
-            ),
-            feedback_type=feedback_type,
-            comment=comment,
-            scope=scope,
-            topic=topic,
-            region=region,
-            language=language,
-            metadata=metadata or {},
-        )
-
-        if self.memory is not None:
-            saved = (
-                self.memory.save_recommendation_feedback(
-                    feedback.to_dict()
-                )
-            )
-
-            if isinstance(saved, dict):
-                feedback.id = saved.get(
-                    "id"
-                )
-
-        return feedback
-
-    def apply(
-        self,
-        recommendation_id: int,
-        feedback_type: str,
-        comment: str | None = None,
-        scope: str | None = None,
-        topic: str | None = None,
-        region: str | None = None,
-        language: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> DirectorFeedback:
-
-        feedback = self.create(
-            recommendation_id=(
-                recommendation_id
-            ),
-            feedback_type=feedback_type,
-            comment=comment,
-            scope=scope,
-            topic=topic,
-            region=region,
-            language=language,
-            metadata=metadata,
-        )
-
-        if self.memory is not None:
-            self.memory.apply_recommendation_feedback(
-                feedback.to_dict()
-            )
-
-            self._record_constraint(
-                feedback
-            )
-
-        return feedback
-
-    def _record_constraint(
-        self,
-        feedback: DirectorFeedback,
-    ) -> None:
-        """
-        Persist a constraint only when the user explicitly scoped
-        the feedback.
-
-        Important:
-        - A rejection without an explicit scope is NOT turned into
-          a constraint.
-        - A rejected recommendation is never automatically turned
-          into a global ban.
-        - Saved constraints start as "proposed"; activating them
-          remains the Director's decision.
-        """
-
-        if self.memory is None:
-            return
-
-        scope = feedback.scope
-
-        if not isinstance(scope, str):
-            return
-
-        scope = scope.strip().lower()
-
-        if scope not in CONSTRAINT_SCOPES:
-            # The scope is unclear/unsupported.
-            # Do not invent one.
-            return
-
-        if feedback.feedback_type == "reject":
-            constraint_type = "avoid"
-        elif feedback.feedback_type == "accept":
-            constraint_type = "prefer"
-        else:
-            # Other feedback types do not express a reusable
-            # constraint by themselves.
-            return
-
-        comment = (
-            feedback.comment
-            if isinstance(feedback.comment, str)
-            else ""
-        ).strip()
-
-        title = (
-            comment[:120]
-            if comment
-            else f"Feedback {feedback.feedback_type}"
-        )
-
-        description = (
-            comment
-            or "Constraint recorded from user feedback."
-        )
-
-        source_run_id = None
-
-        if isinstance(
-            feedback.metadata,
-            dict,
-        ):
-            try:
-                source_run_id = int(
-                    feedback.metadata.get(
-                        "run_id"
-                    )
-                )
-            except (TypeError, ValueError):
-                source_run_id = None
-
-        constraint = ConstraintManager().create(
-            title=title,
-            description=description,
-            constraint_type=constraint_type,
-            scope=scope,
-            status="proposed",
-            topic=feedback.topic,
-            region=feedback.region,
-            language=feedback.language,
-            reason=comment or None,
-            confidence=0.5,
-            priority=0,
-            source_recommendation_id=(
-                feedback.recommendation_id
-            ),
-            source_feedback_id=feedback.id,
-            source_run_id=source_run_id,
-            metadata={
-                "feedback_type": (
-                    feedback.feedback_type
-                ),
-                **(
-                    feedback.metadata
-                    if isinstance(
-                        feedback.metadata,
-                        dict,
-                    )
-                    else {}
-                ),
-            },
-        )
-
-        self.memory.save_constraint(
-            constraint.to_dict()
-        )

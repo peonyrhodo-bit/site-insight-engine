@@ -27,6 +27,10 @@ from director.recommendations import DirectorRecommendationManager
 from director.feedback import DirectorFeedbackManager
 from director.decision import DirectorDecisionManager
 from director.autonomy import DirectorAutonomy, AutonomyConfig
+from director.research import (
+    choose_director_research_languages,
+    choose_director_research_queries,
+)
 from scheduler.wakeup import DirectorWakeup
 from web.recommendations import RecommendationsWebService
 from web.dashboard import Dashboard
@@ -681,119 +685,15 @@ def json_loads_safe(
         return default
 
 # ============================================================
-# YOUTUBE QUOTA MANAGER
+# YOUTUBE QUOTA
+# (quota/youtube_quota.py -> YouTubeQuotaManager)
 # ============================================================
-
-def get_youtube_quota_status() -> dict[str, Any]:
-    conn = get_db()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT
-                COALESCE(SUM(search_calls), 0) AS search_calls,
-                COALESCE(SUM(other_units), 0) AS other_units
-            FROM youtube_quota_usage
-            WHERE created_at >= date('now')
-            """
-        ).fetchone()
-
-        search_calls = int(
-            row["search_calls"]
-            if row and row["search_calls"] is not None
-            else 0
-        )
-
-        other_units = int(
-            row["other_units"]
-            if row and row["other_units"] is not None
-            else 0
-        )
-
-        search_limit = int(
-            os.environ.get(
-                "YOUTUBE_SEARCH_DAILY_LIMIT",
-                "100",
-            )
-        )
-
-        other_limit = int(
-            os.environ.get(
-                "YOUTUBE_OTHER_DAILY_QUOTA_UNITS",
-                "10000",
-            )
-        )
-
-        return {
-            "search_calls": search_calls,
-            "search_limit": search_limit,
-            "search_remaining": max(
-                search_limit - search_calls,
-                0,
-            ),
-            "other_units": other_units,
-            "other_limit": other_limit,
-            "other_remaining": max(
-                other_limit - other_units,
-                0,
-            ),
-        }
-
-    finally:
-        conn.close()
-
-def record_youtube_quota_usage(
-    operation: str,
-    search_calls: int = 0,
-    other_units: int = 0,
-    metadata: dict[str, Any] | None = None,
-) -> None:
-
-    search_calls = max(
-        0,
-        int(search_calls or 0),
-    )
-
-    other_units = max(
-        0,
-        int(other_units or 0),
-    )
-
-    if (
-        search_calls == 0
-        and other_units == 0
-    ):
-        return
-
-    conn = get_db()
-
-    try:
-        conn.execute(
-            """
-            INSERT INTO youtube_quota_usage (
-                created_at,
-                operation,
-                search_calls,
-                other_units,
-                metadata_json
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                now_iso(),
-                operation,
-                search_calls,
-                other_units,
-                json_dumps(
-                    metadata or {}
-                ),
-            ),
-        )
-
-        conn.commit()
-
-    finally:
-        conn.close()
+# Quota status and usage recording now live in YouTubeQuotaManager:
+#   - youtube_quota.get_status()
+#   - youtube_quota.record_usage()
+#
+# get_director_resource_status() below combines the manager's
+# remaining/budget data with Supabase storage status.
 
 # ============================================================
 # SUPABASE STORAGE STATUS
@@ -2020,7 +1920,7 @@ async def mcp_call(
                             search_calls > 0
                             or other_units > 0
                         ):
-                            record_youtube_quota_usage(
+                            youtube_quota.record_usage(
                                 operation=name,
                                 search_calls=search_calls,
                                 other_units=other_units,
@@ -4690,249 +4590,13 @@ async def director_debug(
 
 # ============================================================
 # DIRECTOR RESEARCH PLANNER
+# (director/research.py -> choose_director_research_*)
 # ============================================================
+# Language and query planning now lives in director/research.py:
+#   - choose_director_research_languages()
+#   - choose_director_research_queries()
+# director_run() below calls them with injected dependencies.
 
-def choose_director_research_languages(
-    language: str | None = None,
-    region_code: str | None = None,
-) -> list[str]:
-
-    # --------------------------------------------------------
-    # AUTONOMOUS GLOBAL RESEARCH
-    # --------------------------------------------------------
-
-    available_languages = [
-        "en",
-        "hi",
-        "zh",
-        "ja",
-        "ko",
-        "es",
-        "pt",
-        "ar",
-        "de",
-        "fr",
-        "it",
-        "tr",
-        "id",
-        "vi",
-        "th",
-        "pl",
-        "ru",
-    ]
-
-    # --------------------------------------------------------
-    # MANUAL TARGETED RESEARCH
-    # --------------------------------------------------------
-
-    if language:
-        return [language]
-
-    # --------------------------------------------------------
-    # QUOTA-AWARE LANGUAGE SELECTION
-    # --------------------------------------------------------
-
-    quota = get_youtube_quota_status()
-
-    search_remaining = int(
-        quota.get(
-            "search_remaining",
-            0,
-        )
-    )
-
-    if search_remaining <= 0:
-        return []
-
-    from datetime import datetime, timezone
-
-    day_number = (
-        datetime.now(timezone.utc).timetuple().tm_yday
-    )
-
-    offset = day_number % len(
-        available_languages
-    )
-
-    rotated = (
-        available_languages[offset:]
-        + available_languages[:offset]
-    )
-
-    return rotated
-def choose_director_research_queries(
-    language: str | None = None,
-    previous_analysis: dict[str, Any] | None = None,
-) -> list[str]:
-
-    previous_analysis = (
-        previous_analysis
-        if isinstance(
-            previous_analysis,
-            dict,
-        )
-        else {}
-    )
-
-    prompt = json_dumps(
-        {
-            "task": (
-                "Choose the YouTube research directions "
-                "that the Director should investigate next."
-            ),
-            "language": language,
-            "previous_analysis": previous_analysis,
-            "rules": [
-                (
-                    "There is no fixed topic catalog."
-                ),
-                (
-                    "Do not restrict research to predefined "
-                    "topics."
-                ),
-                (
-                    "You may choose completely new topics."
-                ),
-                (
-                    "You may investigate adjacent topics."
-                ),
-                (
-                    "You may investigate unrelated topics "
-                    "when that is useful for discovering "
-                    "new opportunities."
-                ),
-                (
-                    "Queries must be concrete YouTube search "
-                    "queries."
-                ),
-                (
-                    "Use the previous analysis when it provides "
-                    "useful evidence."
-                ),
-                (
-                    "Do not assume that previous topics are "
-                    "the only topics worth researching."
-                ),
-                (
-                    "Do not recommend news."
-                ),
-                (
-                    "Do not recommend politics."
-                ),
-                (
-                    "Do not recommend 18+ content."
-                ),
-                (
-                    "Do not recommend gore, torture, graphic "
-                    "injury, glorification or incitement "
-                    "of violence."
-                ),
-            ],
-        }
-    )
-
-    system_instruction = """
-You are the research-planning brain of an autonomous
-AI Director for YouTube.
-
-Your job is to decide what the Director should search
-for next.
-
-There is NO fixed topic catalog.
-
-The Director must be able to discover completely new
-topics, niches, formats, audience interests and emerging
-content directions.
-
-Previous research is evidence, not a restriction.
-
-You may:
-- continue a promising direction;
-- investigate an adjacent direction;
-- compare different niches;
-- test a hypothesis;
-- investigate a completely new subject;
-- investigate a new format;
-- investigate a new audience interest.
-
-Do not recommend:
-- news;
-- politics;
-- 18+ content;
-- gore;
-- torture;
-- graphic injury;
-- glorification or incitement of violence.
-
-Return ONLY valid JSON in this structure:
-
-{
-  "queries": [
-    "concrete YouTube search query"
-  ]
-}
-
-Do not return explanations.
-"""
-
-    if not AI_ENABLED:
-        return []
-
-    try:
-        result = openrouter_generate_json(
-            system_instruction=system_instruction,
-            prompt=prompt,
-        )
-
-    except Exception as exc:
-
-        logger.warning(
-            "DIRECTOR_QUERY_PLANNER_FAILED "
-            "error_type=%s",
-            type(exc).__name__,
-        )
-
-        log_event(
-            "director_query_planner_failed",
-            {
-                "error_type": type(exc).__name__,
-            },
-        )
-
-        return []
-
-    queries = result.get(
-        "queries",
-        [],
-    )
-
-    if not isinstance(
-        queries,
-        list,
-    ):
-        return []
-
-    cleaned_queries = []
-
-    for query in queries:
-
-        if not isinstance(
-            query,
-            str,
-        ):
-            continue
-
-        query = query.strip()
-
-        if not query:
-            continue
-
-        if query not in cleaned_queries:
-            cleaned_queries.append(
-                query
-            )
-
-    return cleaned_queries     
 # ============================================================
 # DIRECTOR RUN
 # ============================================================
@@ -4962,6 +4626,7 @@ async def director_run(
         choose_director_research_languages(
             language=language,
             region_code=region_code,
+            quota_status=youtube_quota.get_status(),
         )
     )
     
@@ -4969,6 +4634,9 @@ async def director_run(
         choose_director_research_queries(
             language=language,
             previous_analysis=None,
+            ai_enabled=AI_ENABLED,
+            generate_json=openrouter_generate_json,
+            log_event_fn=log_event,
         )
     )
 

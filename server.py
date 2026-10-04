@@ -1,5845 +1,2193 @@
-import json 
+"""
+AI Director HTTP server.
+
+The server is an integration layer between:
+    USER / external API
+        ↓
+    Director
+        ↓
+    Research / Analytics / AI / Memory / Data
+        ↓
+    youtube-mcp
+
+The server itself does not make strategic decisions.
+"""
+
+from __future__ import annotations
+
+import json
 import logging
-import math
 import os
-import sqlite3
-import hashlib
-import hmac
-import secrets
-import requests
-
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
+
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from supabase import create_client, Client
-from memory.memory import Memory
-from memory.supabase import SupabaseMemoryBackend
-from data.research_sets import ResearchSetManager
-from data.relations import DataRelations
-from quota.youtube_quota import YouTubeQuotaManager
-from director.recommendations import DirectorRecommendationManager
-from director.feedback import DirectorFeedbackManager
-from director.decision import DirectorDecisionManager
-from director.autonomy import DirectorAutonomy, AutonomyConfig
-from director.research import (
-    choose_director_research_languages,
-    choose_director_research_queries,
-)
-from scheduler.wakeup import DirectorWakeup
-from web.recommendations import RecommendationsWebService
-from web.dashboard import Dashboard
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-from data.youtube import (
-    YouTubeDataRegistry,
-    YouTubeQuery,
-    YouTubeVideo,
-    YouTubeSnapshot,
-)
-
-
-# ============================================================
-# LOGGING
-# ============================================================
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    level=os.getenv("LOG_LEVEL", "INFO"),
 )
 
-logger = logging.getLogger(
-    "site-insight-engine"
+logger = logging.getLogger("site-insight-engine")
+
+
+# ---------------------------------------------------------------------------
+# Optional environment / compatibility helpers
+# ---------------------------------------------------------------------------
+
+SERVICE_NAME = os.getenv(
+    "SERVICE_NAME",
+    "site-insight-engine",
 )
 
-# ============================================================
-# SITE AUTHENTICATION
-# ============================================================
-
-SITE_LOGIN = os.environ.get(
-    "SITE_LOGIN",
-    "",
-).strip()
-
-SITE_PASSWORD = os.environ.get(
-    "SITE_PASSWORD",
-    "",
-).strip()
-
-SITE_AUTH_SECRET = os.environ.get(
-    "SITE_AUTH_SECRET",
-    "",
-).strip()
-
-DIRECTOR_CRON_SECRET = os.environ.get(
-    "DIRECTOR_CRON_SECRET",
-    "",
-).strip()
-
-def make_auth_token() -> str:
-    """
-    Creates a signed authentication token.
-    The actual password is never stored in the cookie.
-    """
-
-    payload = "site-insight-engine-auth"
-
-    signature = hmac.new(
-        SITE_AUTH_SECRET.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    return signature
-
-
-def is_authenticated(request: Request) -> bool:
-
-    if not (
-        SITE_LOGIN
-        and SITE_PASSWORD
-        and SITE_AUTH_SECRET
-    ):
-        return False
-
-    cookie = request.cookies.get(
-        "site_auth"
-    )
-
-    if not cookie:
-        return False
-
-    expected = make_auth_token()
-
-    return hmac.compare_digest(
-        cookie,
-        expected,
-    )
-
-
-def auth_is_configured() -> bool:
-
-    return bool(
-        SITE_LOGIN
-        and SITE_PASSWORD
-        and SITE_AUTH_SECRET
-    )
-# ============================================================
-# CONFIG
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "youtube.db"
-
-MCP_URL = os.environ.get(
-    "MCP_URL",
-    "http://youtube-mcp:8002/mcp",
-).strip()
+ENVIRONMENT = os.getenv(
+    "ENVIRONMENT",
+    "production",
+)
 
 FREE_MODE = (
-    os.environ.get(
-        "FREE_MODE",
-        "true",
-    ).lower()
-    == "true"
+    os.getenv("FREE_MODE", "true").lower()
+    in {"1", "true", "yes", "on"}
 )
 
-AUTONOMOUS = (
-    os.environ.get(
-        "AUTONOMOUS",
-        "false",
-    ).lower()
-    == "true"
+AUTONOMOUS_ENABLED = (
+    os.getenv("AUTONOMOUS_ENABLED", "false").lower()
+    in {"1", "true", "yes", "on"}
 )
 
-# ============================================================
-# YOUTUBE / STORAGE RESOURCE LIMITS
-# ============================================================
+DEFAULT_PROJECT_ID = os.getenv(
+    "DEFAULT_PROJECT_ID",
+    "default",
+)
 
-YOUTUBE_SEARCH_DAILY_LIMIT = int(
-    os.environ.get(
-        "YOUTUBE_SEARCH_DAILY_LIMIT",
-        "100",
+DEFAULT_REGION_CODE = os.getenv(
+    "DEFAULT_REGION_CODE",
+    "US",
+)
+
+
+# ---------------------------------------------------------------------------
+# Imports from project modules
+# ---------------------------------------------------------------------------
+
+try:
+    from director.director import (
+        Director,
+        DirectorContext,
+        DirectorMode,
+        create_director,
     )
-)
+except Exception as exc:
+    logger.exception("Failed to import Director")
+    raise RuntimeError("Director module is unavailable") from exc
 
-YOUTUBE_OTHER_DAILY_QUOTA_UNITS = int(
-    os.environ.get(
-        "YOUTUBE_OTHER_DAILY_QUOTA_UNITS",
-        "10000",
+
+try:
+    from director.autonomy import (
+        AutonomyConfig,
+        DirectorAutonomy,
     )
-)
+except Exception:
+    AutonomyConfig = None
+    DirectorAutonomy = None
 
-YOUTUBE_SEARCH_RESERVE_RATIO = float(
-    os.environ.get(
-        "YOUTUBE_SEARCH_RESERVE_RATIO",
-        "0.20",
+
+try:
+    from director.chat import (
+        ChatResult,
+        execute_chat_command,
+        parse_chat_command,
     )
-)
+except Exception:
+    ChatResult = None
+    execute_chat_command = None
+    parse_chat_command = None
 
-YOUTUBE_OTHER_RESERVE_RATIO = float(
-    os.environ.get(
-        "YOUTUBE_OTHER_RESERVE_RATIO",
-        "0.20",
+
+try:
+    from director.feedback import (
+        FeedbackScope,
+        FeedbackType,
+        create_feedback,
     )
-)
+except Exception:
+    FeedbackScope = None
+    FeedbackType = None
+    create_feedback = None
 
-SUPABASE_STORAGE_SOFT_LIMIT_BYTES = int(
-    os.environ.get(
-        "SUPABASE_STORAGE_SOFT_LIMIT_BYTES",
-        str(450 * 1024 * 1024),
+
+try:
+    from director.recommendations import (
+        RecommendationStatus,
+        accept_recommendation,
+        discuss_recommendation,
+        reject_recommendation,
     )
-)
+except Exception:
+    RecommendationStatus = None
+    accept_recommendation = None
+    discuss_recommendation = None
+    reject_recommendation = None
 
-SUPABASE_STORAGE_RESERVE_BYTES = int(
-    os.environ.get(
-        "SUPABASE_STORAGE_RESERVE_BYTES",
-        str(50 * 1024 * 1024),
+
+try:
+    from memory.memory import Memory
+except Exception:
+    Memory = None
+
+
+try:
+    from memory.supabase import SupabaseMemoryBackend
+except Exception:
+    SupabaseMemoryBackend = None
+
+
+try:
+    from ai.provider import create_ai_provider
+except Exception:
+    create_ai_provider = None
+
+
+# Analytics imports are intentionally modular.
+try:
+    from analytics.analytics import (
+        prepare_for_director as analytics_prepare_for_director,
     )
-)
-# ============================================================
-# OPENROUTER AI
-# ============================================================
-
-OPENROUTER_API_KEY = os.environ.get(
-    "OPENROUTER_API_KEY",
-    "",
-).strip()
-
-OPENROUTER_BASE_URL = os.environ.get(
-    "OPENROUTER_BASE_URL",
-    "https://openrouter.ai/api/v1",
-).strip()
-
-AI_MODEL = os.environ.get(
-    "AI_MODEL",
-    "openrouter/free",
-).strip()
-
-AI_ENABLED = (
-    os.environ.get(
-        "AI_ENABLED",
-        "true",
-    ).lower()
-    == "true"
-    and bool(OPENROUTER_API_KEY)
-)
+except Exception:
+    analytics_prepare_for_director = None
 
 
-# ============================================================
-# SUPABASE
-# ============================================================
-
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    "",
-).strip()
-
-SUPABASE_KEY = os.environ.get(
-    "SUPABASE_KEY",
-    "",
-).strip()
-
-SUPABASE_ENABLED = bool(
-    SUPABASE_URL and SUPABASE_KEY
-)
-
-supabase: Client | None = None
-
-# Memory facade is only available when Supabase is configured.
-# A None value keeps the application importable in free/local mode;
-# every caller already guards on SUPABASE_ENABLED / memory is not None.
-memory = None
+try:
+    from analytics.opportunity import (
+        assess_opportunity,
+        prepare_for_director as opportunity_prepare_for_director,
+    )
+except Exception:
+    assess_opportunity = None
+    opportunity_prepare_for_director = None
 
 
-if SUPABASE_ENABLED:
-    try:
-        supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_KEY,
-        )
-
-        memory_backend = SupabaseMemoryBackend(
-            client=supabase
-        )
-
-        memory = Memory(
-            memory_backend
-        )
-
-        logger.info(
-            "SUPABASE_INITIALIZED"
-        )
-
-    except Exception as exc:
-        logger.error(
-            "SUPABASE_INITIALIZATION_FAILED error_type=%s",
-            type(exc).__name__,
-        )
-
-        supabase = None
-        SUPABASE_ENABLED = False
+try:
+    from analytics.topics import (
+        analyze_topics,
+        prepare_for_director as topics_prepare_for_director,
+    )
+except Exception:
+    analyze_topics = None
+    topics_prepare_for_director = None
 
 
-youtube_data = YouTubeDataRegistry()
-research_sets = ResearchSetManager()
-relations = DataRelations()
-youtube_quota = YouTubeQuotaManager(
-    db_path=str(DB_PATH),
-)
-recommendation_manager = DirectorRecommendationManager(
-    memory=memory,
-)
-
-feedback_manager = DirectorFeedbackManager(
-    memory=memory,
-)
-
-recommendations_service = RecommendationsWebService(
-    recommendation_manager=recommendation_manager,
-    feedback_manager=feedback_manager,
-)
+try:
+    from analytics.trends import (
+        analyze_trend,
+        prepare_for_director as trends_prepare_for_director,
+    )
+except Exception:
+    analyze_trend = None
+    trends_prepare_for_director = None
 
 
-# ============================================================
-# DIRECTOR DECISION / AUTONOMY / WAKEUP / DASHBOARD
-# ============================================================
-
-decision_manager = DirectorDecisionManager(
-    memory=memory
-)
+# DATA layer
+try:
+    from data.youtube import YouTubeDataRegistry
+except Exception:
+    YouTubeDataRegistry = None
 
 
-class DirectorBoundary:
+try:
+    from data.research_sets import ResearchSetManager
+except Exception:
+    ResearchSetManager = None
+
+
+try:
+    from data.relations import DataRelations
+except Exception:
+    DataRelations = None
+
+
+# Scheduler
+try:
+    from scheduler.scheduler import create_scheduler
+except Exception:
+    create_scheduler = None
+
+
+try:
+    from scheduler.wakeup import create_wakeup_manager
+except Exception:
+    create_wakeup_manager = None
+
+
+try:
+    from scheduler.jobs import JobRunner
+except Exception:
+    JobRunner = None
+
+
+# ---------------------------------------------------------------------------
+# Time helpers
+# ---------------------------------------------------------------------------
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Generic serialization
+# ---------------------------------------------------------------------------
+
+
+def serialize(value: Any) -> Any:
     """
-    Explicit adapter between the autonomy loop / dashboard and the
-    existing Director flow of this application.
-
-    It does not contain strategy. Research and analytics remain in
-    director_run(); this boundary only exposes:
-
-    - decide(): a bounded, context-driven decision call for the
-      autonomy cycle (no research is performed here);
-    - get_status(): read-only status for the dashboard.
+    Convert project objects/enums/dataclasses into JSON-safe values.
     """
 
-    def __init__(
-        self,
-        *,
-        decision_manager: Any,
-        memory: Any | None = None,
-    ) -> None:
-        self.decision_manager = decision_manager
-        self.memory = memory
+    if value is None:
+        return None
 
-    def decide(
-        self,
-        *,
-        context: dict[str, Any] | None = None,
-        run_id: int | None = None,
-    ) -> Any:
-        """
-        Produce a bounded decision from the supplied context only.
-        """
+    if isinstance(value, (str, int, float, bool)):
+        return value
 
-        context = (
-            context
-            if isinstance(context, dict)
-            else {}
-        )
-
-        opportunity = context.get(
-            "opportunity"
-        )
-
-        next_action = context.get(
-            "next_action"
-        )
-
-        return self.decision_manager.decide(
-            decision_type=context.get(
-                "decision_type",
-                "autonomous_wakeup",
-            ),
-            opportunity=(
-                str(opportunity)
-                if opportunity is not None
-                else None
-            ),
-            applicable=True,
-            confidence=context.get(
-                "confidence"
-            ),
-            next_action=(
-                str(next_action)
-                if next_action is not None
-                else None
-            ),
-            rationale=context.get(
-                "rationale"
-            ),
-            evidence=(
-                context.get("evidence")
-                if isinstance(
-                    context.get("evidence"),
-                    list,
-                )
-                else []
-            ),
-            constraints=[],
-            resources=(
-                context.get("resources")
-                if isinstance(
-                    context.get("resources"),
-                    dict,
-                )
-                else {}
-            ),
-            previous_decisions=[],
-            run_id=run_id,
-            persist=False,
-        )
-
-    def get_status(self) -> dict[str, Any]:
-        """
-        Read-only status for the dashboard.
-        """
-
+    if isinstance(value, dict):
         return {
-            "status": "idle",
-            "mode": "explicit_wakeup_only",
+            str(key): serialize(item)
+            for key, item in value.items()
         }
 
+    if isinstance(value, (list, tuple, set)):
+        return [serialize(item) for item in value]
 
-director_boundary = DirectorBoundary(
-    decision_manager=decision_manager,
-    memory=memory,
-)
+    if hasattr(value, "value"):
+        try:
+            return value.value
+        except Exception:
+            pass
 
-# Safe default: autonomy never starts by itself.
-# It can only be invoked explicitly (see /director/wakeup).
-autonomy_config = AutonomyConfig(
-    enabled=False,
-)
+    if hasattr(value, "to_dict"):
+        try:
+            return serialize(value.to_dict())
+        except Exception:
+            pass
 
-autonomy = DirectorAutonomy(
-    director=director_boundary,
-    memory=memory,
-    config=autonomy_config,
-)
+    if hasattr(value, "__dataclass_fields__"):
+        try:
+            from dataclasses import asdict
 
-wakeup = DirectorWakeup(
-    autonomy=autonomy,
-)
+            return serialize(asdict(value))
+        except Exception:
+            pass
 
-dashboard = Dashboard(
-    memory=memory,
-    director=director_boundary,
-    recommendations=recommendations_service,
-)
-# ============================================================
-# FASTAPI
-# ============================================================
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Safe async/sync invocation
+# ---------------------------------------------------------------------------
+
+
+async def call_maybe_async(function: Any, *args: Any, **kwargs: Any) -> Any:
+    """
+    Call a synchronous or asynchronous function.
+    """
+
+    result = function(*args, **kwargs)
+
+    if hasattr(result, "__await__"):
+        return await result
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Memory adapter
+# ---------------------------------------------------------------------------
+
+
+class ServerMemory:
+    """
+    Thin compatibility layer around Memory 2.0.
+
+    server.py should not know Supabase table details.
+    """
+
+    def __init__(self) -> None:
+        self.backend = None
+        self.memory = None
+
+        if Memory is None:
+            logger.warning("Memory module unavailable")
+            return
+
+        try:
+            if SupabaseMemoryBackend is not None:
+                self.backend = SupabaseMemoryBackend()
+
+            self.memory = Memory(
+                backend=self.backend,
+            )
+
+            logger.info("Director memory initialized")
+
+        except Exception:
+            logger.exception("Failed to initialize memory")
+            self.backend = None
+            self.memory = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.memory is not None
+
+    async def get_context(
+        self,
+        project_id: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if not self.memory:
+            return {}
+
+        try:
+            result = self.memory.get_context(
+                project_id=project_id,
+                limit=limit,
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result if isinstance(result, dict) else {}
+
+        except Exception:
+            logger.exception(
+                "Memory get_context failed: project=%s",
+                project_id,
+            )
+            return {}
+
+    async def save_run(
+        self,
+        project_id: str,
+        run: dict[str, Any],
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            result = self.memory.save_run(
+                project_id=project_id,
+                run=run,
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception("Memory save_run failed")
+            return None
+
+    async def save_decision(
+        self,
+        project_id: str,
+        decision: Any,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            if hasattr(self.memory, "save_decision_model"):
+                result = self.memory.save_decision_model(
+                    project_id=project_id,
+                    decision=decision,
+                )
+            else:
+                result = self.memory.save_decision(
+                    project_id=project_id,
+                    decision=serialize(decision),
+                )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception("Memory save_decision failed")
+            return None
+
+    async def save_recommendation(
+        self,
+        project_id: str,
+        recommendation: Any,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            result = self.memory.save_recommendation(
+                project_id=project_id,
+                recommendation=recommendation,
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception(
+                "Memory save_recommendation failed"
+            )
+            return None
+
+    async def save_feedback(
+        self,
+        project_id: str,
+        feedback: Any,
+    ) -> Any:
+        """
+        Compatibility wrapper.
+
+        Memory 2.0 uses recommendation feedback rather than
+        the old save_feedback() API.
+        """
+
+        if not self.memory:
+            return None
+
+        payload = serialize(feedback)
+
+        try:
+            if hasattr(
+                self.memory,
+                "save_recommendation_feedback",
+            ):
+                result = (
+                    self.memory.save_recommendation_feedback(
+                        project_id=project_id,
+                        feedback=payload,
+                    )
+                )
+
+                if hasattr(result, "__await__"):
+                    result = await result
+
+                return result
+
+            if hasattr(self.memory, "save_event"):
+                result = self.memory.save_event(
+                    project_id=project_id,
+                    event={
+                        "type": "director_feedback",
+                        "data": payload,
+                    },
+                )
+
+                if hasattr(result, "__await__"):
+                    result = await result
+
+                return result
+
+        except Exception:
+            logger.exception("Memory save_feedback failed")
+
+        return None
+
+    async def save_result(
+        self,
+        project_id: str,
+        result: Any,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            if hasattr(self.memory, "save_result"):
+                saved = self.memory.save_result(
+                    project_id=project_id,
+                    result=serialize(result),
+                )
+
+                if hasattr(saved, "__await__"):
+                    saved = await saved
+
+                return saved
+
+        except Exception:
+            logger.exception("Memory save_result failed")
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Analytics adapter
+# ---------------------------------------------------------------------------
+
+
+class AnalyticsAdapter:
+    """
+    Adapter over modular Analytics.
+
+    Analytics calculates.
+    Director interprets and decides.
+    """
+
+    async def analyze(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        observations = context.get(
+            "observations",
+            [],
+        )
+
+        analytics_data: dict[str, Any] = {}
+
+        # ---------------------------------------------------------------
+        # Basic analytics
+        # ---------------------------------------------------------------
+
+        if analytics_prepare_for_director is not None:
+            try:
+                prepared = analytics_prepare_for_director(
+                    observations,
+                )
+
+                if prepared is not None:
+                    analytics_data["analytics"] = serialize(
+                        prepared
+                    )
+
+            except TypeError:
+                # Some versions expect a different argument shape.
+                logger.debug(
+                    "analytics_prepare_for_director "
+                    "signature mismatch",
+                    exc_info=True,
+                )
+
+            except Exception:
+                logger.exception(
+                    "Analytics preparation failed"
+                )
+
+        # ---------------------------------------------------------------
+        # Topics
+        # ---------------------------------------------------------------
+
+        if analyze_topics is not None:
+            try:
+                topic_analysis = analyze_topics(
+                    observations,
+                )
+
+                analytics_data["topics"] = serialize(
+                    (
+                        topics_prepare_for_director(topic_analysis)
+                        if topics_prepare_for_director
+                        else topic_analysis
+                    )
+                )
+
+            except Exception:
+                logger.exception(
+                    "Topic analysis failed"
+                )
+
+        # ---------------------------------------------------------------
+        # Trends
+        # ---------------------------------------------------------------
+
+        previous = context.get(
+            "previous_observations",
+            [],
+        )
+
+        if analyze_trend is not None and (
+            observations or previous
+        ):
+            try:
+                trend_analysis = analyze_trend(
+                    current=observations,
+                    previous=previous,
+                )
+
+                analytics_data["trends"] = serialize(
+                    (
+                        trends_prepare_for_director(
+                            trend_analysis
+                        )
+                        if trends_prepare_for_director
+                        else trend_analysis
+                    )
+                )
+
+            except TypeError:
+                logger.debug(
+                    "Trend analyzer signature mismatch",
+                    exc_info=True,
+                )
+
+            except Exception:
+                logger.exception(
+                    "Trend analysis failed"
+                )
+
+        # ---------------------------------------------------------------
+        # Opportunity
+        # ---------------------------------------------------------------
+
+        if assess_opportunity is not None:
+            try:
+                opportunities = []
+
+                topic_items = analytics_data.get(
+                    "topics",
+                    [],
+                )
+
+                if isinstance(topic_items, dict):
+                    topic_items = topic_items.get(
+                        "topics",
+                        topic_items.get(
+                            "items",
+                            [],
+                        ),
+                    )
+
+                if not topic_items:
+                    topic_items = observations
+
+                for item in topic_items or []:
+                    try:
+                        opportunity = assess_opportunity(
+                            item,
+                        )
+
+                        prepared = (
+                            opportunity_prepare_for_director(
+                                opportunity
+                            )
+                            if opportunity_prepare_for_director
+                            else opportunity
+                        )
+
+                        opportunities.append(
+                            serialize(prepared)
+                        )
+
+                    except Exception:
+                        logger.debug(
+                            "Opportunity assessment failed "
+                            "for item",
+                            exc_info=True,
+                        )
+
+                analytics_data["opportunities"] = (
+                    opportunities
+                )
+
+            except Exception:
+                logger.exception(
+                    "Opportunity analysis failed"
+                )
+
+        return analytics_data
+
+
+# ---------------------------------------------------------------------------
+# Data adapter
+# ---------------------------------------------------------------------------
+
+
+class DataAdapter:
+    """
+    DATA layer adapter.
+
+    This class does not decide strategy.
+    """
+
+    def __init__(self) -> None:
+        self.youtube_registry = None
+        self.research_manager = None
+        self.relations = None
+
+        try:
+            if YouTubeDataRegistry is not None:
+                self.youtube_registry = (
+                    YouTubeDataRegistry()
+                )
+        except Exception:
+            logger.exception(
+                "Failed to initialize YouTubeDataRegistry"
+            )
+
+        try:
+            if ResearchSetManager is not None:
+                self.research_manager = (
+                    ResearchSetManager()
+                )
+        except Exception:
+            logger.exception(
+                "Failed to initialize ResearchSetManager"
+            )
+
+        try:
+            if DataRelations is not None:
+                self.relations = DataRelations(
+                    youtube_registry=self.youtube_registry,
+                    research_manager=self.research_manager,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to initialize DataRelations"
+            )
+
+    async def get_project_state(
+        self,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """
+        Return whatever structured DATA state is available.
+
+        The DATA layer remains deliberately conservative here.
+        """
+
+        result: dict[str, Any] = {
+            "project_id": project_id,
+            "observations": [],
+            "research_sets": [],
+            "relations": [],
+        }
+
+        if self.research_manager is not None:
+            try:
+                if hasattr(
+                    self.research_manager,
+                    "all",
+                ):
+                    research_sets = (
+                        self.research_manager.all()
+                    )
+
+                    result["research_sets"] = serialize(
+                        research_sets
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to load research sets"
+                )
+
+        if self.relations is not None:
+            try:
+                if hasattr(
+                    self.relations,
+                    "all",
+                ):
+                    result["relations"] = serialize(
+                        self.relations.all()
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to load data relations"
+                )
+
+        return result
+
+
+# ---------------------------------------------------------------------------
+# AI adapter
+# ---------------------------------------------------------------------------
+
+
+class AIAdapter:
+    """
+    AI integration layer.
+
+    AI provides reasoning assistance.
+    Director owns decisions.
+    """
+
+    def __init__(self) -> None:
+        self.provider = None
+
+        if create_ai_provider is None:
+            return
+
+        try:
+            self.provider = create_ai_provider()
+            logger.info("AI provider initialized")
+        except Exception:
+            logger.exception(
+                "AI provider unavailable"
+            )
+            self.provider = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.provider is not None
+
+    async def generate_decision(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Compatibility method for Director.
+
+        The current Director expects generate_decision().
+        New AI provider is intentionally kept behind this adapter.
+        """
+
+        if not self.provider:
+            return {}
+
+        try:
+            from ai.prompts import (
+                build_decision_prompt,
+            )
+
+            prompt = build_decision_prompt(
+                context=context,
+            )
+
+            response = await self.provider.generate_json(
+                prompt=prompt,
+            )
+
+            if isinstance(response, dict):
+                return response
+
+            if hasattr(response, "content"):
+                content = response.content
+
+                if isinstance(content, dict):
+                    return content
+
+                try:
+                    return json.loads(content)
+                except Exception:
+                    return {}
+
+        except Exception:
+            logger.exception(
+                "AI decision generation failed"
+            )
+
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+
+
+class Runtime:
+    """
+    Application-wide runtime dependencies.
+    """
+
+    def __init__(self) -> None:
+        self.memory = ServerMemory()
+        self.analytics = AnalyticsAdapter()
+        self.data = DataAdapter()
+        self.ai = AIAdapter()
+
+        self.scheduler = (
+            create_scheduler(
+                enabled=AUTONOMOUS_ENABLED,
+                default_project_id=DEFAULT_PROJECT_ID,
+            )
+            if create_scheduler
+            else None
+        )
+
+        self.wakeup = (
+            create_wakeup_manager(
+                enabled=AUTONOMOUS_ENABLED,
+            )
+            if create_wakeup_manager
+            else None
+        )
+
+        self.jobs = (
+            JobRunner(
+                enabled=AUTONOMOUS_ENABLED,
+            )
+            if JobRunner
+            else None
+        )
+
+        self.directors: dict[str, Director] = {}
+
+    def get_director(
+        self,
+        project_id: str,
+        mode: DirectorMode | None = None,
+    ) -> Director:
+        existing = self.directors.get(project_id)
+
+        if existing is not None:
+            return existing
+
+        if mode is None:
+            mode = (
+                DirectorMode.AUTONOMOUS
+                if AUTONOMOUS_ENABLED
+                else DirectorMode.ASSISTED
+            )
+
+        director = create_director(
+            project_id=project_id,
+            mode=mode,
+            memory_service=self.memory.memory,
+            analytics_service=self.analytics,
+            ai_service=self.ai,
+            data_service=self.data,
+        )
+
+        self.directors[project_id] = director
+
+        return director
+
+
+runtime = Runtime()
+
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+
+class DirectorRunRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    objective: str | None = None
+    language: str = "en"
+    region_code: str = DEFAULT_REGION_CODE
+    hours_back: int = Field(
+        default=72,
+        ge=1,
+        le=24 * 30,
+    )
+    max_results: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+    )
+
+
+class DirectorChatRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    message: str
+
+
+class FeedbackRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    feedback_type: str
+    scope: str = "recommendation"
+    message: str
+    recommendation_id: str | None = None
+    decision_id: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    constraint: str | None = None
+    preference: str | None = None
+
+
+class RecommendationActionRequest(BaseModel):
+    action: str
+    message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
+
 
 app = FastAPI(
-    title="Site Insight Engine",
-    version="1.0.0",
+    title="AI Director",
+    version="2.0",
+    description=(
+        "AI Director for YouTube research, analysis and "
+        "strategic recommendations."
+    ),
 )
+
+
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+
+
+cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "*",
+)
+
+if cors_origins == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [
+        origin.strip()
+        for origin in cors_origins.split(",")
+        if origin.strip()
+    ]
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allow_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================
-# AUTHENTICATION MIDDLEWARE
-# ============================================================
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
 
 @app.middleware("http")
-async def authentication_middleware(
+async def request_logging(
     request: Request,
-    call_next,
-):
-    path = request.url.path
-
-    # Эти страницы доступны без авторизации
-    public_paths = {
-    "/login",
-    "/health",
-    "/director/cron",
-}
-
-    if path in public_paths:
-        return await call_next(request)
-
-    # Если авторизация не настроена в Render,
-    # не блокируем сайт
-    if not auth_is_configured():
-        return await call_next(request)
-
-    # Пользователь уже авторизован
-    if is_authenticated(request):
-        return await call_next(request)
-
-    # При заходе на сайт отправляем на страницу входа,
-    # а не показываем JSON 401
-    if path == "/":
-        return RedirectResponse(
-            url="/login",
-            status_code=303,
-        )
-
-    # Для API оставляем нормальный JSON 401
-    return JSONResponse(
-        status_code=401,
-        content={
-            "ok": False,
-            "authenticated": False,
-            "error": "Authentication required",
-        },
-    )
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(
-        DB_PATH,
-        check_same_thread=False,
-    )
-
-    conn.row_factory = sqlite3.Row
-
-    return conn
-
-
-def init_db() -> None:
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS videos (
-            video_id TEXT PRIMARY KEY,
-            data_json TEXT,
-            first_seen TEXT,
-            last_seen TEXT
-        )
-        """
-    )
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS youtube_quota_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            search_calls INTEGER NOT NULL DEFAULT 0,
-            other_units INTEGER NOT NULL DEFAULT 0,
-            metadata_json TEXT
-        )
-    """)
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS video_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            video_id TEXT,
-            data_json TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS director_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            language TEXT,
-            region_code TEXT,
-            data_json TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS decisions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            decision TEXT,
-            data_json TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS system_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            event_type TEXT,
-            data_json TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS weekly_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            week_start TEXT NOT NULL,
-            week_end TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            summary TEXT,
-            what_happened TEXT,
-            what_worked TEXT,
-            what_did_not_work TEXT,
-            what_changed TEXT,
-            recommendations TEXT,
-            raw_context TEXT
-        )
-        """
-    )
-
-    quota_columns = {
-        row["name"]
-        for row in cursor.execute(
-            "PRAGMA table_info(youtube_quota_usage)"
-        ).fetchall()
-    }
-
-    if "units" in quota_columns and "search_calls" not in quota_columns:
-        cursor.execute(
-            "ALTER TABLE youtube_quota_usage "
-            "RENAME TO youtube_quota_usage_legacy"
-        )
-
-        cursor.execute("""
-            CREATE TABLE youtube_quota_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                operation TEXT NOT NULL,
-                search_calls INTEGER NOT NULL DEFAULT 0,
-                other_units INTEGER NOT NULL DEFAULT 0,
-                metadata_json TEXT
-            )
-        """)
-
-        cursor.execute("""
-            INSERT INTO youtube_quota_usage (
-                created_at,
-                operation,
-                search_calls,
-                other_units,
-                metadata_json
-            )
-            SELECT
-                created_at,
-                operation,
-                0,
-                units,
-                metadata_json
-            FROM youtube_quota_usage_legacy
-        """)
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-# ============================================================
-# GENERAL HELPERS
-# ============================================================
-
-def now_iso() -> str:
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
-
-def json_dumps(data: Any) -> str:
-    return json.dumps(
-        data,
-        ensure_ascii=False,
-        default=str,
-    )
-
-
-def json_loads_safe(
-    value: str | None,
-    default: Any = None,
-) -> Any:
-    if not value:
-        return default
+    call_next: Any,
+) -> JSONResponse:
+    started = datetime.now(timezone.utc)
 
     try:
-        return json.loads(value)
-    except Exception:
-        return default
-
-# ============================================================
-# YOUTUBE QUOTA
-# (quota/youtube_quota.py -> YouTubeQuotaManager)
-# ============================================================
-# Quota status and usage recording now live in YouTubeQuotaManager:
-#   - youtube_quota.get_status()
-#   - youtube_quota.record_usage()
-#
-# get_director_resource_status() below combines the manager's
-# remaining/budget data with Supabase storage status.
-
-# ============================================================
-# SUPABASE STORAGE STATUS
-# ============================================================
-
-def get_storage_status() -> dict[str, Any]:
-    if not SUPABASE_ENABLED or supabase is None:
-        return {
-            "available": False,
-            "videos": 0,
-            "snapshots": 0,
-            "estimated_bytes": 0,
-            "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
-            "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
-            "remaining_bytes": 0,
-        }
-
-    try:
-        videos_result = (
-            supabase
-            .table("videos")
-            .select("video_id", count="exact", head=True)
-            .execute()
-        )
-
-        snapshots_result = (
-            supabase
-            .table("video_snapshots")
-            .select("id", count="exact", head=True)
-            .execute()
-        )
-
-        videos_count = int(videos_result.count or 0)
-        snapshots_count = int(snapshots_result.count or 0)
-
-    except Exception as exc:
-        logging.exception(
-            "Failed to read Supabase storage counts: %s",
-            exc,
-        )
-
-        return {
-            "available": False,
-            "videos": 0,
-            "snapshots": 0,
-            "estimated_bytes": 0,
-            "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
-            "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
-            "remaining_bytes": 0,
-            "error": str(exc),
-        }
-
-    # --------------------------------------------------------
-    # Conservative estimate.
-    # Supabase is the primary storage for video data.
-    # --------------------------------------------------------
-
-    estimated_bytes = (
-        videos_count * 8_000
-        + snapshots_count * 8_000
-    )
-
-    remaining = max(
-        SUPABASE_STORAGE_SOFT_LIMIT_BYTES
-        - SUPABASE_STORAGE_RESERVE_BYTES
-        - estimated_bytes,
-        0,
-    )
-
-    return {
-        "available": True,
-        "videos": videos_count,
-        "snapshots": snapshots_count,
-        "estimated_bytes": estimated_bytes,
-        "limit_bytes": SUPABASE_STORAGE_SOFT_LIMIT_BYTES,
-        "reserve_bytes": SUPABASE_STORAGE_RESERVE_BYTES,
-        "remaining_bytes": remaining,
-    }
-def get_director_resource_status() -> dict[str, Any]:
-
-    quota_budget = (
-        youtube_quota.get_available_budget()
-    )
-
-    quota_remaining = (
-        youtube_quota.get_remaining()
-    )
-
-    storage = get_storage_status()
-
-    search_remaining = int(
-        quota_remaining.get(
-            "search_remaining",
-            0,
-        )
-    )
-
-    other_remaining = int(
-        quota_remaining.get(
-            "other_remaining",
-            0,
-        )
-    )
-
-    search_reserve = max(
-        0,
-        search_remaining
-        - int(
-            quota_budget.get(
-                "search_available",
-                0,
-            )
-        ),
-    )
-
-    other_reserve = max(
-        0,
-        other_remaining
-        - int(
-            quota_budget.get(
-                "other_available",
-                0,
-            )
-        ),
-    )
-
-    searchable_calls = int(
-        quota_budget.get(
-            "search_available",
-            0,
-        )
-    )
-
-    usable_other_units = int(
-        quota_budget.get(
-            "other_available",
-            0,
-        )
-    )
-    return {
-        "youtube_quota": {
-            "search_remaining": search_remaining,
-            "search_reserve": search_reserve,
-            "search_available_for_research": (
-                searchable_calls
-            ),
-            "other_remaining": other_remaining,
-            "other_reserve": other_reserve,
-            "other_available_for_research": (
-                usable_other_units
-            ),
-        },
-        "storage": storage,
-    }
-
-# ============================================================
-# WEEKLY REPORTS
-# ============================================================
-
-def save_weekly_report(
-    week_start: str,
-    week_end: str,
-    summary: str = "",
-    what_happened: str = "",
-    what_worked: str = "",
-    what_did_not_work: str = "",
-    what_changed: str = "",
-    recommendations: str = "",
-    raw_context: dict[str, Any] | None = None,
-) -> int | None:
-
-    if SUPABASE_ENABLED and supabase is not None:
-        try:
-            result = (
-                supabase
-                .table("weekly_reports")
-                .upsert(
-                    {
-                        "week_start": week_start,
-                        "week_end": week_end,
-                        "created_at": now_iso(),
-                        "summary": summary,
-                        "what_happened": what_happened,
-                        "what_worked": what_worked,
-                        "what_did_not_work": what_did_not_work,
-                        "what_changed": what_changed,
-                        "recommendations": recommendations,
-                        "raw_context": raw_context or {},
-                    },
-                    on_conflict="week_start,week_end",
-                )
-                .execute()
-            )
-
-            rows = result.data or []
-
-            if rows:
-                return rows[0].get("id")
-
-        except Exception as exc:
-            logger.error(
-                "SUPABASE_SAVE_WEEKLY_REPORT_FAILED "
-                "error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    conn = get_db()
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO weekly_reports (
-                week_start,
-                week_end,
-                created_at,
-                summary,
-                what_happened,
-                what_worked,
-                what_did_not_work,
-                what_changed,
-                recommendations,
-                raw_context
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                week_start,
-                week_end,
-                now_iso(),
-                summary,
-                what_happened,
-                what_worked,
-                what_did_not_work,
-                what_changed,
-                recommendations,
-                json_dumps(raw_context or {}),
-            ),
-        )
-
-        conn.commit()
-
-        return cursor.lastrowid
-
-    except Exception as exc:
-        logger.error(
-            "SAVE_WEEKLY_REPORT_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-        return None
+        response = await call_next(request)
+        return response
 
     finally:
-        conn.close()
+        elapsed = (
+            datetime.now(timezone.utc) - started
+        ).total_seconds()
 
-
-def get_weekly_reports(
-    limit: int = 12,
-) -> list[dict[str, Any]]:
-    conn = get_db()
-
-    try:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM weekly_reports
-            ORDER BY week_end DESC, id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-
-        return [
-            {
-                "id": row["id"],
-                "week_start": row["week_start"],
-                "week_end": row["week_end"],
-                "created_at": row["created_at"],
-                "summary": row["summary"] or "",
-                "what_happened": row["what_happened"] or "",
-                "what_worked": row["what_worked"] or "",
-                "what_did_not_work": (
-                    row["what_did_not_work"] or ""
-                ),
-                "what_changed": row["what_changed"] or "",
-                "recommendations": (
-                    row["recommendations"] or ""
-                ),
-                "raw_context": json_loads_safe(
-                    row["raw_context"],
-                    {},
-                ),
-            }
-            for row in rows
-        ]
-
-    finally:
-        conn.close()
-
-
-def get_weekly_report(
-    report_id: int,
-) -> dict[str, Any] | None:
-    conn = get_db()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM weekly_reports
-            WHERE id = ?
-            LIMIT 1
-            """,
-            (report_id,),
-        ).fetchone()
-
-        if row is None:
-            return None
-
-        return {
-            "id": row["id"],
-            "week_start": row["week_start"],
-            "week_end": row["week_end"],
-            "created_at": row["created_at"],
-            "summary": row["summary"] or "",
-            "what_happened": row["what_happened"] or "",
-            "what_worked": row["what_worked"] or "",
-            "what_did_not_work": (
-                row["what_did_not_work"] or ""
-            ),
-            "what_changed": row["what_changed"] or "",
-            "recommendations": (
-                row["recommendations"] or ""
-            ),
-            "raw_context": json_loads_safe(
-                row["raw_context"],
-                {},
-            ),
-        }
-
-    finally:
-        conn.close()
-def generate_weekly_report(
-    week_start: str,
-    week_end: str,
-) -> dict[str, Any]:
-
-    context = {
-        "week_start": week_start,
-        "week_end": week_end,
-        "runs": [],
-    }
-
-    if SUPABASE_ENABLED and supabase is not None:
-        try:
-            result = (
-                supabase
-                .table("director_runs")
-                .select("*")
-                .gte("created_at", week_start)
-                .lte(
-                    "created_at",
-                    f"{week_end}T23:59:59+00:00",
-                )
-                .order("id", desc=False)
-                .limit(100)
-                .execute()
-            )
-
-            rows = result.data or []
-
-            for row in rows:
-                data = row.get(
-                    "data_json",
-                    {},
-                )
-
-                if not isinstance(
-                    data,
-                    dict,
-                ):
-                    data = {}
-
-                context["runs"].append(
-                    {
-                        "id": row.get("id"),
-                        "created_at": row.get(
-                            "created_at"
-                        ),
-                        "language": row.get(
-                            "language"
-                        ),
-                        "region_code": row.get(
-                            "region_code"
-                        ),
-                        "research_languages": data.get(
-                            "research_languages",
-                            [],
-                        ),
-                        "research_queries": data.get(
-                            "research_queries",
-                            [],
-                        ),
-                        "radar_count": data.get(
-                            "radar_count",
-                            0,
-                        ),
-                        "saved_count": data.get(
-                            "saved_count",
-                            0,
-                        ),
-                        "trending_count": data.get(
-                            "trending_count",
-                            0,
-                        ),
-                        "analysis": data.get(
-                            "analysis",
-                            {},
-                        ),
-                        "resource_plan": data.get(
-                            "resource_plan",
-                            {},
-                        ),
-                    }
-                )
-
-        except Exception as exc:
-            logger.error(
-                "WEEKLY_REPORT_CONTEXT_FAILED "
-                "error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    system_instruction = """
-You are the Weekly Report analyst for an autonomous YouTube intelligence system.
-
-Create a concise factual weekly report from the Director runs.
-
-Return ONLY valid JSON with exactly these fields:
-
-summary
-what_happened
-what_worked
-what_did_not_work
-what_changed
-recommendations
-
-Rules:
-- Do not invent facts.
-- Use only the supplied Director data.
-- Mention meaningful topics, formats, signals and changes.
-- Mention resource or quota issues when present.
-- recommendations must be practical next steps for the Director.
-- If there is not enough evidence for a conclusion, say so.
-"""
-
-    prompt = json_dumps(context)
-
-    try:
-        report = openrouter_generate_json(
-            system_instruction=system_instruction,
-            prompt=prompt,
-        )
-    except Exception as exc:
-        logger.error(
-            "WEEKLY_REPORT_AI_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        report = {
-            "summary": (
-                "Недостаточно данных для AI-отчёта."
-            ),
-            "what_happened": (
-                f"За период {week_start} — "
-                f"{week_end} выполнено "
-                f"{len(context['runs'])} запусков Director."
-            ),
-            "what_worked": "",
-            "what_did_not_work": "",
-            "what_changed": "",
-            "recommendations": (
-                "Продолжить накопление данных "
-                "для следующего отчёта."
-            ),
-        }
-
-    report_id = save_weekly_report(
-        week_start=week_start,
-        week_end=week_end,
-        summary=str(
-            report.get(
-                "summary",
-                "",
-            )
-        ),
-        what_happened=str(
-            report.get(
-                "what_happened",
-                "",
-            )
-        ),
-        what_worked=str(
-            report.get(
-                "what_worked",
-                "",
-            )
-        ),
-        what_did_not_work=str(
-            report.get(
-                "what_did_not_work",
-                "",
-            )
-        ),
-        what_changed=str(
-            report.get(
-                "what_changed",
-                "",
-            )
-        ),
-        recommendations=str(
-            report.get(
-                "recommendations",
-                "",
-            )
-        ),
-        raw_context=context,
-    )
-
-    return {
-        "ok": True,
-        "report_id": report_id,
-        "week_start": week_start,
-        "week_end": week_end,
-        "report": report,
-        "runs_count": len(
-            context["runs"]
-        ),
-    }
-
-# ============================================================
-# SUPABASE MEMORY HELPERS
-# ============================================================
-
-def supabase_save_chat_message(
-    role: str,
-    message: str,
-    data: dict[str, Any] | None = None,
-    run_id: int | None = None,
-) -> int | None:
-    """
-    Saves a Director chat message through the Director memory layer.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        return memory.save_chat_message(
-            role=role,
-            message=message,
-            data=data or {},
-            run_id=run_id,
-        )
-
-    except Exception as exc:
-        logger.error(
-            "MEMORY_SAVE_CHAT_MESSAGE_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-def supabase_save_director_run(
-    language: str,
-    region_code: str,
-    data: dict[str, Any],
-) -> int | None:
-    """
-    Saves a Director run to Supabase.
-    Returns the Supabase row ID.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        result = (
-            supabase
-            .table("director_runs")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "language": language,
-                    "region_code": region_code,
-                    "data_json": data,
-                }
-            )
-            .execute()
-        )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        return rows[0].get("id")
-
-    except Exception as exc:
-        logger.error(
-            "SUPABASE_SAVE_DIRECTOR_RUN_FAILED error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-
-def supabase_save_decision(
-    decision: str,
-    data: dict[str, Any],
-    run_id: int | None = None,
-) -> int | None:
-    """
-    Saves a user decision through the Director memory layer.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        return memory.save_decision(
-            decision=decision,
-            data=data,
-            run_id=run_id,
-        )
-
-    except Exception as exc:
-        logger.error(
-            "MEMORY_SAVE_DECISION_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-
-
-def supabase_save_action(
-    description: str,
-    action_type: str = "general",
-    run_id: int | None = None,
-    decision_id: int | None = None,
-    data: dict[str, Any] | None = None,
-) -> int | None:
-    """
-    Creates a Director action through the Director memory layer.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        return memory.save_action(
-            description=description,
-            action_type=action_type,
-            run_id=run_id,
-            decision_id=decision_id,
-            data=data or {},
-        )
-
-    except Exception as exc:
-        logger.error(
-            "MEMORY_SAVE_ACTION_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-
-def supabase_save_result(
-    action_id: int,
-    summary: str,
-    result_type: str = "completed",
-    run_id: int | None = None,
-    data: dict[str, Any] | None = None,
-) -> int | None:
-    """
-    Saves an action result through the Director memory layer.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        return memory.save_result(
-            action_id=action_id,
-            summary=summary,
-            result_type=result_type,
-            run_id=run_id,
-            data=data or {},
-        )
-
-    except Exception as exc:
-        logger.error(
-            "MEMORY_SAVE_RESULT_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-
-
-def supabase_save_event(
-    event_type: str,
-    data: dict[str, Any],
-) -> int | None:
-    """
-    Saves a system event to Supabase.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-        result = (
-            supabase
-            .table("system_events")
-            .insert(
-                {
-                    "created_at": now_iso(),
-                    "event_type": event_type,
-                    "data_json": data,
-                }
-            )
-            .execute()
-        )
-
-        rows = result.data or []
-
-        if not rows:
-            return None
-
-        return rows[0].get("id")
-
-    except Exception as exc:
-        logger.error(
-            "SUPABASE_SAVE_EVENT_FAILED error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-
-
-def supabase_get_director_context(
-    limit_runs: int = 10,
-    limit_decisions: int = 20,
-    limit_events: int = 30,
-    limit_chat: int = 20,
-    limit_actions: int = 20,
-    limit_results: int = 20,
-) -> dict[str, Any] | None:
-    """
-    Reads the complete Director memory from Supabase.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return None
-
-    try:
-
-        runs = memory.get_recent_runs(
-            limit=limit_runs
-        )
-
-        decisions_result = memory.get_recent_decisions(
-           limit=limit_decisions
-        )
-
-        events = memory.get_recent_events(
-            limit=limit_events
-        )
-
-        chat_messages = memory.get_recent_chat_messages(
-            limit=limit_chat
-        )
-
-        actions = memory.get_recent_actions(
-            limit=limit_actions
-        )
-
-        results = memory.get_recent_results(
-            limit=limit_results
-        )
-
-        runs = runs_result.data or []
-        decisions = decisions_result.data or []
-        events = events_result.data or []
-        chat_messages = chat_result.data or []
-        actions = actions_result.data or []
-        results = results_result.data or []
-
-        return {
-            "recent_runs": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "language": row.get("language"),
-                    "region_code": row.get("region_code"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in runs
-            ],
-
-            "recent_decisions": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "run_id": row.get("run_id"),
-                    "decision": row.get("decision"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in decisions
-            ],
-
-            "recent_actions": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "run_id": row.get("run_id"),
-                    "decision_id": row.get("decision_id"),
-                    "action_type": row.get("action_type"),
-                    "description": row.get("description"),
-                    "status": row.get("status"),
-                    "completed_at": row.get("completed_at"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in actions
-            ],
-
-            "recent_results": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "action_id": row.get("action_id"),
-                    "run_id": row.get("run_id"),
-                    "result_type": row.get("result_type"),
-                    "summary": row.get("summary"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in results
-            ],
-
-            "recent_chat_messages": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "run_id": row.get("run_id"),
-                    "role": row.get("role"),
-                    "message": row.get("message"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in reversed(chat_messages)
-            ],
-
-            "recent_events": [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get("created_at"),
-                    "event_type": row.get("event_type"),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in events
-            ],
-        }
-
-    except Exception as exc:
-        logger.error(
-            "SUPABASE_GET_DIRECTOR_CONTEXT_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return None
-  
-
-# ============================================================
-# EVENTS
-# ============================================================
-
-def get_recent_system_context(
-    limit_runs: int = 10,
-    limit_decisions: int = 20,
-    limit_events: int = 30,
-) -> dict[str, Any]:
-
-    # --------------------------------------------------------
-    # PRIMARY MEMORY: SUPABASE
-    # --------------------------------------------------------
-
-    supabase_context = supabase_get_director_context(
-    limit_runs=limit_runs,
-    limit_decisions=limit_decisions,
-    limit_events=limit_events,
-    limit_chat=20,
-    limit_actions=20,
-    limit_results=20,
-)
-
-    if supabase_context is not None:
-        supabase_context["system"] = {
-            "free_mode": FREE_MODE,
-            "autonomous": AUTONOMOUS,
-            "ai_enabled": AI_ENABLED,
-            "ai_provider": (
-                "openrouter"
-                if AI_ENABLED
-                else "heuristic"
-            ),
-            "ai_model": AI_MODEL,
-            "memory_provider": "supabase",
-        }
-
-        return supabase_context
-
-    # --------------------------------------------------------
-    # FALLBACK MEMORY: SQLITE
-    # --------------------------------------------------------
-
-    logger.warning(
-        "DIRECTOR_MEMORY_FALLBACK_TO_SQLITE"
-    )
-
-    conn = get_db()
-
-    runs = conn.execute(
-        """
-        SELECT *
-        FROM director_runs
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit_runs,),
-    ).fetchall()
-
-    decisions = conn.execute(
-        """
-        SELECT *
-        FROM decisions
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit_decisions,),
-    ).fetchall()
-
-    events = conn.execute(
-        """
-        SELECT *
-        FROM system_events
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit_events,),
-    ).fetchall()
-
-    conn.close()
-
-    return {
-        "recent_runs": [
-            {
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "language": row["language"],
-                "region_code": row["region_code"],
-                "data": json_loads_safe(
-                    row["data_json"],
-                    {},
-                ),
-            }
-            for row in runs
-        ],
-        "recent_decisions": [
-            {
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "decision": row["decision"],
-                "data": json_loads_safe(
-                    row["data_json"],
-                    {},
-                ),
-            }
-            for row in decisions
-        ],
-        "recent_events": [
-            {
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "event_type": row["event_type"],
-                "data": json_loads_safe(
-                    row["data_json"],
-                    {},
-                ),
-            }
-            for row in events
-        ],
-        "system": {
-            "free_mode": FREE_MODE,
-            "autonomous": AUTONOMOUS,
-            "ai_enabled": AI_ENABLED,
-            "ai_provider": (
-                "openrouter"
-                if AI_ENABLED
-                else "heuristic"
-            ),
-            "ai_model": AI_MODEL,
-            "memory_provider": "sqlite",
-        },
-    }
-
-
-def log_event(
-    event_type: str,
-    data: dict[str, Any] | None = None,
-) -> None:
-
-    event_data = data or {}
-
-    # --------------------------------------------------------
-    # PRIMARY STORAGE: SUPABASE
-    # --------------------------------------------------------
-
-    if SUPABASE_ENABLED and supabase is not None:
-
-        event_id = supabase_save_event(
-            event_type=event_type,
-            data=event_data,
-        )
-
-        if event_id is not None:
-            return
-
-    # --------------------------------------------------------
-    # FALLBACK STORAGE: SQLITE
-    # --------------------------------------------------------
-
-    conn = get_db()
-
-    conn.execute(
-        """
-        INSERT INTO system_events (
-            created_at,
-            event_type,
-            data_json
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            now_iso(),
-            event_type,
-            json_dumps(event_data),
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-    
-
-# ============================================================
-# MCP
-# ============================================================
-
-def exception_details(exc: BaseException) -> str:
-    if isinstance(exc, BaseExceptionGroup):
-        parts: list[str] = []
-
-        for child in exc.exceptions:
-            detail = exception_details(child)
-
-            if detail:
-                parts.append(detail)
-
-        if parts:
-            return " | ".join(parts)
-
-        return str(exc)
-
-    message = str(exc).strip()
-
-    if message:
-        return f"{type(exc).__name__}: {message}"
-
-    return type(exc).__name__
-
-
-async def mcp_call(
-    name: str,
-    args: dict[str, Any],
-) -> Any:
-
-    logger.info(
-        "MCP_CALL_START tool=%s url=%s",
-        name,
-        MCP_URL,
-    )
-
-    try:
-        async with streamable_http_client(
-            MCP_URL
-        ) as (
-            read_stream,
-            write_stream,
-            _,
-        ):
-            async with ClientSession(
-                read_stream,
-                write_stream,
-            ) as session:
-
-                await session.initialize()
-
-                logger.info(
-                    "MCP_INITIALIZED tool=%s",
-                    name,
-                )
-
-                result = await session.call_tool(
-                    name,
-                    arguments=args,
-                )
-                if isinstance(result, dict):
-                    quota = result.get(
-                        "_quota",
-                        {},
-                    )
-
-                    if isinstance(quota, dict):
-                        search_calls = int(
-                            quota.get(
-                                "search_calls",
-                                0,
-                            )
-                            or 0
-                        )
-
-                        other_units = int(
-                            quota.get(
-                                "other_units",
-                                0,
-                            )
-                            or 0
-                        )
-
-                        if (
-                            search_calls > 0
-                            or other_units > 0
-                        ):
-                            youtube_quota.record_usage(
-                                operation=name,
-                                search_calls=search_calls,
-                                other_units=other_units,
-                                metadata={
-                                    "mcp_tool": name,
-                                    "args": args,
-                                },
-                            )
-                logger.info(
-                    "MCP_CALL_SUCCESS tool=%s",
-                    name,
-                )
-
-                return result
-
-    except Exception as exc:
-        detail = exception_details(exc)
-
-        logger.error(
-            "MCP_CALL_FAILED tool=%s error=%s",
-            name,
-            detail,
-        )
-
-        log_event(
-            "mcp_call_failed",
-            {
-                "tool": name,
-                "error_type": type(exc).__name__,
-                "error": detail[:1000],
-            },
-        )
-
-        raise RuntimeError(
-            f"MCP call failed for '{name}': {detail}"
-        ) from exc
-
-
-# ============================================================
-# MCP RESULT HELPERS
-# ============================================================
-
-def extract_items(
-    result: Any,
-) -> list[dict[str, Any]]:
-    if result is None:
-        return []
-
-    if isinstance(result, list):
-        return result
-
-    if isinstance(result, dict):
-        items = result.get("items")
-
-        if isinstance(items, list):
-            return items
-
-        return [result]
-
-    structured = getattr(
-        result,
-        "structuredContent",
-        None,
-    )
-
-    if isinstance(structured, dict):
-        items = structured.get("items")
-
-        if isinstance(items, list):
-            return items
-
-    content = getattr(
-        result,
-        "content",
-        None,
-    )
-
-    if content:
-        for item in content:
-            text = getattr(
-                item,
-                "text",
-                None,
-            )
-
-            if not text:
-                continue
-
-            try:
-                parsed = json.loads(text)
-
-                if isinstance(parsed, list):
-                    return parsed
-
-                if isinstance(parsed, dict):
-                    items = parsed.get("items")
-
-                    if isinstance(items, list):
-                        return items
-
-                    return [parsed]
-
-            except Exception:
-                continue
-
-    return []
-
-
-def extract_object(
-    result: Any,
-) -> dict[str, Any]:
-    items = extract_items(result)
-
-    if items:
-        if len(items) == 1:
-            return items[0]
-
-        return {
-            "items": items
-        }
-
-    return {}
-
-
-# ============================================================
-# SNAPSHOTS
-# ============================================================
-
-def save_snapshot(
-    videos: list[dict[str, Any]],
-) -> int:
-    """
-    Save YouTube video observations to Supabase.
-
-    Existing videos are updated in `videos`.
-    Every observation is preserved in `video_snapshots`.
-    """
-
-    if not SUPABASE_ENABLED or supabase is None:
-        raise RuntimeError(
-            "Supabase is not configured"
-        )
-
-    if not videos:
-        return 0
-
-    created_at = now_iso()
-
-    normalized_by_id: dict[
-        str,
-        dict[str, Any],
-    ] = {}
-
-    for video in videos:
-        video_id = (
-            video.get("video_id")
-            or video.get("id")
-        )
-
-        if isinstance(video_id, dict):
-            video_id = video_id.get(
-                "videoId"
-            )
-
-        if not video_id:
-            continue
-
-        normalized_by_id[
-            str(video_id)
-        ] = {
-            "video_id": str(video_id),
-            "video": video,
-        }
-
-    normalized = list(
-        normalized_by_id.values()
-    )
-
-    if not normalized:
-        return 0
-
-    video_ids = [
-        item["video_id"]
-        for item in normalized
-    ]
-
-    existing_result = (
-        supabase
-        .table("videos")
-        .select(
-            "video_id,first_seen"
-        )
-        .in_(
-            "video_id",
-            video_ids,
-        )
-        .execute()
-    )
-
-    existing_rows = (
-        existing_result.data or []
-    )
-
-    first_seen_by_id = {
-        str(row.get("video_id")): (
-            row.get("first_seen")
-            or created_at
-        )
-        for row in existing_rows
-    }
-
-    video_rows = []
-
-    snapshot_rows = []
-
-    for item in normalized:
-        video_id = item["video_id"]
-        video = item["video"]
-
-        first_seen = (
-            first_seen_by_id.get(
-                video_id
-            )
-            or created_at
-        )
-
-        video_rows.append(
-            {
-                "video_id": video_id,
-                "data_json": video,
-                "first_seen": first_seen,
-                "last_seen": created_at,
-            }
-        )
-
-        snapshot_rows.append(
-            {
-                "created_at": created_at,
-                "video_id": video_id,
-                "data_json": video,
-            }
-        )
-
-    supabase.table(
-        "videos"
-    ).upsert(
-        video_rows,
-        on_conflict="video_id",
-    ).execute()
-
-    supabase.table(
-        "video_snapshots"
-    ).insert(
-        snapshot_rows
-    ).execute()
-
-    return len(
-        snapshot_rows
-    )
-
-# ============================================================
-# NORMALIZED VIDEO METRICS
-# ============================================================
-
-def get_video_title(
-    video: dict[str, Any],
-) -> str:
-    snippet = video.get(
-        "snippet",
-        {},
-    )
-
-    if isinstance(snippet, dict):
-        title = snippet.get(
-            "title",
-            "",
-        )
-
-        if title:
-            return str(title)
-
-    return str(
-        video.get(
-            "title",
-            "",
-        )
-    )
-
-
-def get_video_views(
-    video: dict[str, Any],
-) -> int:
-    statistics = video.get(
-        "statistics",
-        {},
-    )
-
-    if isinstance(statistics, dict):
-        value = statistics.get(
-            "viewCount",
-            0,
-        )
-    else:
-        value = video.get(
-            "views",
-            video.get(
-                "viewCount",
-                0,
-            ),
-        )
-
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
-
-
-def get_video_likes(
-    video: dict[str, Any],
-) -> int:
-    statistics = video.get(
-        "statistics",
-        {},
-    )
-
-    if isinstance(statistics, dict):
-        value = statistics.get(
-            "likeCount",
-            0,
-        )
-    else:
-        value = video.get(
-            "likes",
-            video.get(
-                "likeCount",
-                0,
-            ),
-        )
-
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
-
-
-def get_video_comments(
-    video: dict[str, Any],
-) -> int:
-    statistics = video.get(
-        "statistics",
-        {},
-    )
-
-    if isinstance(statistics, dict):
-        value = statistics.get(
-            "commentCount",
-            0,
-        )
-    else:
-        value = video.get(
-            "comments",
-            video.get(
-                "commentCount",
-                0,
-            ),
-        )
-
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
-
-
-# ============================================================
-# HEURISTIC ANALYSIS
-# ============================================================
-
-def score(
-    video: dict[str, Any],
-) -> float:
-    views = float(
-        get_video_views(video)
-    )
-
-    likes = float(
-        get_video_likes(video)
-    )
-
-    comments = float(
-        get_video_comments(video)
-    )
-
-    return (
-        math.log10(
-            max(views, 1)
-        )
-        + 0.5
-        * math.log10(
-            max(likes, 1)
-        )
-        + 0.5
-        * math.log10(
-            max(comments, 1)
-        )
-    )
-
-
-def make_heuristic_hypothesis(
-    videos: list[dict[str, Any]],
-) -> dict[str, Any]:
-    ranked = sorted(
-        videos,
-        key=score,
-        reverse=True,
-    )
-
-    top = ranked[:10]
-
-    topics = []
-
-    for video in top:
-        title = get_video_title(video)
-
-        if title:
-            topics.append(title)
-
-    return {
-        "provider": "heuristic",
-        "hypothesis": (
-            "The strongest current signals are "
-            "concentrated among the highest-ranked "
-            "videos in the collected radar."
-        ),
-        "reasoning": (
-            "Ranking combines logarithmic views, "
-            "likes and comments. This is a signal "
-            "for analysis, not a prediction of future success."
-        ),
-        "topics": topics[:10],
-        "formats": [],
-        "experiments": [],
-        "confidence": 0.3,
-    }
-
-
-# ============================================================
-# OPENROUTER AI
-# ============================================================
-
-def openrouter_error_message(
-    response: requests.Response,
-) -> str:
-
-    try:
-        data = response.json()
-
-        error = data.get(
-            "error",
-            {},
-        )
-
-        if isinstance(error, dict):
-            message = error.get(
-                "message",
-                "",
-            )
-
-            if message:
-                return str(message)[:500]
-
-    except Exception:
-        pass
-
-    return (
-        f"HTTP {response.status_code}"
-    )
-
-
-def extract_json_from_text(
-    text: str,
-) -> dict[str, Any]:
-
-    cleaned = text.strip()
-
-    try:
-        parsed = json.loads(cleaned)
-
-        if isinstance(parsed, dict):
-            return parsed
-
-    except json.JSONDecodeError:
-        pass
-
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-
-        if lines:
-            lines = lines[1:]
-
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-
-        cleaned = "\n".join(
-            lines
-        ).strip()
-
-        try:
-            parsed = json.loads(cleaned)
-
-            if isinstance(parsed, dict):
-                return parsed
-
-        except json.JSONDecodeError:
-            pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-
-    if start >= 0 and end > start:
-        candidate = cleaned[
-            start:end + 1
-        ]
-
-        try:
-            parsed = json.loads(
-                candidate
-            )
-
-            if isinstance(parsed, dict):
-                return parsed
-
-        except json.JSONDecodeError:
-            pass
-
-    raise RuntimeError(
-        "OpenRouter returned non-JSON content"
-    )
-
-DIRECTOR_LANGUAGE_RULE = """
-Язык общения с пользователем — русский.
-
-Все сформированные тобой выводы, рекомендации, гипотезы,
-предположения, объяснения, аналитические выводы, предложения,
-решения и отчёты, предназначенные для пользователя, должны
-быть написаны на русском языке.
-
-Язык исследуемых материалов не должен менять язык общения
-с пользователем. Исследовать YouTube и другие источники можно
-на любом языке.
-
-Не переводи и не изменяй оригинальные названия видео,
-названия каналов, имена собственные, названия компаний,
-брендов, продуктов, сервисов и другие оригинальные
-идентификаторы исследуемых материалов.
-
-Оригинальные названия и другие данные источников сохраняй
-в их исходном виде. На русский переводятся только твои
-собственные выводы, рекомендации, объяснения, гипотезы,
-предположения и отчёты для пользователя.
-""".strip()
-
-def openrouter_generate_json(
-    system_instruction: str,
-    prompt: str,
-) -> dict[str, Any]:
-    system_instruction = (
-        DIRECTOR_LANGUAGE_RULE
-        + "\n\n"
-        + system_instruction
-    )
-
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is not configured"
-        )
-
-    url = (
-        OPENROUTER_BASE_URL.rstrip("/")
-        + "/chat/completions"
-    )
-
-    headers = {
-        "Authorization": (
-            f"Bearer {OPENROUTER_API_KEY}"
-        ),
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": AI_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_instruction,
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        "temperature": 0.2,
-        "response_format": {
-            "type": "json_object",
-        },
-    }
-
-    try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=90,
-        )
-
-    except requests.RequestException as exc:
-        logger.error(
-            "AI_REQUEST_ERROR provider=openrouter error_type=%s",
-            type(exc).__name__,
-        )
-
-        raise RuntimeError(
-            "OpenRouter request failed"
-        ) from exc
-
-    if not response.ok:
-        safe_message = openrouter_error_message(
-            response
-        )
-
-        logger.error(
-            "AI_API_ERROR provider=openrouter status=%s message=%s",
-            response.status_code,
-            safe_message,
-        )
-
-        raise RuntimeError(
-            f"OpenRouter API error: {safe_message}"
+        logger.info(
+            "%s %s %.3fs",
+            request.method,
+            request.url.path,
+            elapsed,
         )
 
-    try:
-        data = response.json()
-
-    except ValueError as exc:
-        logger.error(
-            "AI_INVALID_JSON_RESPONSE provider=openrouter"
-        )
-
-        raise RuntimeError(
-            "OpenRouter returned invalid JSON"
-        ) from exc
-
-    choices = data.get(
-        "choices",
-        [],
-    )
-
-    if not choices:
-        raise RuntimeError(
-            "OpenRouter returned no choices"
-        )
-
-    message = choices[0].get(
-        "message",
-        {},
-    )
-
-    if not isinstance(
-        message,
-        dict,
-    ):
-        raise RuntimeError(
-            "OpenRouter returned invalid message"
-        )
-
-    content = message.get(
-        "content",
-        "",
-    )
-
-    if isinstance(content, list):
-        text_parts = []
-
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get(
-                    "text"
-                )
-
-                if text:
-                    text_parts.append(
-                        str(text)
-                    )
-
-        content = "\n".join(
-            text_parts
-        )
-
-    text = str(
-        content or ""
-    ).strip()
-
-    if not text:
-        raise RuntimeError(
-            "OpenRouter returned empty content"
-        )
-
-    return extract_json_from_text(
-        text
-    )
-
-
-# ============================================================
-# AI ANALYSIS
-# ============================================================
-
-def make_ai_hypothesis(
-    videos: list[dict[str, Any]],
-    trends: list[dict[str, Any]],
-    language: str,
-    region_code: str,
-) -> dict[str, Any]:
-
-    ranked_videos = sorted(
-        videos,
-        key=score,
-        reverse=True,
-    )[:20]
-
-    ranked_trends = sorted(
-        trends,
-        key=score,
-        reverse=True,
-    )[:10]
-
-    compact_videos = []
-
-    for video in ranked_videos:
-        snippet = video.get(
-            "snippet",
-            {},
-        )
-
-        radar = video.get(
-            "_radar",
-            {},
-        )
-
-        if not isinstance(
-            snippet,
-            dict,
-        ):
-            snippet = {}
-
-        if not isinstance(
-            radar,
-            dict,
-        ):
-            radar = {}
-
-        compact_videos.append(
-            {
-                "title": get_video_title(
-                    video
-                ),
-                "channel": snippet.get(
-                    "channelTitle",
-                    video.get(
-                        "channel_title",
-                        "",
-                    ),
-                ),
-                "views": get_video_views(
-                    video
-                ),
-                "likes": get_video_likes(
-                    video
-                ),
-                "comments": get_video_comments(
-                    video
-                ),
-                "published_at": snippet.get(
-                    "publishedAt",
-                    video.get(
-                        "published_at",
-                        "",
-                    ),
-                ),
-                "language": language,
-                "query": radar.get(
-                    "query",
-                    video.get(
-                        "query",
-                        "",
-                    ),
-                ),
-                "age_hours": radar.get(
-                    "age_hours"
-                ),
-                "views_per_hour": radar.get(
-                    "views_per_hour"
-                ),
-                "engagement": radar.get(
-                    "engagement"
-                ),
-            }
-        )
-
-    compact_trends = []
-
-    for video in ranked_trends:
-        snippet = video.get(
-            "snippet",
-            {},
-        )
-
-        if not isinstance(
-            snippet,
-            dict,
-        ):
-            snippet = {}
-
-        compact_trends.append(
-            {
-                "title": get_video_title(
-                    video
-                ),
-                "channel": snippet.get(
-                    "channelTitle",
-                    video.get(
-                        "channel_title",
-                        "",
-                    ),
-                ),
-                "views": get_video_views(
-                    video
-                ),
-                "likes": get_video_likes(
-                    video
-                ),
-                "comments": get_video_comments(
-                    video
-                ),
-            }
-        )
-
-    system_instruction = """
-You are the analytical brain of an AI Director for YouTube.
-
-Your task is to analyze supplied YouTube observations.
-
-Important rules:
-
-1. Use ONLY the supplied data.
-2. Do not invent facts.
-3. Do not claim that you can predict viral success.
-4. Treat views, likes, comments, views-per-hour and other metrics as signals.
-5. Look for evidence of growing or interesting demand.
-6. Prefer repeated signals over a single unusual video.
-7. Consider competition and format when evidence exists.
-8. Do not recommend news.
-9. Do not recommend politics.
-10. Do not recommend 18+ content.
-11. Moderate narrative violence may exist, but do not recommend gore,
-    torture, graphic injury, glorification or incitement of violence.
-12. If evidence is weak, explicitly say that evidence is insufficient.
-13. Confidence means confidence in the interpretation of the supplied
-    evidence, NOT probability of future viral success.
-14. Distinguish current popularity from signs of acceleration.
-15. Do not use raw view count as the only criterion.
-16. Do not treat one successful channel as proof that a topic will work
-    for another channel.
-17. Suggest experiments when evidence is promising but insufficient.
-
-Return ONLY valid JSON with this structure:
-
-{
-  "hypothesis": "short statement",
-  "reasoning": "evidence-based explanation",
-  "topics": ["topic 1", "topic 2"],
-  "formats": ["format 1", "format 2"],
-  "experiments": ["experiment 1", "experiment 2"],
-  "confidence": 0.0
-}
-"""
-
-    prompt = json_dumps(
-        {
-            "task": (
-                "Analyze current YouTube signals "
-                "for the AI Director."
-            ),
-            "language": language,
-            "region_code": region_code,
-            "radar_videos": compact_videos,
-            "trending_videos": compact_trends,
-        }
-    )
-
-    result = openrouter_generate_json(
-        system_instruction=system_instruction,
-        prompt=prompt,
-    )
-
-    try:
-        confidence = float(
-            result.get(
-                "confidence",
-                0.0,
-            )
-            or 0.0
-        )
-    except Exception:
-        confidence = 0.0
-
-    confidence = max(
-        0.0,
-        min(
-            confidence,
-            1.0,
-        ),
-    )
-
-    topics = result.get(
-        "topics",
-        [],
-    )
-
-    formats = result.get(
-        "formats",
-        [],
-    )
-
-    experiments = result.get(
-        "experiments",
-        [],
-    )
-
-    if not isinstance(
-        topics,
-        list,
-    ):
-        topics = []
-
-    if not isinstance(
-        formats,
-        list,
-    ):
-        formats = []
-
-    if not isinstance(
-        experiments,
-        list,
-    ):
-        experiments = []
-
-    return {
-        "provider": "openrouter",
-        "model": AI_MODEL,
-        "hypothesis": str(
-            result.get(
-                "hypothesis",
-                "",
-            )
-        ),
-        "reasoning": str(
-            result.get(
-                "reasoning",
-                "",
-            )
-        ),
-        "topics": topics[:10],
-        "formats": formats[:10],
-        "experiments": experiments[:10],
-        "confidence": confidence,
-    }
-
-def generate_weekly_report(
-    week_start: str,
-    week_end: str,
-) -> dict[str, Any]:
-
-    runs: list[dict[str, Any]] = []
-
-    if SUPABASE_ENABLED and supabase is not None:
-        try:
-            result = (
-                supabase
-                .table("director_runs")
-                .select("*")
-                .gte(
-                    "created_at",
-                    f"{week_start}T00:00:00+00:00",
-                )
-                .lte(
-                    "created_at",
-                    f"{week_end}T23:59:59+00:00",
-                )
-                .order(
-                    "created_at",
-                    desc=False,
-                )
-                .execute()
-            )
-
-            runs = result.data or []
-
-        except Exception as exc:
-            logger.error(
-                "WEEKLY_REPORT_LOAD_RUNS_FAILED "
-                "error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    compact_runs: list[dict[str, Any]] = []
-
-    for run in runs:
-        run_data = run.get("run_data") or {}
-
-        compact_runs.append(
-            {
-                "id": run.get("id"),
-                "created_at": run.get(
-                    "created_at"
-                ),
-                "research_languages": (
-                    run_data.get(
-                        "research_languages"
-                    )
-                ),
-                "research_queries": (
-                    run_data.get(
-                        "research_queries"
-                    )
-                ),
-                "radar_count": (
-                    run_data.get(
-                        "radar",
-                        {},
-                    ).get(
-                        "count"
-                    )
-                ),
-                "saved_count": (
-                    run_data.get(
-                        "radar",
-                        {},
-                    ).get(
-                        "saved"
-                    )
-                ),
-                "trending_count": (
-                    run_data.get(
-                        "trending",
-                        {},
-                    ).get(
-                        "count"
-                    )
-                ),
-                "analysis": run_data.get(
-                    "ai"
-                ),
-                "resource_plan": run_data.get(
-                    "resource_plan"
-                ),
-            }
-        )
-
-    system_prompt = """
-You are the Weekly Report analyst for an autonomous YouTube intelligence system.
-
-Create a concise, factual weekly report from the Director run data.
-
-Do not invent facts.
-Do not claim that a trend exists unless the supplied data supports it.
-Focus on:
-- what the Director researched,
-- what was found,
-- what worked,
-- what did not work,
-- what changed during the week,
-- resource usage or constraints,
-- useful recommendations for the next week.
-
-Return ONLY valid JSON with exactly these keys:
-
-summary
-what_happened
-what_worked
-what_did_not_work
-what_changed
-recommendations
-""".strip()
-
-    user_prompt = json_dumps(
-        {
-            "week_start": week_start,
-            "week_end": week_end,
-            "director_runs": compact_runs,
-        }
-    )
-
-    report: dict[str, Any] | None = None
-
-    try:
-        generated = openrouter_generate_json(
-            system_prompt,
-            user_prompt,
-        )
-
-        if isinstance(generated, dict):
-            report = generated
-
-    except Exception as exc:
-        logger.error(
-            "WEEKLY_REPORT_AI_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-    if report is None:
-        report = {
-            "summary": (
-                f"За период {week_start} — {week_end} "
-                f"Director выполнил {len(compact_runs)} запусков."
-            ),
-            "what_happened": (
-                f"Выполнено запусков Director: "
-                f"{len(compact_runs)}."
-            ),
-            "what_worked": (
-                "Данные запусков Director были "
-                "собраны для недельного анализа."
-            ),
-            "what_did_not_work": (
-                "Автоматический AI-анализ недельных "
-                "данных недоступен."
-            ),
-            "what_changed": (
-                "Изменения определены только на основе "
-                "доступных запусков Director."
-            ),
-            "recommendations": (
-                "Продолжить регулярные запуски Director "
-                "и сравнивать результаты между неделями."
-            ),
-        }
-
-    report_id = save_weekly_report(
-        week_start=week_start,
-        week_end=week_end,
-        summary=str(
-            report.get(
-                "summary",
-                "",
-            )
-        ),
-        what_happened=str(
-            report.get(
-                "what_happened",
-                "",
-            )
-        ),
-        what_worked=str(
-            report.get(
-                "what_worked",
-                "",
-            )
-        ),
-        what_did_not_work=str(
-            report.get(
-                "what_did_not_work",
-                "",
-            )
-        ),
-        what_changed=str(
-            report.get(
-                "what_changed",
-                "",
-            )
-        ),
-        recommendations=str(
-            report.get(
-                "recommendations",
-                "",
-            )
-        ),
-        raw_context={
-            "week_start": week_start,
-            "week_end": week_end,
-            "director_runs": compact_runs,
-        },
-    )
-
-    return {
-        "ok": True,
-        "report_id": report_id,
-        "week_start": week_start,
-        "week_end": week_end,
-        "runs_count": len(compact_runs),
-        "report": report,
-    }
-
-
-def make_hypothesis(
-    videos: list[dict[str, Any]],
-    language: str,
-    region_code: str,
-    trends: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-
-    trends = trends or []
-
-    if not AI_ENABLED:
-        return make_heuristic_hypothesis(
-            videos
-        )
-
-    try:
-        result = make_ai_hypothesis(
-            videos=videos,
-            trends=trends,
-            language=language,
-            region_code=region_code,
-        )
-
-        log_event(
-            "ai_analysis_completed",
-            {
-                "provider": "openrouter",
-                "model": AI_MODEL,
-            },
-        )
-
-        return result
-
-    except Exception as exc:
-        logger.error(
-            "AI_ANALYSIS_FAILED provider=openrouter error_type=%s",
-            type(exc).__name__,
-        )
-
-        log_event(
-            "ai_analysis_failed",
-            {
-                "provider": "openrouter",
-                "error_type": type(exc).__name__,
-            },
-        )
-
-        fallback = make_heuristic_hypothesis(
-            videos
-        )
-
-        fallback["ai_fallback_reason"] = (
-            "OpenRouter analysis was unavailable; "
-            "local heuristic used."
-        )
-
-        return fallback
-
-
-def openrouter_generate_text(
-    system_instruction: str,
-    prompt: str,
-) -> str:
-    system_instruction = (
-        DIRECTOR_LANGUAGE_RULE
-        + "\n\n"
-        + system_instruction
-    )
-
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is not configured"
-        )
-
-    url = (
-        OPENROUTER_BASE_URL.rstrip("/")
-        + "/chat/completions"
-    )
-
-    headers = {
-        "Authorization": (
-            f"Bearer {OPENROUTER_API_KEY}"
-        ),
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": AI_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_instruction,
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        "temperature": 0.3,
-    }
-
-    try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=90,
-        )
-
-    except requests.RequestException as exc:
-        logger.error(
-            "AI_CHAT_REQUEST_ERROR provider=openrouter error_type=%s",
-            type(exc).__name__,
-        )
-
-        raise RuntimeError(
-            "OpenRouter chat request failed"
-        ) from exc
-
-    if not response.ok:
-        safe_message = openrouter_error_message(
-            response
-        )
-
-        logger.error(
-            "AI_CHAT_API_ERROR provider=openrouter status=%s message=%s",
-            response.status_code,
-            safe_message,
-        )
-
-        raise RuntimeError(
-            f"OpenRouter API error: {safe_message}"
-        )
-
-    try:
-        data = response.json()
-
-    except ValueError as exc:
-        logger.error(
-            "AI_CHAT_INVALID_RESPONSE provider=openrouter"
-        )
-
-        raise RuntimeError(
-            "OpenRouter returned invalid JSON"
-        ) from exc
-
-    choices = data.get(
-        "choices",
-        [],
-    )
-
-    if not choices:
-        raise RuntimeError(
-            "OpenRouter returned no choices"
-        )
-
-    message_data = choices[0].get(
-        "message",
-        {},
-    )
-
-    if not isinstance(
-        message_data,
-        dict,
-    ):
-        raise RuntimeError(
-            "OpenRouter returned invalid message"
-        )
-
-    content = message_data.get(
-        "content",
-        "",
-    )
-
-    if isinstance(content, list):
-        text_parts = []
-
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-
-                if text:
-                    text_parts.append(
-                        str(text)
-                    )
-
-        content = "\n".join(
-            text_parts
-        )
-
-    text = str(
-        content or ""
-    ).strip()
-
-    if not text:
-        raise RuntimeError(
-            "OpenRouter returned empty chat content"
-        )
-
-    return text
-
-
-def director_chat(
-    message: str,
-) -> dict[str, Any]:
-
-    if not AI_ENABLED:
-        raise RuntimeError(
-            "OpenRouter AI is not enabled"
-        )
-
-    context = get_recent_system_context()
-
-    recent_runs = context.get(
-        "recent_runs",
-        [],
-    )
-
-    current_run_id = None
-
-    if recent_runs:
-        current_run_id = recent_runs[0].get(
-            "id"
-        )
-
-    system_instruction = """
-You are the AI Director of a YouTube content system.
-
-You are having a direct conversation with the system owner.
-
-You have access to the supplied system memory, including:
-- recent YouTube analyses;
-- Director runs;
-- user decisions;
-- actions;
-- results of actions;
-- previous chat messages;
-- system events;
-- current system state.
-
-Rules:
-
-1. Use the supplied memory as your source of truth.
-2. Do not invent system data.
-3. Historical decisions are data, not permanent rules.
-4. A previous "leave as is" decision does not permanently
-   forbid reconsidering a subject later.
-5. A previous approval does not mean that every future
-   similar action is automatically approved.
-6. Distinguish facts, observations, hypotheses,
-   decisions, actions and results.
-7. Connect new conclusions with previous results when evidence exists.
-8. Do not claim that an action was completed unless the memory
-   confirms that it was completed.
-9. Do not treat an old hypothesis as a current fact.
-10. Do not claim certainty about future YouTube performance.
-11. Answer the user's actual question directly.
-12. Do not expose credentials or secrets.
-
-Answer naturally in plain text.
-Do not return JSON.
-"""
-
-    prompt = json_dumps(
-        {
-            "user_message": message,
-            "system_context": context,
-        }
-    )
-
-    # --------------------------------------------------------
-    # SAVE USER MESSAGE
-    # --------------------------------------------------------
-
-    user_message_id = (
-        supabase_save_chat_message(
-            role="user",
-            message=message,
-            run_id=current_run_id,
-            data={
-                "provider": "openrouter",
-                "model": AI_MODEL,
-            },
-        )
-    )
-
-    # --------------------------------------------------------
-    # GENERATE DIRECTOR RESPONSE
-    # --------------------------------------------------------
-
-    answer = openrouter_generate_text(
-        system_instruction=system_instruction,
-        prompt=prompt,
-    )
-
-    # --------------------------------------------------------
-    # SAVE DIRECTOR RESPONSE
-    # --------------------------------------------------------
-
-    assistant_message_id = (
-        supabase_save_chat_message(
-            role="assistant",
-            message=answer,
-            run_id=current_run_id,
-            data={
-                "provider": "openrouter",
-                "model": AI_MODEL,
-            },
-        )
-    )
-
-    related_run_ids = [
-        run.get("id")
-        for run in context.get(
-            "recent_runs",
-            [],
-        )
-        if isinstance(run, dict)
-        and run.get("id") is not None
-    ]
-
-    related_decision_ids = [
-        decision.get("id")
-        for decision in context.get(
-            "recent_decisions",
-            [],
-        )
-        if isinstance(decision, dict)
-        and decision.get("id") is not None
-    ]
-
-    log_event(
-        "director_chat",
-        {
-            "message": message[:2000],
-            "run_id": current_run_id,
-            "user_message_id": user_message_id,
-            "assistant_message_id": assistant_message_id,
-            "provider": "openrouter",
-            "model": AI_MODEL,
-        },
-    )
-
-    return {
-        "answer": answer,
-        "user_message_id": user_message_id,
-        "assistant_message_id": assistant_message_id,
-        "run_id": current_run_id,
-        "related_run_ids": related_run_ids[:20],
-        "related_decision_ids": related_decision_ids[:20],
-        "suggested_actions": [],
-    }
-
-    # --------------------------------------------------------
-    # SAVE USER MESSAGE
-    # --------------------------------------------------------
-
-    user_message_id = supabase_save_chat_message(
-        role="user",
-        message=message,
-        data={
-            "provider": "openrouter",
-            "model": AI_MODEL,
-        },
-    )
-
-    # --------------------------------------------------------
-    # SAVE DIRECTOR RESPONSE
-    # --------------------------------------------------------
-
-    assistant_message_id = supabase_save_chat_message(
-        role="assistant",
-        message=answer,
-        data={
-            "provider": "openrouter",
-            "model": AI_MODEL,
-        },
-    )
-    
-    related_run_ids = [
-        run.get("id")
-        for run in context.get(
-            "recent_runs",
-            [],
-        )
-        if isinstance(run, dict)
-        and run.get("id") is not None
-    ]
-
-    related_decision_ids = [
-        decision.get("id")
-        for decision in context.get(
-            "recent_decisions",
-            [],
-        )
-        if isinstance(decision, dict)
-        and decision.get("id") is not None
-    ]
-
-    log_event(
-        "director_chat",
-        {
-            "message": message[:2000],
-            "provider": "openrouter",
-            "model": AI_MODEL,
-        },
-    )
-
-    return {
-        "answer": answer,
-        "user_message_id": user_message_id,
-        "assistant_message_id": assistant_message_id,
-        "related_run_ids": related_run_ids[:20],
-        "related_decision_ids": related_decision_ids[:20],
-        "suggested_actions": [],
-    }
-
-
-# ============================================================
-# SUPABASE STATUS
-# ============================================================
-
-@app.get("/supabase/status")
-async def supabase_status():
-
-    if not SUPABASE_ENABLED or supabase is None:
-        return {
-            "ok": False,
-            "enabled": False,
-            "message": "Supabase is not configured.",
-        }
-
-    try:
-        result = (
-            supabase
-            .table("chat_messages")
-            .select("id")
-            .limit(1)
-            .execute()
-        )
-
-        return {
-            "ok": True,
-            "enabled": True,
-            "database_reachable": True,
-        }
-
-    except Exception as exc:
-
-        logger.error(
-            "SUPABASE_STATUS_FAILED error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "enabled": True,
-                "database_reachable": False,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-class LoginRequest(BaseModel):
-    login: str
-    password: str
-
-
-@app.get(
-    "/login",
-    response_class=HTMLResponse,
-)
-async def login_page():
-
-    return HTMLResponse(
-        content="""
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>Site Insight Engine — Login</title>
-
-    <style>
-        body {
-            margin: 0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #111;
-            color: #fff;
-            font-family: Arial, sans-serif;
-        }
-
-        .login-box {
-            width: 320px;
-            padding: 30px;
-            background: #1c1c1c;
-            border-radius: 14px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
-        }
-
-        h1 {
-            margin-top: 0;
-            margin-bottom: 25px;
-            font-size: 22px;
-            text-align: center;
-        }
-
-        input {
-            width: 100%;
-            box-sizing: border-box;
-            padding: 12px;
-            margin-bottom: 12px;
-            border: 1px solid #444;
-            border-radius: 8px;
-            background: #111;
-            color: #fff;
-            font-size: 15px;
-        }
-
-        button {
-            width: 100%;
-            padding: 12px;
-            border: 0;
-            border-radius: 8px;
-            background: #fff;
-            color: #111;
-            font-size: 15px;
-            cursor: pointer;
-        }
-
-        button:hover {
-            opacity: 0.9;
-        }
-
-        .error {
-            display: none;
-            margin-top: 15px;
-            color: #ff6b6b;
-            text-align: center;
-            font-size: 14px;
-        }
-    </style>
-</head>
-
-<body>
-
-<div class="login-box">
-
-    <h1>Site Insight Engine</h1>
-
-    <form id="login-form">
-
-        <input
-            id="login"
-            type="text"
-            placeholder="Логин"
-            autocomplete="username"
-            required
-        >
-
-        <input
-            id="password"
-            type="password"
-            placeholder="Пароль"
-            autocomplete="current-password"
-            required
-        >
-
-        <button type="submit">
-            Войти
-        </button>
-
-        <div id="error" class="error">
-            Неверный логин или пароль
-        </div>
-
-    </form>
-
-</div>
-
-<script>
-
-document
-    .getElementById("login-form")
-    .addEventListener("submit", async function(event) {
-
-        event.preventDefault();
-
-        const login =
-            document.getElementById("login").value;
-
-        const password =
-            document.getElementById("password").value;
-
-        const error =
-            document.getElementById("error");
-
-        error.style.display = "none";
-
-        try {
-
-            const response = await fetch(
-                "/login",
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        login: login,
-                        password: password
-                    })
-                }
-            );
-
-            if (response.ok) {
-                window.location.href = "/";
-                return;
-            }
-
-            error.style.display = "block";
-
-        } catch (err) {
-
-            error.textContent =
-                "Ошибка соединения с сервером";
-
-            error.style.display = "block";
-        }
-    });
-
-</script>
-
-</body>
-</html>
-"""
-    )
-
-
-@app.post("/login")
-async def login(
-    request: LoginRequest,
-):
-
-    if not auth_is_configured():
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": "Authentication is not configured.",
-            },
-        )
-
-    valid_login = secrets.compare_digest(
-        request.login,
-        SITE_LOGIN,
-    )
-
-    valid_password = secrets.compare_digest(
-        request.password,
-        SITE_PASSWORD,
-    )
-
-    if not (
-        valid_login
-        and valid_password
-    ):
-        logger.warning(
-            "AUTH_LOGIN_FAILED"
-        )
-
-        return JSONResponse(
-            status_code=401,
-            content={
-                "ok": False,
-                "error": "Invalid credentials",
-            },
-        )
-
-    token = make_auth_token()
-
-    response = JSONResponse(
-        content={
-            "ok": True,
-            "authenticated": True,
-        }
-    )
-
-    response.set_cookie(
-        key="site_auth",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=60 * 60 * 24 * 30,
-    )
-    logger.info(
-        "AUTH_LOGIN_SUCCESS"
-    )
-
-    return response
-
-
-@app.post("/logout")
-async def logout():
-
-    response = JSONResponse(
-        content={
-            "ok": True,
-            "authenticated": False,
-        }
-    )
-
-    response.delete_cookie(
-        key="site_auth",
-    )
-
-    logger.info(
-        "AUTH_LOGOUT"
-    )
-
-    return response
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-@app.get(
-    "/",
-    response_class=HTMLResponse,
-)
-async def home():
-
-    index_path = BASE_DIR / "index.html"
-
-    if not index_path.exists():
-        return HTMLResponse(
-            content=(
-                "<h1>Ошибка</h1>"
-                "<p>index.html не найден.</p>"
-            ),
-            status_code=500,
-        )
-
-    with open(
-        index_path,
-        "r",
-        encoding="utf-8",
-    ) as file:
-        return HTMLResponse(
-            content=file.read()
-        )
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
-# ============================================================
-# HEALTH
-# ============================================================
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, Any]:
+    """
+    Infrastructure health endpoint.
 
-    provider = (
-        "openrouter"
-        if AI_ENABLED
-        else "heuristic"
-    )
+    Must remain lightweight and must not execute Director logic.
+    """
 
     return {
         "status": "ok",
-        "service": "site-insight-engine",
+        "service": SERVICE_NAME,
+        "environment": ENVIRONMENT,
         "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-        "ai_enabled": AI_ENABLED,
-        "ai_provider": provider,
-        "supabase_enabled": SUPABASE_ENABLED,
+        "autonomous": AUTONOMOUS_ENABLED,
+        "ai_enabled": runtime.ai.enabled,
+        "ai_provider": (
+            os.getenv(
+                "AI_PROVIDER",
+                os.getenv(
+                    "OPENROUTER_PROVIDER",
+                    "openrouter",
+                ),
+            )
+            if runtime.ai.enabled
+            else None
+        ),
+        "supabase_enabled": runtime.memory.enabled,
         "director_memory": (
             "supabase"
-            if SUPABASE_ENABLED
-            else "sqlite"
+            if runtime.memory.enabled
+            else "disabled"
         ),
+        "timestamp": utc_now(),
     }
 
-@app.get("/system/status")
-async def system_status():
 
-    provider = (
-        "openrouter"
-        if AI_ENABLED
-        else "heuristic"
+# ---------------------------------------------------------------------------
+# Director status
+# ---------------------------------------------------------------------------
+
+
+@app.get("/director/status")
+async def director_status(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    director = runtime.get_director(
+        project_id=project_id,
     )
 
-    return {
-        "status": "ok",
-        "service": "site-insight-engine",
-        "mcp_url": MCP_URL,
-        "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-        "ai": {
-            "enabled": AI_ENABLED,
-            "provider": provider,
-            "model": AI_MODEL,
-        },
-    }
+    try:
+        result = director.status()
+        return serialize(result)
+
+    except Exception:
+        logger.exception(
+            "Director status failed"
+        )
+
+        return {
+            "project_id": project_id,
+            "status": "error",
+        }
 
 
-# ============================================================
-# AI STATUS
-# ============================================================
+# ---------------------------------------------------------------------------
+# Director run
+# ---------------------------------------------------------------------------
 
-@app.get("/ai/status")
-async def ai_status():
 
-    provider = (
-        "openrouter"
-        if AI_ENABLED
-        else "heuristic"
+@app.get("/director/run")
+async def director_run_get(
+    project_id: str = DEFAULT_PROJECT_ID,
+    language: str = "en",
+    region_code: str = DEFAULT_REGION_CODE,
+    hours_back: int = 72,
+    max_results: int = 25,
+) -> dict[str, Any]:
+    """
+    Existing external contract.
+
+    ai-youtube-system currently calls GET /director/run.
+    Keep this route.
+    """
+
+    return await _run_director(
+        project_id=project_id,
+        language=language,
+        region_code=region_code,
+        hours_back=hours_back,
+        max_results=max_results,
+        objective=None,
     )
 
-    return {
-        "enabled": AI_ENABLED,
-        "provider": provider,
-        "model": AI_MODEL,
-        "free_mode": FREE_MODE,
-        "api_key_configured": bool(
-            OPENROUTER_API_KEY
-        ),
-    }
-
-
-@app.get("/ai/test")
-async def ai_test():
-
-    if not OPENROUTER_API_KEY:
-        return {
-            "ok": False,
-            "enabled": False,
-            "provider": "openrouter",
-            "message": (
-                "OpenRouter is not configured. "
-                "Configure OPENROUTER_API_KEY."
-            ),
-        }
-
-    try:
-        result = openrouter_generate_json(
-            system_instruction=(
-                "Return valid JSON only. "
-                "The JSON must contain exactly one "
-                "key named message."
-            ),
-            prompt=(
-                "Return a JSON object with "
-                "message equal to AI connection works."
-            ),
-        )
-
-        return {
-            "ok": True,
-            "provider": "openrouter",
-            "model": AI_MODEL,
-            "result": result,
-        }
-
-    except Exception as exc:
-
-        logger.error(
-            "AI_TEST_FAILED provider=openrouter error_type=%s",
-            type(exc).__name__,
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "provider": "openrouter",
-                "model": AI_MODEL,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# DIRECTOR CHAT MODEL
-# ============================================================
-
-class DirectorChatRequest(BaseModel):
-    message: str
-
-
-# ============================================================
-# DIRECTOR CHAT
-# ============================================================
-
-@app.post("/director/chat")
-async def director_chat_endpoint(
-    request: DirectorChatRequest,
-):
-
-    message = request.message
-
-    if not message:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "message is required",
-            },
-        )
-
-    if len(message) > 4000:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "message is too long",
-            },
-        )
-
-    try:
-        result = director_chat(
-            message
-        )
-
-        return {
-            "ok": True,
-            "provider": "openrouter",
-            "model": AI_MODEL,
-            "result": result,
-        }
-
-    except Exception as exc:
-
-        logger.error(
-            "DIRECTOR_CHAT_FAILED error_type=%s",
-            type(exc).__name__,
-        )
-
-        log_event(
-            "director_chat_failed",
-            {
-                "error_type": type(exc).__name__,
-            },
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# SEARCH CHANNELS
-# ============================================================
-
-@app.get("/search-channels")
-async def search_channels(
-    query: str,
-    max_results: int = 10,
-):
-
-    try:
-        result = await mcp_call(
-            "search_channels",
-            {
-                "query": query,
-                "max_results": max_results,
-            },
-        )
-
-        return {
-            "items": extract_items(
-                result
-            )
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(exc)
-            },
-        )
-
-
-# ============================================================
-# SEARCH VIDEOS
-# ============================================================
-
-@app.get("/search-videos")
-async def search_videos(
-    query: str,
-    max_results: int = 10,
-    region_code: str = "US",
-):
-
-    try:
-        result = await mcp_call(
-            "search_videos",
-            {
-                "query": query,
-                "max_results": max_results,
-                "region_code": region_code,
-            },
-        )
-
-        return {
-            "items": extract_items(
-                result
-            )
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(exc)
-            },
-        )
-
-
-# ============================================================
-# TRENDING
-# ============================================================
-
-@app.get("/trending-videos")
-async def trending_videos(
-    max_results: int = 50,
-    region_code: str = "US",
-):
-
-    try:
-        result = await mcp_call(
-            "search_trending_videos",
-            {
-                "max_results": max_results,
-                "region_code": region_code,
-            },
-        )
-
-        return {
-            "items": extract_items(
-                result
-            )
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(exc)
-            },
-        )
-
-
-# ============================================================
-# RADAR
-# ============================================================
-
-@app.get("/radar-videos")
-async def radar_videos(
-    language: str = "ru",
-    max_results_per_query: int = 10,
-    region_code: str = "RU",
-):
-
-    try:
-        result = await mcp_call(
-            "search_radar_videos",
-            {
-                "languages": [
-                    language
-                ],
-                "max_results_per_query": (
-                    max_results_per_query
-                ),
-            },
-        )
-
-        return {
-            "items": extract_items(
-                result
-            ),
-            "quota_exceeded": (
-                result.get(
-                    "quota_exceeded",
-                    False,
-                )
-                if isinstance(
-                    result,
-                    dict,
-                )
-                else False
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(exc)
-            },
-        )
-
-
-# ============================================================
-# RADAR DEBUG
-# ============================================================
-
-@app.get("/radar-debug")
-async def radar_debug(
-    language: str = "ru",
-    max_results_per_query: int = 10,
-    region_code: str = "RU",
-):
-
-    try:
-        result = await mcp_call(
-            "search_radar_videos",
-            {
-                "languages": [
-                    language
-                ],
-                "max_results_per_query": (
-                    max_results_per_query
-                ),
-            },
-        )
-
-        items = extract_items(
-            result
-        )
-
-        return {
-            "ok": True,
-            "count": len(items),
-            "quota_exceeded": (
-                result.get(
-                    "quota_exceeded",
-                    False,
-                )
-                if isinstance(
-                    result,
-                    dict,
-                )
-                else False
-            ),
-            "items": items[:20],
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# RADAR SAVE
-# ============================================================
-
-@app.get("/radar-save")
-async def radar_save(
-    language: str = "ru",
-    max_results_per_query: int = 10,
-    region_code: str = "RU",
-):
-
-    try:
-        result = await mcp_call(
-            "search_radar_videos",
-            {
-                "languages": [
-                    language
-                ],
-                "max_results_per_query": (
-                    max_results_per_query
-                ),
-            },
-        )
-
-        items = extract_items(
-            result
-        )
-
-        saved = save_snapshot(
-            items
-        )
-
-        return {
-            "ok": True,
-            "found": len(items),
-            "saved": saved,
-            "quota_exceeded": (
-                result.get(
-                    "quota_exceeded",
-                    False,
-                )
-                if isinstance(
-                    result,
-                    dict,
-                )
-                else False
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# RADAR HISTORY
-# ============================================================
-
-@app.get("/radar-history")
-async def radar_history(
-    limit: int = 100,
-):
-
-    limit = max(
-        1,
-        min(int(limit), 1000),
-    )
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM video_snapshots
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-
-    conn.close()
-
-    return [
-        {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "video_id": row["video_id"],
-            "data": json_loads_safe(
-                row["data_json"],
-                {},
-            ),
-        }
-        for row in rows
-    ]
-
-
-# ============================================================
-# DATABASE STATUS
-# ============================================================
-
-@app.get("/director/resources")
-def director_resources():
-    return {
-        "ok": True,
-        "resources": get_director_resource_status(),
-    }
-        
-@app.get("/database-status")
-async def database_status():
-
-    conn = get_db()
-
-    videos_count = conn.execute(
-        "SELECT COUNT(*) FROM videos"
-    ).fetchone()[0]
-
-    snapshots_count = conn.execute(
-        "SELECT COUNT(*) FROM video_snapshots"
-    ).fetchone()[0]
-
-    runs_count = conn.execute(
-        "SELECT COUNT(*) FROM director_runs"
-    ).fetchone()[0]
-
-    events_count = conn.execute(
-        "SELECT COUNT(*) FROM system_events"
-    ).fetchone()[0]
-
-    conn.close()
-
-    return {
-        "database": str(DB_PATH),
-        "videos": videos_count,
-        "snapshots": snapshots_count,
-        "director_runs": runs_count,
-        "events": events_count,
-    }
-
-
-# ============================================================
-# ANALYZE
-# ============================================================
-
-@app.get("/analyze")
-async def analyze(
-    language: str = "ru",
-    max_results_per_query: int = 10,
-    region_code: str = "RU",
-):
-
-    try:
-        radar_result = await mcp_call(
-            "search_radar_videos",
-            {
-                "languages": [
-                    language
-                ],
-                "max_results_per_query": (
-                    max_results_per_query
-                ),
-            },
-        )
-
-        videos = extract_items(
-            radar_result
-        )
-
-        hypothesis = make_hypothesis(
-            videos=videos,
-            language=language,
-            region_code=region_code,
-            trends=[],
-        )
-
-        return {
-            "ok": True,
-            "videos_count": len(videos),
-            "analysis": hypothesis,
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
-
-
-# ============================================================
-# DIRECTOR DEBUG
-# ============================================================
-
-@app.get("/director-debug")
-async def director_debug(
-    language: str = "ru",
-    region_code: str = "RU",
-):
-
-    result = {
-        "radar": None,
-        "trending": None,
-        "ai": {
-            "enabled": AI_ENABLED,
-            "provider": (
-                "openrouter"
-                if AI_ENABLED
-                else "heuristic"
-            ),
-            "model": AI_MODEL,
-        },
-    }
-
-    try:
-        radar = await mcp_call(
-            "search_radar_videos",
-            {
-                "languages": [
-                    language
-                ],
-                "max_results_per_query": 10,
-            },
-        )
-
-        result["radar"] = {
-            "ok": True,
-            "count": len(
-                extract_items(radar)
-            ),
-            "quota_exceeded": (
-                radar.get(
-                    "quota_exceeded",
-                    False,
-                )
-                if isinstance(
-                    radar,
-                    dict,
-                )
-                else False
-            ),
-        }
-
-    except Exception as exc:
-
-        result["radar"] = {
-            "ok": False,
-            "error": str(exc),
-        }
-
-    try:
-        trending = await mcp_call(
-            "search_trending_videos",
-            {
-                "max_results": 20,
-                "region_code": region_code,
-            },
-        )
-
-        result["trending"] = {
-            "ok": True,
-            "count": len(
-                extract_items(trending)
-            ),
-        }
-
-    except Exception as exc:
-
-        result["trending"] = {
-            "ok": False,
-            "error": str(exc),
-        }
-
-    return result
-
-
-# ============================================================
-# DIRECTOR RESEARCH PLANNER
-# (director/research.py -> choose_director_research_*)
-# ============================================================
-# Language and query planning now lives in director/research.py:
-#   - choose_director_research_languages()
-#   - choose_director_research_queries()
-# director_run() below calls them with injected dependencies.
-
-# ============================================================
-# DIRECTOR RUN
-# ============================================================
 
 @app.post("/director/run")
-@app.get("/director/run")
-async def director_run(
-    language: str | None = None,
-    region_code: str | None = None,
-):
+async def director_run_post(
+    request: DirectorRunRequest,
+) -> dict[str, Any]:
+    """
+    New POST API for internal/UI callers.
+    """
 
-    started_at = now_iso()
-
-    log_event(
-        "director_run_started",
-        {
-            "language": language,
-            "region_code": region_code,
-        },
+    return await _run_director(
+        project_id=request.project_id,
+        language=request.language,
+        region_code=request.region_code,
+        hours_back=request.hours_back,
+        max_results=request.max_results,
+        objective=request.objective,
     )
 
-    # --------------------------------------------------------
-    # 1. DIRECTOR RESEARCH PLAN
-    # --------------------------------------------------------
 
-    research_languages = (
-        choose_director_research_languages(
-            language=language,
-            region_code=region_code,
-            quota_status=youtube_quota.get_status(),
-        )
-    )
-    
-    research_queries = (
-        choose_director_research_queries(
-            language=language,
-            previous_analysis=None,
-            ai_enabled=AI_ENABLED,
-            generate_json=openrouter_generate_json,
-            log_event_fn=log_event,
-        )
+async def _run_director(
+    *,
+    project_id: str,
+    language: str,
+    region_code: str,
+    hours_back: int,
+    max_results: int,
+    objective: str | None,
+) -> dict[str, Any]:
+    director = runtime.get_director(
+        project_id=project_id,
     )
 
-    resources = get_director_resource_status()
+    if objective:
+        director.context.objective = objective
 
-    search_budget = int(
-        resources["youtube_quota"].get(
-            "search_available_for_research",
-            0,
-        )
-    )
-
-    if research_languages:
-
-        max_queries = (
-            search_budget
-            // len(research_languages)
-        )
-
-        research_queries = (
-            research_queries[:max_queries]
-        )
-    else:
-        research_queries = []
-    
-    log_event(
-        "director_research_plan_created",
-        {
-            "language": language,
-            "region_code": region_code,
-            "research_languages": research_languages,
-            "research_queries": research_queries,
-        },
-    )
-
-    # --------------------------------------------------------
-    # 2. RADAR
-    # --------------------------------------------------------
-
-    radar_result = await mcp_call(
-        "search_radar_videos",
-        {
-            "languages": research_languages,
-            "queries": research_queries,
-            "max_results_per_query": 10,
-        },
-    )
-
-    radar_videos = extract_items(
-        radar_result
-    )
-
-    quota_exceeded = (
-        radar_result.get(
-            "quota_exceeded",
-            False,
-        )
-        if isinstance(
-            radar_result,
-            dict,
-        )
-        else False
-    )
-    # --------------------------------------------------------
-    # 2. SAVE RADAR SNAPSHOT
-    # --------------------------------------------------------
-
-    saved_count = save_snapshot(
-        radar_videos
-    )
-
-    # --------------------------------------------------------
-    # 3. TRENDING
-    # --------------------------------------------------------
-
-    trending_videos = []
+    # ---------------------------------------------------------------
+    # The current modular Director owns the strategic cycle.
+    # Server does not independently decide what to research.
+    # ---------------------------------------------------------------
 
     try:
-        trending_result = await mcp_call(
-            "search_trending_videos",
-            {
-                "max_results": 30,
+        result = await call_maybe_async(
+            director.run_once,
+        )
+
+        serialized = serialize(result)
+
+        await runtime.memory.save_run(
+            project_id=project_id,
+            run={
+                "run_id": (
+                    serialized.get("run_id")
+                    if isinstance(serialized, dict)
+                    else None
+                ),
+                "created_at": utc_now(),
+                "language": language,
                 "region_code": region_code,
+                "hours_back": hours_back,
+                "max_results": max_results,
+                "result": serialized,
             },
         )
 
-        trending_videos = extract_items(
-            trending_result
-        )
+        if isinstance(serialized, dict):
+            serialized.setdefault(
+                "project_id",
+                project_id,
+            )
+
+            serialized.setdefault(
+                "research_parameters",
+                {
+                    "language": language,
+                    "region_code": region_code,
+                    "hours_back": hours_back,
+                    "max_results": max_results,
+                },
+            )
+
+        return serialized
 
     except Exception as exc:
-
-        logger.warning(
-            "TRENDING_FAILED error_type=%s",
-            type(exc).__name__,
+        logger.exception(
+            "Director run failed: project=%s",
+            project_id,
         )
 
-        log_event(
-            "trending_collection_failed",
-            {
-                "error_type": type(exc).__name__,
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось выполнить цикл Директора.",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Director
+# ---------------------------------------------------------------------------
+
+
+@app.post("/director/autonomous/run")
+async def director_autonomous_run(
+    project_id: str = DEFAULT_PROJECT_ID,
+    objective: str | None = None,
+) -> dict[str, Any]:
+    if not AUTONOMOUS_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Автономный режим отключён.",
+        )
+
+    director = runtime.get_director(
+        project_id=project_id,
+        mode=DirectorMode.AUTONOMOUS,
+    )
+
+    if objective:
+        director.context.objective = objective
+
+    try:
+        result = await call_maybe_async(
+            director.run_autonomous_cycle,
+            objective=objective,
+        )
+
+        serialized = serialize(result)
+
+        await runtime.memory.save_run(
+            project_id=project_id,
+            run={
+                "type": "autonomous_cycle",
+                "created_at": utc_now(),
+                "result": serialized,
             },
         )
 
-    # --------------------------------------------------------
-    # 4. AI ANALYSIS
-    # --------------------------------------------------------
+        return serialized
 
-    analysis = make_hypothesis(
-        videos=radar_videos,
-        language=language,
-        region_code=region_code,
-        trends=trending_videos,
-    )
-
-    # --------------------------------------------------------
-    # 5. DIRECTOR DECISION
-    # --------------------------------------------------------
-
-    if AUTONOMOUS:
-        next_action = (
-            "continue_autonomously"
-        )
-    else:
-        next_action = (
-            "requires_user_decision"
+    except Exception as exc:
+        logger.exception(
+            "Autonomous Director cycle failed"
         )
 
-    # --------------------------------------------------------
-    # 6. SAVE RUN
-    # --------------------------------------------------------
-
-        run_data = {
-        "started_at": started_at,
-        "finished_at": now_iso(),
-        "language": language,
-        "region_code": region_code,
-        "research_languages": research_languages,
-        "research_queries": research_queries,
-        "resource_plan": get_director_resource_status(),
-        "radar_count": len(
-            radar_videos
-        ),
-        "radar_quota_exceeded": quota_exceeded,
-        "saved_count": saved_count,
-        "trending_count": len(
-            trending_videos
-        ),
-        "analysis": analysis,
-        "next_action": next_action,
-        "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-    }
-
-    # --------------------------------------------------------
-    # SAVE DIRECTOR RUN TO SUPABASE
-    # --------------------------------------------------------
-
-    run_id = supabase_save_director_run(
-        language=language,
-        region_code=region_code,
-        data=run_data,
-    )
-
-    # --------------------------------------------------------
-    # FALLBACK TO SQLITE
-    # --------------------------------------------------------
-
-    if run_id is None:
-
-        conn = get_db()
-
-        cursor = conn.execute(
-            """
-            INSERT INTO director_runs (
-                created_at,
-                language,
-                region_code,
-                data_json
-            )
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                now_iso(),
-                language,
-                region_code,
-                json_dumps(run_data),
-            ),
-        )
-
-        run_id = cursor.lastrowid
-
-        conn.commit()
-        conn.close()
-
-    # --------------------------------------------------------
-    # 6B. STRUCTURED DIRECTOR DECISION
-    # (director/decision.py -> memory)
-    # --------------------------------------------------------
-
-    decision = decision_manager.from_context(
-        context={
-            "evidence": [
-                {
-                    "radar_count": len(
-                        radar_videos
-                    ),
-                    "trending_count": len(
-                        trending_videos
-                    ),
-                    "saved_count": saved_count,
-                    "quota_exceeded": (
-                        quota_exceeded
-                    ),
-                }
-            ],
-            "constraints": [],
-            "resources": resources,
-            "previous_decisions": (
-                memory.get_recent_decisions(
-                    limit=10
-                )
-                if memory is not None
-                else []
-            ),
-            "applicable": True,
-        },
-        decision_type="research_direction",
-        opportunity=(
-            analysis.get("hypothesis")
-            if isinstance(
-                analysis,
-                dict,
-            )
-            else None
-        ),
-        next_action=next_action,
-        rationale=(
-            analysis.get("reasoning")
-            if isinstance(
-                analysis,
-                dict,
-            )
-            else None
-        ),
-        confidence=(
-            analysis.get("confidence")
-            if isinstance(
-                analysis,
-                dict,
-            )
-            else None
-        ),
-        run_id=run_id,
-    )
-
-    # --------------------------------------------------------
-    # 6C. RECOMMENDATION FROM DECISION
-    # (director/recommendations.py)
-    # --------------------------------------------------------
-
-    analysis_topics = []
-
-    if isinstance(analysis, dict):
-        raw_topics = analysis.get("topics")
-
-        if isinstance(raw_topics, list):
-            analysis_topics = [
-                str(topic)
-                for topic in raw_topics
-                if str(topic).strip()
-            ]
-
-    recommendation_title = (
-        analysis.get("hypothesis")
-        if isinstance(
-            analysis,
-            dict,
-        )
-        and analysis.get("hypothesis")
-        else "Director research direction"
-    )
-
-    recommendation = recommendation_manager.create(
-        title=str(
-            recommendation_title
-        )[:200],
-        description=(
-            analysis.get("reasoning")
-            if isinstance(
-                analysis,
-                dict,
-            )
-            and analysis.get("reasoning")
-            else "Decision recorded by Director."
-        ),
-        recommendation_type="research",
-        topic=(
-            analysis_topics[0]
-            if analysis_topics
-            else None
-        ),
-        region=region_code,
-        language=language,
-        rationale=(
-            analysis.get("reasoning")
-            if isinstance(
-                analysis,
-                dict,
-            )
-            else None
-        ),
-        suggested_action=(
-            decision.next_action
-        ),
-        confidence=decision.confidence,
-        run_id=run_id,
-        decision_id=decision.id,
-        source_data={
-            "analysis": analysis,
-            "decision": decision.to_dict(),
-        },
-        metadata={
-            "source": "director_run",
-        },
-    )
-
-    log_event(
-        "director_run_completed",
-        {
-            "run_id": run_id,
-            "next_action": next_action,
-            "ai_provider": analysis.get(
-                "provider"
-            ),
-        },
-    )
-
-    return {
-        "ok": True,
-        "run_id": run_id,
-        "research": {
-            "languages": research_languages,
-            "queries": research_queries,
-        },
-        "radar": {
-            "count": len(
-                radar_videos
-            ),
-            "saved": saved_count,
-            "quota_exceeded": quota_exceeded,
-        },
-        "trending": {
-            "count": len(
-                trending_videos
-            ),
-        },
-        "ai": analysis,
-        "next_action": next_action,
-        "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-        "decision": decision.to_dict(),
-        "recommendation": (
-            recommendation.to_dict()
-        ),
-        "top_videos": sorted(
-            radar_videos,
-            key=score,
-            reverse=True,
-        )[:10],
-    }
-# ============================================================
-# DIRECTOR AUTOMATIC SCHEDULER ENDPOINT
-# ============================================================
-
-@app.post("/director/cron")
-async def director_cron(
-    request: Request,
-):
-    if not DIRECTOR_CRON_SECRET:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "ok": False,
-                "error": "DIRECTOR_CRON_SECRET is not configured",
-            },
-        )
-
-    provided_secret = request.headers.get(
-        "X-Director-Cron-Secret",
-        "",
-    ).strip()
-
-    if not hmac.compare_digest(
-        provided_secret,
-        DIRECTOR_CRON_SECRET,
-    ):
-        return JSONResponse(
-            status_code=401,
-            content={
-                "ok": False,
-                "error": "Invalid scheduler secret",
-            },
-        )
-
-    log_event(
-        "director_cron_started",
-        {},
-    )
-
-    result = await director_run()
-
-    log_event(
-        "director_cron_completed",
-        {
-            "run_id": result.get(
-                "run_id"
-            )
-            if isinstance(result, dict)
-            else None,
-        },
-    )
-
-    return result
-
-# ============================================================
-# DIRECTOR WAKEUP
-# (scheduler/wakeup.py -> director/autonomy.py)
-# ============================================================
-
-class DirectorWakeupRequest(BaseModel):
-    reason: str = "scheduled"
-    run_id: int | None = None
-    context: dict[str, Any] = {}
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось выполнить автономный цикл.",
+        ) from exc
 
 
-@app.post("/director/wakeup")
-async def director_wakeup_endpoint(
-    payload: DirectorWakeupRequest,
-):
-    """
-    Explicit wakeup call for an external cron / scheduler.
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
 
-    Autonomy stays disabled by default (AutonomyConfig.enabled=False).
-    With the safe default this endpoint only reports that the
-    autonomous cycle is disabled; nothing runs on its own.
-    """
-
-    result = wakeup.wake(
-        reason=payload.reason,
-        context=payload.context,
-        run_id=payload.run_id,
-    )
-
-    if hasattr(result, "__dataclass_fields__"):
-        from dataclasses import asdict
-
-        result = asdict(result)
-
-    return {
-        "ok": True,
-        "wakeup": result,
-    }
-
-# ============================================================
-# DASHBOARD
-# (web/dashboard.py -> read-only state)
-# ============================================================
 
 @app.get("/dashboard")
-async def dashboard_snapshot():
-    """
-    Read-only dashboard snapshot for the web UI.
-
-    The dashboard never mutates state: it does not perform research,
-    does not create recommendations and does not start any cycle.
-    """
-
-    return {
-        "ok": True,
-        "dashboard": dashboard.get_snapshot(),
-    }
-
-@app.post("/api/weekly-reports/generate")
-def api_generate_weekly_report(
-    week_start: str | None = None,
-    week_end: str | None = None,
-):
-    today = datetime.now(
-        timezone.utc
-    ).date()
-
-    if week_end is None:
-        week_end = today.isoformat()
-
-    if week_start is None:
-        start_date = (
-            today
-            - timedelta(
-                days=today.weekday()
-            )
-        )
-        week_start = start_date.isoformat()
-
-    return generate_weekly_report(
-        week_start=week_start,
-        week_end=week_end,
-    )
-@app.post("/api/weekly-reports/generate")
-def api_generate_weekly_report(
-    week_start: str | None = None,
-    week_end: str | None = None,
-):
-    today = datetime.now(timezone.utc).date()
-
-    if week_end is None:
-        week_end_date = today
-    else:
-        week_end_date = date.fromisoformat(
-            week_end
-        )
-
-    if week_start is None:
-        week_start_date = (
-            week_end_date
-            - timedelta(
-                days=week_end_date.weekday()
-            )
-        )
-    else:
-        week_start_date = date.fromisoformat(
-            week_start
-        )
-
-    return generate_weekly_report(
-        week_start=week_start_date.isoformat(),
-        week_end=week_end_date.isoformat(),
+async def dashboard(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    director = runtime.get_director(
+        project_id=project_id,
     )
 
+    status = serialize(
+        director.status()
+    )
 
-
-# ============================================================
-# WEEKLY REPORT API
-# ============================================================
-
-@app.get("/api/weekly-reports")
-def api_weekly_reports(limit: int = 12):
-    limit = max(1, min(limit, 100))
+    memory_context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=20,
+    )
 
     return {
-        "ok": True,
-        "reports": get_weekly_reports(limit),
+        "project_id": project_id,
+        "director": status,
+        "memory": serialize(
+            memory_context,
+        ),
+        "autonomous": AUTONOMOUS_ENABLED,
+        "ai_enabled": runtime.ai.enabled,
     }
 
 
-@app.get("/api/weekly-reports/{report_id}")
-def api_weekly_report(report_id: int):
-    report = get_weekly_report(report_id)
+@app.get("/director/dashboard")
+async def director_dashboard(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    return await dashboard(
+        project_id=project_id,
+    )
 
-    if report is None:
+
+# ---------------------------------------------------------------------------
+# Recommendations
+# ---------------------------------------------------------------------------
+
+
+@app.get("/director/recommendations")
+async def director_recommendations(
+    project_id: str = DEFAULT_PROJECT_ID,
+    limit: int = 20,
+) -> dict[str, Any]:
+    context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=limit,
+    )
+
+    recommendations = context.get(
+        "recommendations",
+        [],
+    )
+
+    return {
+        "project_id": project_id,
+        "recommendations": serialize(
+            recommendations
+        ),
+    }
+
+
+@app.get(
+    "/director/recommendations/{recommendation_id}"
+)
+async def director_recommendation(
+    recommendation_id: str,
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=100,
+    )
+
+    recommendations = context.get(
+        "recommendations",
+        [],
+    )
+
+    for recommendation in recommendations:
+        data = serialize(recommendation)
+
+        if (
+            isinstance(data, dict)
+            and data.get("recommendation_id")
+            == recommendation_id
+        ):
+            return data
+
+    raise HTTPException(
+        status_code=404,
+        detail="Рекомендация не найдена.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recommendation actions
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/director/recommendations/{recommendation_id}/action"
+)
+async def recommendation_action(
+    recommendation_id: str,
+    request: RecommendationActionRequest,
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=100,
+    )
+
+    recommendations = context.get(
+        "recommendations",
+        [],
+    )
+
+    recommendation = None
+
+    for item in recommendations:
+        item_dict = serialize(item)
+
+        if (
+            isinstance(item_dict, dict)
+            and item_dict.get("recommendation_id")
+            == recommendation_id
+        ):
+            recommendation = item
+            break
+
+    if recommendation is None:
         raise HTTPException(
             status_code=404,
-            detail="Weekly report not found",
+            detail="Рекомендация не найдена.",
         )
 
-    return {
-        "ok": True,
-        "report": report,
-    }
+    action = request.action.lower().strip()
 
-# ============================================================
-# DIRECTOR HISTORY
-# ============================================================
+    try:
+        if action == "accept":
+            if accept_recommendation is None:
+                raise RuntimeError(
+                    "Recommendation lifecycle unavailable"
+                )
 
-@app.get("/director/history")
-async def director_history(
-    limit: int = 20,
-):
+            updated = accept_recommendation(
+                recommendation,
+                feedback=request.message,
+            )
 
-    limit = max(
-        1,
-        min(int(limit), 100),
+        elif action == "reject":
+            if reject_recommendation is None:
+                raise RuntimeError(
+                    "Recommendation lifecycle unavailable"
+                )
+
+            updated = reject_recommendation(
+                recommendation,
+                reason=request.message,
+            )
+
+        elif action == "discuss":
+            if discuss_recommendation is None:
+                raise RuntimeError(
+                    "Recommendation lifecycle unavailable"
+                )
+
+            updated = discuss_recommendation(
+                recommendation,
+                message=request.message,
+            )
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Поддерживаются действия: "
+                    "accept, reject, discuss."
+                ),
+            )
+
+        saved = await runtime.memory.save_recommendation(
+            project_id=project_id,
+            recommendation=updated,
+        )
+
+        return {
+            "success": True,
+            "recommendation": serialize(
+                updated,
+            ),
+            "saved": serialize(saved),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception(
+            "Recommendation action failed"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось обработать рекомендацию.",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+
+@app.post("/director/feedback")
+async def director_feedback(
+    request: FeedbackRequest,
+) -> dict[str, Any]:
+    if create_feedback is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback module unavailable.",
+        )
+
+    try:
+        feedback = create_feedback(
+            feedback_type=request.feedback_type,
+            scope=request.scope,
+            message=request.message,
+            recommendation_id=request.recommendation_id,
+            decision_id=request.decision_id,
+            target=request.target,
+            reason=request.reason,
+            constraint=request.constraint,
+            preference=request.preference,
+        )
+
+        await runtime.memory.save_feedback(
+            project_id=request.project_id,
+            feedback=feedback,
+        )
+
+        director = runtime.get_director(
+            project_id=request.project_id,
+        )
+
+        if hasattr(
+            director,
+            "apply_feedback",
+        ):
+            try:
+                director.apply_feedback(
+                    feedback,
+                )
+            except Exception:
+                logger.exception(
+                    "Director apply_feedback failed"
+                )
+
+        return {
+            "success": True,
+            "feedback": serialize(
+                feedback,
+            ),
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Feedback processing failed"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось сохранить обратную связь.",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+
+@app.post("/director/chat")
+async def director_chat(
+    request: DirectorChatRequest,
+) -> dict[str, Any]:
+    """
+    Chat is a command interface to Director.
+    """
+
+    if parse_chat_command is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Chat module unavailable.",
+        )
+
+    director = runtime.get_director(
+        project_id=request.project_id,
     )
 
-    # --------------------------------------------------------
-    # PRIMARY: MEMORY
-    # --------------------------------------------------------
+    command = parse_chat_command(
+        request.message,
+    )
 
-    if SUPABASE_ENABLED and supabase is not None:
+    async def run_research(_: Any) -> Any:
+        result = director.plan_research()
 
-        try:
-            runs = memory.get_recent_runs(
-                limit=limit
-            )
+        return {
+            "message": (
+                "Я подготовил следующий план исследования."
+            ),
+            "research_plan": serialize(result),
+        }
 
-            decisions = memory.get_recent_decisions(
-                limit=limit
-            )
+    async def run_analysis(_: Any) -> Any:
+        result = director.analyze()
 
-            events = memory.get_recent_events(
-                limit=limit
-            )
+        return {
+            "message": (
+                "Анализ текущих данных завершён."
+            ),
+            "analysis": serialize(result),
+        }
 
-            chat_messages = memory.get_recent_chat_messages(
-                limit=limit
-            )
+    async def generate_recommendation(
+        _: Any,
+    ) -> Any:
+        result = director.create_recommendation()
 
-            actions = memory.get_recent_actions(
-                limit=limit
-            )
+        return {
+            "message": (
+                "Я подготовил рекомендацию."
+            ),
+            "recommendation": serialize(result),
+        }
 
-            results = memory.get_recent_results(
-                limit=limit
-            )
+    async def inspect_state(_: Any) -> Any:
+        return {
+            "message": (
+                "Текущее состояние Директора."
+            ),
+            "status": serialize(
+                director.status()
+            ),
+        }
 
+    async def continue_cycle(_: Any) -> Any:
+        result = await call_maybe_async(
+            director.run_once,
+        )
+
+        return {
+            "message": (
+                "Продолжаю текущий цикл."
+            ),
+            "result": serialize(result),
+        }
+
+    async def stop_cycle(_: Any) -> Any:
+        director.state.sleep_reason = (
+            "Остановлено пользователем."
+        )
+
+        return {
+            "message": (
+                "Цикл остановлен. Я не буду "
+                "продолжать работу без нового сигнала."
+            ),
+        }
+
+    async def accept_recommendation(
+        command: Any,
+    ) -> Any:
+        target = command.target
+
+        if not target:
             return {
-                "runs": runs,
-                "decisions": decisions,
-                "events": events,
-                "chat_messages": chat_messages,
-                "actions": actions,
-                "results": results,
-            }
-
-        except Exception as exc:
-
-            logger.error(
-                "MEMORY_DIRECTOR_HISTORY_FAILED error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    # --------------------------------------------------------
-    # FALLBACK: SQLITE
-    # --------------------------------------------------------
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM director_runs
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-
-    conn.close()
-
-    return {
-        "runs": [
-            {
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "language": row["language"],
-                "region_code": row["region_code"],
-                "data": json_loads_safe(
-                    row["data_json"],
-                    {},
+                "message": (
+                    "Укажи, какую рекомендацию "
+                    "нужно принять."
                 ),
             }
-            for row in rows
-        ],
-        "decisions": [],
-        "events": [],
-        "chat_messages": [],
-        "actions": [],
-        "results": [],
+
+        return {
+            "message": (
+                "Принятие рекомендации будет "
+                "обработано через feedback-контур."
+            ),
+            "recommendation_id": target,
+        }
+
+    async def reject_recommendation(
+        command: Any,
+    ) -> Any:
+        target = command.target
+
+        return {
+            "message": (
+                "Отклонение рекомендации будет "
+                "сохранено как обратная связь."
+            ),
+            "recommendation_id": target,
+        }
+
+    async def ask_clarification(_: Any) -> Any:
+        return {
+            "message": (
+                "Я не до конца понял задачу. "
+                "Уточни, что именно нужно исследовать, "
+                "проанализировать или изменить."
+            ),
+        }
+
+    handlers = {
+        "start_research": run_research,
+        "run_analysis": run_analysis,
+        "generate_recommendation": (
+            generate_recommendation
+        ),
+        "inspect_state": inspect_state,
+        "continue_cycle": continue_cycle,
+        "stop_cycle": stop_cycle,
+        "accept_recommendation": (
+            accept_recommendation
+        ),
+        "reject_recommendation": (
+            reject_recommendation
+        ),
+        "ask_clarification": ask_clarification,
     }
 
-# ============================================================
-# RECOMMENDATIONS
-# ============================================================
-
-class DirectorRecommendationRequest(BaseModel):
-    title: str
-    description: str
-    recommendation_type: str = "research"
-    topic: str | None = None
-    region: str | None = None
-    language: str | None = None
-    rationale: str | None = None
-    suggested_action: str | None = None
-    confidence: float | None = None
-    priority: int = 0
-    run_id: int | None = None
-    decision_id: int | None = None
-    source_data: dict[str, Any] = {}
-    metadata: dict[str, Any] = {}
-
-
-@app.post("/director/recommendations")
-async def create_director_recommendation(
-    payload: DirectorRecommendationRequest,
-):
     try:
-        recommendation = (
-            recommendations_service.create_recommendation(
-                title=payload.title,
-                description=payload.description,
-                recommendation_type=payload.recommendation_type,
-                topic=payload.topic,
-                region=payload.region,
-                language=payload.language,
-                rationale=payload.rationale,
-                suggested_action=payload.suggested_action,
-                confidence=payload.confidence,
-                priority=payload.priority,
-                run_id=payload.run_id,
-                decision_id=payload.decision_id,
-                source_data=payload.source_data,
-                metadata=payload.metadata,
-            )
+        result = execute_chat_command(
+            command,
+            handlers=handlers,
         )
 
-        return {
-            "ok": True,
-            "recommendation": recommendation,
-        }
+        if hasattr(result, "__await__"):
+            result = await result
+
+        return serialize(result)
 
     except Exception as exc:
-        logger.error(
-            "DIRECTOR_RECOMMENDATION_FAILED error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
+        logger.exception(
+            "Director chat failed"
         )
 
-        return JSONResponse(
+        raise HTTPException(
             status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
+            detail="Не удалось обработать сообщение.",
+        ) from exc
 
-@app.post("/director/recommendations/from-analysis")
-async def create_recommendations_from_analysis(
-    request: Request,
-):
-    body = {}
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+# ---------------------------------------------------------------------------
+# Research
+# ---------------------------------------------------------------------------
 
-    analysis = body.get(
-        "analysis",
-        {},
+
+@app.post("/director/research")
+async def director_research(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    director = runtime.get_director(
+        project_id=project_id,
     )
 
-    if not isinstance(analysis, dict):
-        analysis = {}
-
     try:
-        recommendations = (
-            recommendations_service
-            .recommendations_from_analysis(
-                analysis
-            )
-        )
+        plan = director.plan_research()
 
         return {
-            "ok": True,
-            "recommendations": recommendations,
+            "project_id": project_id,
+            "research_plan": serialize(plan),
         }
 
     except Exception as exc:
-        logger.error(
-            "DIRECTOR_RECOMMENDATIONS_FROM_ANALYSIS_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
+        logger.exception(
+            "Research planning failed"
         )
 
-        return JSONResponse(
+        raise HTTPException(
             status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
+            detail="Не удалось подготовить исследование.",
+        ) from exc
 
 
-# ============================================================
-# RECOMMENDATION FEEDBACK
-# ============================================================
+# ---------------------------------------------------------------------------
+# Compatibility endpoints
+# ---------------------------------------------------------------------------
 
-@app.post("/director/recommendations/feedback")
-async def create_director_recommendation_feedback(
-    request: Request,
-):
-    body = {}
-
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    try:
-        feedback = recommendations_service.create_feedback(
-            recommendation_id=body.get(
-                "recommendation_id"
-            ),
-            feedback_type=body.get(
-                "feedback_type"
-            ),
-            comment=body.get(
-                "comment"
-            ),
-            scope=body.get(
-                "scope"
-            ),
-            topic=body.get(
-                "topic"
-            ),
-            region=body.get(
-                "region"
-            ),
-            language=body.get(
-                "language"
-            ),
-            metadata=body.get(
-                "metadata",
-                {},
-            ),
-        )
-
-        return {
-            "ok": True,
-            "feedback": feedback,
-        }
-
-    except Exception as exc:
-        logger.error(
-            "DIRECTOR_RECOMMENDATION_FEEDBACK_FAILED "
-            "error_type=%s error=%s",
-            type(exc).__name__,
-            str(exc),
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error": str(exc),
-            },
-        )
-
-# ============================================================
-# DIRECTOR DECISION
-# ============================================================
 
 @app.post("/director/decision")
 async def director_decision(
-    request: Request,
-    decision: str | None = None,
-    run_id: int | None = None,
-):
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Compatibility wrapper.
 
-    body = {}
+    Decision creation remains owned by Director.
+    """
 
-    content_type = (
-        request.headers.get(
-            "content-type",
-            "",
+    project_id = str(
+        payload.get(
+            "project_id",
+            DEFAULT_PROJECT_ID,
         )
-        .lower()
     )
 
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-    decision = (
-        body.get("decision")
-        or decision
+    director = runtime.get_director(
+        project_id=project_id,
     )
 
-    body_run_id = body.get(
-        "run_id"
-    )
+    try:
+        decision = director.decide()
 
-    if body_run_id is not None:
-        try:
-            run_id = int(body_run_id)
-        except Exception:
-            run_id = None
-
-    decision_data = body.get(
-        "data"
-    )
-
-    if not isinstance(
-        decision_data,
-        dict,
-    ):
-        decision_data = {}
-
-    if not decision:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "decision is required",
-            },
+        saved = await runtime.memory.save_decision(
+            project_id=project_id,
+            decision=decision,
         )
 
-    allowed = {
-        "approve",
-        "discuss",
-        "leave_as_is",
-    }
+        return {
+            "decision": serialize(decision),
+            "saved": serialize(saved),
+        }
 
-    if decision not in allowed:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": (
-                    "decision must be one of: "
-                    "approve, discuss, leave_as_is"
-                )
-            },
+    except Exception as exc:
+        logger.exception(
+            "Decision endpoint failed"
         )
 
-    # If no run was supplied, attach the decision
-    # to the latest Director run.
-    if run_id is None and SUPABASE_ENABLED and supabase is not None:
-        try:
-            latest_run = (
-                supabase
-                .table("director_runs")
-                .select("id")
-                .order("id", desc=True)
-                .limit(1)
-                .execute()
-            )
-
-            latest_rows = (
-                latest_run.data or []
-            )
-
-            if latest_rows:
-                run_id = latest_rows[0].get(
-                    "id"
-                )
-
-        except Exception:
-            run_id = None
-
-    decision_id = supabase_save_decision(
-        decision=decision,
-        data=decision_data,
-        run_id=run_id,
-    )
-
-    if decision_id is None:
-        return JSONResponse(
+        raise HTTPException(
             status_code=503,
-            content={
-                "ok": False,
-                "error": "Decision could not be saved to Supabase.",
-            },
-        )
+            detail="Decision service unavailable.",
+        ) from exc
 
-    log_event(
-        "director_decision",
-        {
-            "decision_id": decision_id,
-            "run_id": run_id,
-            "decision": decision,
-        },
-    )
-
-    return {
-        "ok": True,
-        "decision_id": decision_id,
-        "run_id": run_id,
-        "decision": decision,
-    }
-class DirectorActionRequest(BaseModel):
-    description: str
-    action_type: str = "general"
-    run_id: int | None = None
-    decision_id: int | None = None
-    data: dict[str, Any] = {}
-
-# ============================================================
-# DIRECTOR ACTION
-# ============================================================
-
-@app.post("/director/action")
-async def director_action(
-    request: DirectorActionRequest,
-):
-
-    action_id = supabase_save_action(
-        description=request.description,
-        action_type=request.action_type,
-        run_id=request.run_id,
-        decision_id=request.decision_id,
-        data=request.data,
-    )
-
-    if action_id is None:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "ok": False,
-                "error": (
-                    "Action could not be saved "
-                    "to Supabase."
-                ),
-            },
-        )
-
-    log_event(
-        "director_action_created",
-        {
-            "action_id": action_id,
-            "run_id": request.run_id,
-            "decision_id": request.decision_id,
-            "action_type": request.action_type,
-        },
-    )
-
-    return {
-        "ok": True,
-        "action_id": action_id,
-        "run_id": request.run_id,
-        "decision_id": request.decision_id,
-        "status": "pending",
-    }
-
-class DirectorResultRequest(BaseModel):
-    action_id: int
-    summary: str
-    result_type: str = "completed"
-    run_id: int | None = None
-    data: dict[str, Any] = {}
-
-# ============================================================
-# DIRECTOR RESULT
-# ============================================================
 
 @app.post("/director/result")
 async def director_result(
-    request: DirectorResultRequest,
-):
-
-    result_id = supabase_save_result(
-        action_id=request.action_id,
-        summary=request.summary,
-        result_type=request.result_type,
-        run_id=request.run_id,
-        data=request.data,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    project_id = str(
+        payload.get(
+            "project_id",
+            DEFAULT_PROJECT_ID,
+        )
     )
 
-    if result_id is None:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "ok": False,
-                "error": (
-                    "Result could not be saved "
-                    "to Supabase."
-                ),
-            },
-        )
+    result = payload.get(
+        "result",
+        payload,
+    )
 
-    log_event(
-        "director_action_completed",
-        {
-            "action_id": request.action_id,
-            "result_id": result_id,
-            "run_id": request.run_id,
-        },
+    saved = await runtime.memory.save_result(
+        project_id=project_id,
+        result=result,
     )
 
     return {
-        "ok": True,
-        "result_id": result_id,
-        "action_id": request.action_id,
-        "run_id": request.run_id,
-        "status": "completed",
+        "success": True,
+        "saved": serialize(saved),
     }
 
-# ============================================================
-# EVENTS
-# ============================================================
+
+# ---------------------------------------------------------------------------
+# Wakeup / scheduler
+# ---------------------------------------------------------------------------
+
+
+@app.get("/director/wakeup")
+async def director_wakeup(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    if runtime.wakeup is None:
+        return {
+            "enabled": False,
+            "pending": [],
+        }
+
+    pending = runtime.wakeup.pending(
+        project_id=project_id,
+    )
+
+    return {
+        "enabled": AUTONOMOUS_ENABLED,
+        "pending": serialize(pending),
+    }
+
+
+@app.post("/director/wakeup")
+async def director_wakeup_trigger(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    if not AUTONOMOUS_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Автономный режим отключён.",
+        )
+
+    if runtime.wakeup is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Wakeup manager unavailable.",
+        )
+
+    signal = runtime.wakeup.manual(
+        project_id=project_id,
+    )
+
+    return {
+        "created": True,
+        "signal": serialize(signal),
+    }
+
+
+@app.get("/director/cron")
+async def director_cron(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    """
+    Compatibility endpoint.
+
+    Does not automatically enable autonomy.
+    """
+
+    if runtime.scheduler is None:
+        return {
+            "enabled": False,
+            "schedules": [],
+        }
+
+    schedules = runtime.scheduler.list(
+        project_id=project_id,
+    )
+
+    return {
+        "enabled": AUTONOMOUS_ENABLED,
+        "schedules": serialize(schedules),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
 
 @app.get("/events")
 async def events(
-    limit: int = 100,
-):
-
-    limit = max(
-        1,
-        min(int(limit), 1000),
+    project_id: str = DEFAULT_PROJECT_ID,
+    limit: int = 50,
+) -> dict[str, Any]:
+    context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=limit,
     )
 
-    # --------------------------------------------------------
-    # PRIMARY: SUPABASE
-    # --------------------------------------------------------
-
-    if SUPABASE_ENABLED and supabase is not None:
-
-        try:
-            result = (
-                supabase
-                .table("system_events")
-                .select("*")
-                .order("id", desc=True)
-                .limit(limit)
-                .execute()
+    return {
+        "project_id": project_id,
+        "events": serialize(
+            context.get(
+                "events",
+                [],
             )
+        ),
+    }
 
-            rows = result.data or []
 
-            return [
-                {
-                    "id": row.get("id"),
-                    "created_at": row.get(
-                        "created_at"
-                    ),
-                    "event_type": row.get(
-                        "event_type"
-                    ),
-                    "data": (
-                        row.get("data_json")
-                        if isinstance(
-                            row.get("data_json"),
-                            dict,
-                        )
-                        else json_loads_safe(
-                            row.get("data_json"),
-                            {},
-                        )
-                    ),
-                }
-                for row in rows
-            ]
+# ---------------------------------------------------------------------------
+# History
+# ---------------------------------------------------------------------------
 
-        except Exception as exc:
 
-            logger.error(
-                "SUPABASE_EVENTS_FAILED error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    # --------------------------------------------------------
-    # FALLBACK: SQLITE
-    # --------------------------------------------------------
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM system_events
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-
-    conn.close()
-
-    return [
-        {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "event_type": row["event_type"],
-            "data": json_loads_safe(
-                row["data_json"],
-                {},
-            ),
-        }
-        for row in rows
-    ]
-
-# ============================================================
-# DIRECTOR TEST
-# ============================================================
-
-@app.get("/director/test")
-async def director_test():
+@app.get("/director/history")
+async def director_history(
+    project_id: str = DEFAULT_PROJECT_ID,
+    limit: int = 50,
+) -> dict[str, Any]:
+    context = await runtime.memory.get_context(
+        project_id=project_id,
+        limit=limit,
+    )
 
     return {
-        "ok": True,
-        "message": (
-            "Director endpoint is available."
+        "project_id": project_id,
+        "runs": serialize(
+            context.get(
+                "runs",
+                [],
+            )
         ),
-        "free_mode": FREE_MODE,
-        "autonomous": AUTONOMOUS,
-        "ai_enabled": AI_ENABLED,
-        "ai_provider": (
-            "openrouter"
-            if AI_ENABLED
-            else "heuristic"
+        "decisions": serialize(
+            context.get(
+                "decisions",
+                [],
+            )
         ),
-        "ai_model": AI_MODEL,
+        "recommendations": serialize(
+            context.get(
+                "recommendations",
+                [],
+            )
+        ),
+        "results": serialize(
+            context.get(
+                "results",
+                [],
+            )
+        ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Debug endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/director-debug")
+async def director_debug(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    director = runtime.get_director(
+        project_id=project_id,
+    )
+
+    return {
+        "project_id": project_id,
+        "director": serialize(
+            director.status()
+        ),
+        "context": serialize(
+            director.context,
+        ),
+        "runtime": {
+            "memory": runtime.memory.enabled,
+            "ai": runtime.ai.enabled,
+            "autonomous": AUTONOMOUS_ENABLED,
+        },
+    }
+
+
+@app.get("/radar-debug")
+async def radar_debug(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    """
+    DATA / research diagnostic endpoint.
+
+    No strategic decision is made here.
+    """
+
+    state = await runtime.data.get_project_state(
+        project_id=project_id,
+    )
+
+    return {
+        "project_id": project_id,
+        "data": serialize(state),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Radar compatibility endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.get("/radar")
+async def radar(
+    project_id: str = DEFAULT_PROJECT_ID,
+) -> dict[str, Any]:
+    """
+    Radar is intentionally represented as a DATA/research view.
+
+    Actual strategic interpretation belongs to Director.
+    """
+
+    state = await runtime.data.get_project_state(
+        project_id=project_id,
+    )
+
+    return {
+        "project_id": project_id,
+        "status": "available",
+        "data": serialize(state),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler
+# ---------------------------------------------------------------------------
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    logger.exception(
+        "Unhandled request error: %s %s",
+        request.method,
+        request.url.path,
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_server_error",
+            "message": (
+                "Внутренняя ошибка сервера."
+            ),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Application startup / shutdown
+# ---------------------------------------------------------------------------
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    logger.info(
+        "Starting %s",
+        SERVICE_NAME,
+    )
+
+    logger.info(
+        "Director memory: %s",
+        "enabled"
+        if runtime.memory.enabled
+        else "disabled",
+    )
+
+    logger.info(
+        "AI provider: %s",
+        "enabled"
+        if runtime.ai.enabled
+        else "disabled",
+    )
+
+    logger.info(
+        "Autonomous mode: %s",
+        "enabled"
+        if AUTONOMOUS_ENABLED
+        else "disabled",
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    logger.info(
+        "Stopping %s",
+        SERVICE_NAME,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ASGI entry point
+# ---------------------------------------------------------------------------
+
+application = app

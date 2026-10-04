@@ -185,7 +185,7 @@ class Director:
     # STATE
     # ============================================================
 
-    def inspect(self) -> DirectorContext:
+    async def inspect(self) -> DirectorContext:
         """
         Build a current strategic context.
 
@@ -194,14 +194,29 @@ class Director:
         if self.memory_service is not None:
             loader = getattr(
                 self.memory_service,
-                "get_director_context",
+                "get_context",
                 None,
             )
 
             if loader:
                 external_context = loader(
-                    project_id=self.project_id
+                    limit_runs=10,
+                    limit_decisions=20,
+                    limit_events=30,
+                    limit_chat=20,
+                    limit_actions=20,
+                    limit_results=20,
+                    limit_recommendations=20,
+                    limit_constraints=20,
                 )
+
+                if hasattr(
+                    external_context,
+                    "__await__",
+                ):
+                    external_context = (
+                        await external_context
+                    )
 
                 if isinstance(external_context, dict):
                     self._merge_context(external_context)
@@ -217,6 +232,14 @@ class Director:
                 external_state = loader(
                     project_id=self.project_id
                 )
+
+                if hasattr(
+                    external_state,
+                    "__await__",
+                ):
+                    external_state = (
+                        await external_state
+                    )
 
                 if isinstance(external_state, dict):
                     self._merge_context(external_state)
@@ -368,7 +391,7 @@ class Director:
     # ANALYSIS
     # ============================================================
 
-    def analyze(self) -> dict[str, Any]:
+    async def analyze(self) -> dict[str, Any]:
         """
         Run analytical services.
 
@@ -393,8 +416,36 @@ class Director:
                     context=self.context.to_dict()
                 )
 
+                if hasattr(external, "__await__"):
+                    external = await external
+
                 if isinstance(external, dict):
                     result.update(external)
+
+        # Keep the Director context in sync with the latest analysis.
+        self.context.analytics = (
+            result.get(
+                "analytics",
+                self.context.analytics,
+            )
+            or self.context.analytics
+        )
+
+        self.context.topics = (
+            result.get(
+                "topics",
+                self.context.topics,
+            )
+            or self.context.topics
+        )
+
+        self.context.opportunities = (
+            result.get(
+                "opportunities",
+                self.context.opportunities,
+            )
+            or self.context.opportunities
+        )
 
         return result
 
@@ -402,14 +453,15 @@ class Director:
     # DECISION
     # ============================================================
 
-    def decide(
+    async def decide(
         self,
         analysis: dict[str, Any] | None = None,
     ) -> DirectorDecision:
         """
         Central strategic decision point.
         """
-        analysis = analysis or self.analyze()
+        if analysis is None:
+            analysis = await self.analyze()
 
         opportunities = analysis.get(
             "opportunities",
@@ -453,7 +505,7 @@ class Director:
 
         # AI may enrich rationale, but does not replace the Director.
         if self.ai_service is not None:
-            decision = self._enrich_decision_with_ai(
+            decision = await self._enrich_decision_with_ai(
                 decision,
                 analysis,
             )
@@ -487,7 +539,7 @@ class Director:
             key=score,
         )
 
-    def _enrich_decision_with_ai(
+    async def _enrich_decision_with_ai(
         self,
         decision: DirectorDecision,
         analysis: dict[str, Any],
@@ -507,11 +559,20 @@ class Director:
             return decision
 
         try:
+            # AI receives a structured context and returns a structured
+            # result. The Director keeps ownership of the decision.
             result = generator(
-                decision=decision.to_dict(),
-                analysis=analysis,
-                context=self.context.to_dict(),
+                context={
+                    "decision": decision.to_dict(),
+                    "analysis": analysis,
+                    "director_context": (
+                        self.context.to_dict()
+                    ),
+                }
             )
+
+            if hasattr(result, "__await__"):
+                result = await result
 
             if isinstance(result, dict):
                 if result.get("rationale"):
@@ -551,7 +612,14 @@ class Director:
         """
         Convert a strategic decision into a concise human-facing proposal.
         """
-        analysis = analysis or self.analyze()
+        if analysis is None:
+            # Reuse the already-collected context instead of triggering
+            # a new (possibly async) analytics pass.
+            analysis = {
+                "topics": self.context.topics,
+                "opportunities": self.context.opportunities,
+                "analytics": self.context.analytics,
+            }
 
         target = self._build_recommendation_target(
             analysis
@@ -807,12 +875,15 @@ class Director:
     # FEEDBACK
     # ============================================================
 
-    def apply_feedback(
+    async def apply_feedback(
         self,
         feedback: DirectorFeedback,
     ) -> None:
         """
         Feedback becomes part of Director context and future memory.
+
+        Persistence uses the existing Memory 2.0 API
+        (save_recommendation_feedback / save_constraint).
         """
         record = feedback_to_memory_record(
             feedback
@@ -840,21 +911,112 @@ class Director:
                 }
             )
 
-        if self.memory_service is not None:
+        if self.memory_service is None:
+            return
+
+        # ------------------------------------------------------------
+        # Memory 2.0 persistence
+        # ------------------------------------------------------------
+
+        try:
+            feedback_type = (
+                feedback.feedback_type.value
+                if hasattr(
+                    feedback.feedback_type,
+                    "value",
+                )
+                else str(feedback.feedback_type)
+            )
+
+            feedback_payload = {
+                "recommendation_id": (
+                    feedback.recommendation_id
+                ),
+                "feedback_type": feedback_type,
+                "message": feedback.message,
+                "reason": feedback.reason,
+                "scope": (
+                    feedback.scope.value
+                    if hasattr(feedback.scope, "value")
+                    else str(feedback.scope)
+                ),
+                "creates_constraint": bool(
+                    feedback.constraint
+                ),
+                "metadata": dict(feedback.metadata),
+            }
+
             writer = getattr(
                 self.memory_service,
-                "save_feedback",
+                "save_recommendation_feedback",
                 None,
             )
 
             if writer:
-                writer(record)
+                saved = writer(feedback_payload)
+
+                if hasattr(saved, "__await__"):
+                    await saved
+
+            if feedback.constraint:
+                constraint_writer = getattr(
+                    self.memory_service,
+                    "save_constraint",
+                    None,
+                )
+
+                if constraint_writer:
+                    saved_constraint = (
+                        constraint_writer(
+                            {
+                                "title": (
+                                    "Ограничение пользователя"
+                                ),
+                                "description": (
+                                    str(
+                                        feedback.constraint
+                                    )
+                                ),
+                                "constraint_type": "avoid",
+                                "scope": (
+                                    feedback.scope.value
+                                    if hasattr(
+                                        feedback.scope,
+                                        "value",
+                                    )
+                                    else str(
+                                        feedback.scope
+                                    )
+                                ),
+                                "status": "active",
+                                "reason": str(
+                                    feedback.message
+                                ),
+                                "source_feedback_id": None,
+                                "metadata": {
+                                    "director_feedback_id": (
+                                        feedback.feedback_id
+                                    ),
+                                },
+                            }
+                        )
+                    )
+
+                    if hasattr(
+                        saved_constraint,
+                        "__await__",
+                    ):
+                        await saved_constraint
+
+        except Exception:
+            # Feedback must never break the main request flow.
+            pass
 
     # ============================================================
     # AUTONOMY
     # ============================================================
 
-    def run_autonomous_cycle(
+    async def run_autonomous_cycle(
         self,
         *,
         objective: str | None = None,
@@ -876,7 +1038,7 @@ class Director:
             learn=self._autonomy_learn,
         )
 
-        cycle = autonomy.run(
+        cycle = await autonomy.run(
             project_id=self.project_id,
             objective=objective or self.context.objective,
             initial_state=self.state,
@@ -887,12 +1049,12 @@ class Director:
 
         return cycle
 
-    def _autonomy_inspect(
+    async def _autonomy_inspect(
         self,
         state: DirectorState,
         _: Any,
     ) -> dict[str, Any]:
-        context = self.inspect()
+        context = await self.inspect()
 
         return {
             "evidence_available": state.evidence_available,
@@ -925,12 +1087,12 @@ class Director:
             ],
         }
 
-    def _autonomy_analyze(
+    async def _autonomy_analyze(
         self,
         state: DirectorState,
         _: Any,
     ) -> dict[str, Any]:
-        return self.analyze()
+        return await self.analyze()
 
     def _autonomy_assess(
         self,
@@ -964,18 +1126,17 @@ class Director:
             "missing_data": missing,
         }
 
-    def _autonomy_decide(
+    async def _autonomy_decide(
         self,
         state: DirectorState,
         payload: Any,
     ) -> dict[str, Any]:
-        analysis = (
-            payload
-            if isinstance(payload, dict)
-            else self.analyze()
-        )
+        if isinstance(payload, dict):
+            analysis = payload
+        else:
+            analysis = await self.analyze()
 
-        decision = self.decide(
+        decision = await self.decide(
             analysis
         )
 
@@ -1147,7 +1308,7 @@ class Director:
             "needs_followup": False,
         }
 
-    def _autonomy_learn(
+    async def _autonomy_learn(
         self,
         state: DirectorState,
         evaluation: Any,
@@ -1157,24 +1318,49 @@ class Director:
 
         writer = getattr(
             self.memory_service,
-            "save_cycle_result",
+            "save_result",
             None,
         )
 
-        if writer:
-            return writer(
-                project_id=self.project_id,
-                state=state.to_dict(),
-                evaluation=evaluation,
+        if writer is None:
+            return None
+
+        try:
+            summary = ""
+
+            if isinstance(evaluation, dict):
+                summary = str(
+                    evaluation.get("message")
+                    or evaluation.get("summary")
+                    or ""
+                )
+
+            saved = writer(
+                result_type="director_cycle",
+                summary=summary,
+                data={
+                    "state": (
+                        state.to_dict()
+                        if hasattr(state, "to_dict")
+                        else state
+                    ),
+                    "evaluation": evaluation,
+                },
             )
 
-        return None
+            if hasattr(saved, "__await__"):
+                saved = await saved
+
+            return saved
+
+        except Exception:
+            return None
 
     # ============================================================
     # PUBLIC ONE-STEP API
     # ============================================================
 
-    def run_once(
+    async def run_once(
         self,
         *,
         objective: str | None = None,
@@ -1188,7 +1374,7 @@ class Director:
         try:
             self.state.status = DirectorStatus.ANALYZING
 
-            self.inspect()
+            await self.inspect()
             understanding = self.understand()
 
             if not self.state.evidence_available:
@@ -1216,11 +1402,11 @@ class Director:
 
             self.state.status = DirectorStatus.ANALYZING
 
-            analysis = self.analyze()
+            analysis = await self.analyze()
 
             self.state.status = DirectorStatus.DECIDING
 
-            decision = self.decide(
+            decision = await self.decide(
                 analysis
             )
 
@@ -1296,8 +1482,12 @@ class Director:
                 status=DirectorStatus.ERROR,
                 phase=DirectorPhase.ERROR,
                 message=(
-                    f"Во время работы Директора произошла ошибка: {exc}"
+                    "Во время работы Директора произошла ошибка. "
+                    "Попробуйте повторить запрос позже."
                 ),
+                data={
+                    "error": str(exc),
+                },
             )
 
             self.last_result = result

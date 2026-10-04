@@ -149,6 +149,12 @@ except Exception:
 
 
 try:
+    from memory.inmemory import InMemoryMemoryBackend
+except Exception:
+    InMemoryMemoryBackend = None
+
+
+try:
     from ai.provider import create_ai_provider
 except Exception:
     create_ai_provider = None
@@ -157,9 +163,11 @@ except Exception:
 # Analytics imports are intentionally modular.
 try:
     from analytics.analytics import (
+        analyze_research,
         prepare_for_director as analytics_prepare_for_director,
     )
 except Exception:
+    analyze_research = None
     analytics_prepare_for_director = None
 
 
@@ -311,11 +319,422 @@ async def call_maybe_async(function: Any, *args: Any, **kwargs: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Director <-> Memory 2.0 contract adapters
+#
+# These helpers translate Director-facing models (DirectorRecommendation,
+# DirectorDecision, DirectorFeedback) into the shapes expected by the
+# existing Memory 2.0 API (memory/memory.py + memory/*).
+# ---------------------------------------------------------------------------
+
+RECOMMENDATION_STATUS_TO_MEMORY = {
+    "draft": "new",
+    "pending": "new",
+    "accepted": "accepted",
+    "rejected": "rejected",
+    "discussed": "active",
+    "completed": "completed",
+    "cancelled": "archived",
+}
+
+MEMORY_STATUS_TO_DIRECTOR = {
+    "new": "pending",
+    "active": "pending",
+    "accepted": "accepted",
+    "rejected": "rejected",
+    "deferred": "pending",
+    "completed": "completed",
+    "archived": "cancelled",
+}
+
+FEEDBACK_TYPE_TO_MEMORY = {
+    "accept": "accept",
+    "reject": "reject",
+    "modify": "investigate",
+    "clarify": "comment",
+    "prefer": "change_priority",
+    "avoid": "investigate",
+}
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
+
+
+def _decision_to_memory_payload(
+    decision: Any,
+    *,
+    project_id: str | None,
+) -> dict[str, Any]:
+    """
+    Convert a DirectorDecision (or dict) into the payload expected by
+    Memory.save_decision_model(): a dict with a non-empty "decision" key.
+    """
+    if hasattr(decision, "to_dict"):
+        payload = decision.to_dict()
+    elif isinstance(decision, dict):
+        payload = dict(decision)
+    else:
+        payload = serialize(decision)
+
+    if not isinstance(payload, dict):
+        return {}
+
+    # Normalize enums/dataclasses into JSON-safe values.
+    payload = serialize(payload)
+
+    text = str(
+        payload.get("decision")
+        or payload.get("title")
+        or ""
+    ).strip()
+
+    if not text:
+        decision_type = _enum_value(
+            payload.get("decision_type")
+        )
+        objective = str(
+            payload.get("objective")
+            or ""
+        ).strip()
+
+        text = (
+            f"{decision_type}: {objective}".strip(": ")
+            or "Решение Директора"
+        )
+
+    record = dict(payload)
+    record["decision"] = text
+    record["project_id"] = project_id
+
+    return record
+
+
+def _recommendation_to_memory_payload(
+    recommendation: Any,
+    *,
+    project_id: str | None,
+    decision_db_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Convert a DirectorRecommendation (or dict) into the dict shape
+    expected by Memory.save_recommendation() (Memory 2.0).
+
+    The stable Director recommendation_id and the string decision_id
+    are preserved inside source_data so the item can be retrieved and
+    linked back later.
+    """
+    if hasattr(recommendation, "to_dict"):
+        data = recommendation.to_dict()
+    elif isinstance(recommendation, dict):
+        data = dict(recommendation)
+    else:
+        data = serialize(recommendation)
+
+    if not isinstance(data, dict):
+        return {}
+
+    status = _enum_value(data.get("status")) or "pending"
+    memory_status = RECOMMENDATION_STATUS_TO_MEMORY.get(
+        str(status).lower(),
+        "new",
+    )
+
+    target = data.get("target")
+    if hasattr(target, "to_dict"):
+        target = target.to_dict()
+    elif isinstance(target, dict):
+        target = dict(target)
+
+    if not isinstance(target, dict):
+        target = None
+
+    evidence: list[dict[str, Any]] = []
+
+    for item in data.get("evidence") or []:
+        if hasattr(item, "to_dict"):
+            item = item.to_dict()
+
+        if isinstance(item, dict):
+            evidence.append(
+                {
+                    "statement": item.get("statement"),
+                    "source": item.get("source"),
+                    "reference_id": item.get("reference_id"),
+                    "strength": item.get("strength", 0.5),
+                    "metadata": item.get("metadata", {}),
+                }
+            )
+        else:
+            evidence.append(
+                {"statement": str(item)}
+            )
+
+    decision_id = data.get("decision_id")
+    decision_column: int | None = None
+
+    if decision_id is not None:
+        try:
+            decision_column = int(decision_id)
+        except (TypeError, ValueError):
+            decision_column = None
+
+    if decision_column is None:
+        decision_column = decision_db_id
+
+    try:
+        confidence = float(data.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    try:
+        priority = int(round(confidence * 10))
+    except (TypeError, ValueError):
+        priority = None
+
+    title = str(data.get("title") or "").strip()
+    description = str(
+        data.get("summary")
+        or data.get("description")
+        or ""
+    ).strip()
+
+    return serialize(
+        {
+            "title": title,
+            "description": description,
+            "recommendation_type": (
+                "youtube_direction"
+                if target
+                else "research_direction"
+            ),
+            "status": memory_status,
+            "topic": (
+                str(target.get("title"))
+                if target and target.get("title")
+                else None
+            ),
+            "region": target.get("region") if target else None,
+            "language": (
+                str(target.get("language") or "ru")
+                if target
+                else "ru"
+            ),
+            "rationale": (
+                data.get("reason")
+                or data.get("rationale")
+            ),
+            "suggested_action": (
+                data.get("proposed_action")
+                or data.get("suggested_action")
+            ),
+            "confidence": confidence,
+            "priority": priority,
+            "decision_id": decision_column,
+            "run_id": data.get("run_id"),
+            "source_data": {
+                "director_recommendation_id": data.get(
+                    "recommendation_id"
+                ),
+                "decision_id": decision_id,
+                "research_id": data.get("research_id"),
+                "project_id": project_id,
+                "target": target,
+                "evidence": evidence,
+                "risks": list(data.get("risks") or []),
+                "constraints": list(
+                    data.get("constraints") or []
+                ),
+                "summary": data.get("summary"),
+            },
+            "metadata": dict(data.get("metadata") or {}),
+        }
+    )
+
+
+def _feedback_to_memory_payload(
+    feedback: Any,
+    *,
+    project_id: str | None,
+) -> dict[str, Any]:
+    """
+    Convert DirectorFeedback (or dict) into the payload expected by
+    Memory.save_recommendation_feedback() / apply_recommendation_feedback().
+    """
+    if hasattr(feedback, "to_dict"):
+        record = feedback.to_dict()
+    elif isinstance(feedback, dict):
+        record = dict(feedback)
+    else:
+        record = serialize(feedback)
+
+    if not isinstance(record, dict):
+        return {}
+
+    feedback_type = _enum_value(
+        record.get("feedback_type")
+    )
+
+    memory_type = FEEDBACK_TYPE_TO_MEMORY.get(
+        str(feedback_type or "").lower(),
+        "comment",
+    )
+
+    recommendation_id = record.get(
+        "recommendation_id"
+    )
+
+    recommendation_column: int | None = None
+
+    if recommendation_id is not None:
+        try:
+            recommendation_column = int(
+                recommendation_id
+            )
+        except (TypeError, ValueError):
+            recommendation_column = None
+
+    metadata = dict(record.get("metadata") or {})
+    metadata["project_id"] = project_id
+
+    if recommendation_column is None and recommendation_id:
+        metadata["director_recommendation_id"] = (
+            str(recommendation_id)
+        )
+
+    return {
+        "recommendation_id": recommendation_column,
+        "feedback_type": memory_type,
+        "message": record.get("message"),
+        "reason": record.get("reason"),
+        "scope": _enum_value(record.get("scope")),
+        "creates_constraint": bool(
+            record.get("constraint")
+            or record.get("creates_constraint")
+        ),
+        "run_id": record.get("run_id"),
+        "metadata": metadata,
+    }
+
+
+def _memory_row_to_director_recommendation(
+    row: dict[str, Any],
+) -> Any:
+    """
+    Reconstruct a DirectorRecommendation from a Memory 2.0
+    recommendation row (the reverse direction of the adapter above).
+    """
+    from director.recommendations import (
+        DirectorRecommendation,
+        RecommendationEvidence,
+        RecommendationStatus,
+        RecommendationTarget,
+    )
+
+    source_data = row.get("source_data")
+
+    if not isinstance(source_data, dict):
+        source_data = {}
+
+    target = None
+
+    target_data = source_data.get("target")
+
+    if isinstance(target_data, dict):
+        target = RecommendationTarget(
+            kind=str(
+                target_data.get("kind")
+                or "youtube_direction"
+            ),
+            title=str(
+                target_data.get("title") or ""
+            ),
+            description=str(
+                target_data.get("description") or ""
+            ),
+            audience=target_data.get("audience"),
+            format=target_data.get("format"),
+            language=str(
+                target_data.get("language") or "ru"
+            ),
+            metadata=dict(
+                target_data.get("metadata") or {}
+            ),
+        )
+
+    status_value = str(
+        row.get("status") or "new"
+    ).lower()
+
+    status = RecommendationStatus(
+        MEMORY_STATUS_TO_DIRECTOR.get(
+            status_value,
+            "pending",
+        )
+    )
+
+    evidence: list[RecommendationEvidence] = []
+
+    for item in source_data.get("evidence") or []:
+        if not isinstance(item, dict):
+            continue
+
+        evidence.append(
+            RecommendationEvidence(
+                statement=str(
+                    item.get("statement") or ""
+                ),
+                source=item.get("source"),
+                reference_id=item.get("reference_id"),
+                strength=float(
+                    item.get("strength") or 0.5
+                ),
+                metadata=dict(
+                    item.get("metadata") or {}
+                ),
+            )
+        )
+
+    recommendation_id = (
+        source_data.get("director_recommendation_id")
+        or f"rec_{row.get('id')}"
+    )
+
+    return DirectorRecommendation(
+        recommendation_id=str(recommendation_id),
+        title=str(row.get("title") or ""),
+        summary=str(
+            row.get("description")
+            or source_data.get("summary")
+            or ""
+        ),
+        status=status,
+        target=target,
+        proposed_action=str(
+            row.get("suggested_action") or ""
+        ),
+        reason=str(row.get("rationale") or ""),
+        confidence=float(row.get("confidence") or 0.0),
+        evidence=evidence,
+        risks=list(
+            source_data.get("risks") or []
+        ),
+        constraints=list(
+            source_data.get("constraints") or []
+        ),
+        decision_id=source_data.get("decision_id"),
+        research_id=source_data.get("research_id"),
+        created_at=str(row.get("created_at") or ""),
+        metadata=dict(row.get("metadata") or {}),
+    )
+
+
 class ServerMemory:
     """
-    Thin compatibility layer around Memory 2.0.
+    Thin integration layer between server.py and Memory 2.0.
 
-    server.py should not know Supabase table details.
+    server.py should not know Supabase/table details, and it should not
+    use the removed Memory 1.0 method names.
     """
 
     def __init__(self) -> None:
@@ -327,23 +746,113 @@ class ServerMemory:
             return
 
         try:
-            if SupabaseMemoryBackend is not None:
-                self.backend = SupabaseMemoryBackend()
+            self.backend = self._create_backend()
+
+            if self.backend is None:
+                logger.warning(
+                    "No memory backend configured; "
+                    "memory is disabled"
+                )
+                return
 
             self.memory = Memory(
                 backend=self.backend,
             )
 
-            logger.info("Director memory initialized")
+            logger.info(
+                "Director memory initialized"
+            )
 
         except Exception:
-            logger.exception("Failed to initialize memory")
+            logger.exception(
+                "Failed to initialize memory"
+            )
             self.backend = None
             self.memory = None
+
+    @staticmethod
+    def _create_backend() -> Any:
+        """
+        Pick the storage backend.
+
+        - Supabase is used when credentials are configured.
+        - In FREE_MODE (or explicit MEMORY_BACKEND=memory) the
+          process-local InMemoryMemoryBackend keeps the engine fully
+          runnable without external services.
+        - Otherwise memory is disabled.
+        """
+        backend_choice = (
+            os.getenv("MEMORY_BACKEND", "")
+            .strip()
+            .lower()
+        )
+
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_KEY")
+
+        if supabase_url and supabase_key:
+            if SupabaseMemoryBackend is not None:
+                logger.info(
+                    "Using Supabase memory backend"
+                )
+                return SupabaseMemoryBackend()
+
+            logger.error(
+                "Supabase memory backend is unavailable"
+            )
+            return None
+
+        use_inmemory = (
+            backend_choice == "memory"
+            or (FREE_MODE and backend_choice != "supabase")
+        )
+
+        if use_inmemory:
+            if InMemoryMemoryBackend is not None:
+                logger.info(
+                    "Using in-memory memory backend "
+                    "(FREE_MODE)"
+                )
+                return InMemoryMemoryBackend()
+
+            logger.error(
+                "In-memory memory backend is unavailable"
+            )
+            return None
+
+        return None
 
     @property
     def enabled(self) -> bool:
         return self.memory is not None
+
+    def _normalize_recommendation_ids(
+        self,
+        context: dict[str, Any],
+    ) -> None:
+        """
+        Expose a stable recommendation_id on rows returned by Memory,
+        preferring the persistent Director recommendation id stored in
+        source_data.
+        """
+        for row in context.get("recommendations") or []:
+            if not isinstance(row, dict):
+                continue
+
+            source_data = row.get("source_data")
+
+            if not isinstance(source_data, dict):
+                source_data = {}
+
+            director_id = source_data.get(
+                "director_recommendation_id"
+            )
+
+            row["recommendation_id"] = (
+                director_id
+                or row.get("recommendation_id")
+                or row.get("id")
+            )
 
     async def get_context(
         self,
@@ -355,14 +864,30 @@ class ServerMemory:
 
         try:
             result = self.memory.get_context(
-                project_id=project_id,
-                limit=limit,
+                limit_runs=limit,
+                limit_decisions=limit,
+                limit_events=limit,
+                limit_chat=limit,
+                limit_actions=limit,
+                limit_results=limit,
+                limit_recommendations=limit,
+                limit_constraints=limit,
             )
 
             if hasattr(result, "__await__"):
                 result = await result
 
-            return result if isinstance(result, dict) else {}
+            if not isinstance(result, dict):
+                return {}
+
+            result.setdefault(
+                "project_id",
+                project_id,
+            )
+
+            self._normalize_recommendation_ids(result)
+
+            return result
 
         except Exception:
             logger.exception(
@@ -380,9 +905,24 @@ class ServerMemory:
             return None
 
         try:
+            payload = (
+                dict(run)
+                if isinstance(run, dict)
+                else serialize(run)
+            )
+
+            if not isinstance(payload, dict):
+                payload = {}
+
+            data = dict(payload)
+            data["project_id"] = project_id
+
             result = self.memory.save_run(
-                project_id=project_id,
-                run=run,
+                language=payload.get("language"),
+                region_code=payload.get(
+                    "region_code"
+                ),
+                data=data,
             )
 
             if hasattr(result, "__await__"):
@@ -403,15 +943,32 @@ class ServerMemory:
             return None
 
         try:
-            if hasattr(self.memory, "save_decision_model"):
+            record = _decision_to_memory_payload(
+                decision,
+                project_id=project_id,
+            )
+
+            if not record:
+                return None
+
+            if hasattr(
+                self.memory,
+                "save_decision_model",
+            ):
                 result = self.memory.save_decision_model(
-                    project_id=project_id,
-                    decision=decision,
+                    record
                 )
             else:
                 result = self.memory.save_decision(
-                    project_id=project_id,
-                    decision=serialize(decision),
+                    decision=str(
+                        record.get("decision", "")
+                    ),
+                    data={
+                        key: value
+                        for key, value
+                        in record.items()
+                        if key != "decision"
+                    },
                 )
 
             if hasattr(result, "__await__"):
@@ -420,21 +977,39 @@ class ServerMemory:
             return result
 
         except Exception:
-            logger.exception("Memory save_decision failed")
+            logger.exception(
+                "Memory save_decision failed"
+            )
             return None
 
     async def save_recommendation(
         self,
         project_id: str,
         recommendation: Any,
+        *,
+        decision_db_id: int | None = None,
     ) -> Any:
         if not self.memory:
             return None
 
         try:
-            result = self.memory.save_recommendation(
+            record = _recommendation_to_memory_payload(
+                recommendation,
                 project_id=project_id,
-                recommendation=recommendation,
+                decision_db_id=decision_db_id,
+            )
+
+            if (
+                not record.get("title")
+                or not record.get("description")
+            ):
+                logger.warning(
+                    "Skipping empty recommendation"
+                )
+                return None
+
+            result = self.memory.save_recommendation(
+                record
             )
 
             if hasattr(result, "__await__"):
@@ -454,52 +1029,67 @@ class ServerMemory:
         feedback: Any,
     ) -> Any:
         """
-        Compatibility wrapper.
-
-        Memory 2.0 uses recommendation feedback rather than
-        the old save_feedback() API.
+        Persist feedback through the Memory 2.0 recommendation
+        feedback API (the old save_feedback() method no longer exists).
         """
 
         if not self.memory:
             return None
 
-        payload = serialize(feedback)
-
         try:
-            if hasattr(
-                self.memory,
-                "save_recommendation_feedback",
-            ):
-                result = (
-                    self.memory.save_recommendation_feedback(
-                        project_id=project_id,
-                        feedback=payload,
-                    )
+            record = _feedback_to_memory_payload(
+                feedback,
+                project_id=project_id,
+            )
+
+            result = (
+                self.memory.save_recommendation_feedback(
+                    record
                 )
+            )
 
-                if hasattr(result, "__await__"):
-                    result = await result
+            if hasattr(result, "__await__"):
+                result = await result
 
-                return result
-
-            if hasattr(self.memory, "save_event"):
-                result = self.memory.save_event(
-                    project_id=project_id,
-                    event={
-                        "type": "director_feedback",
-                        "data": payload,
-                    },
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
+            return result
 
         except Exception:
-            logger.exception("Memory save_feedback failed")
+            logger.exception(
+                "Memory save_feedback failed"
+            )
+            return None
 
-        return None
+    async def apply_recommendation_feedback(
+        self,
+        project_id: str,
+        feedback: Any,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            record = _feedback_to_memory_payload(
+                feedback,
+                project_id=project_id,
+            )
+
+            result = (
+                self.memory.apply_recommendation_feedback(
+                    record
+                )
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception(
+                "Memory apply_recommendation_feedback "
+                "failed"
+            )
+            return None
 
     async def save_result(
         self,
@@ -510,21 +1100,145 @@ class ServerMemory:
             return None
 
         try:
-            if hasattr(self.memory, "save_result"):
-                saved = self.memory.save_result(
-                    project_id=project_id,
-                    result=serialize(result),
-                )
+            payload = serialize(result)
 
-                if hasattr(saved, "__await__"):
-                    saved = await saved
+            if not isinstance(payload, dict):
+                payload = {"value": payload}
 
-                return saved
+            result_type = str(
+                payload.get("type")
+                or payload.get("result_type")
+                or "director_result"
+            ).strip()
+
+            summary = str(
+                payload.get("summary")
+                or payload.get("message")
+                or ""
+            ).strip()
+
+            data = dict(payload)
+            data["project_id"] = project_id
+
+            saved = self.memory.save_result(
+                result_type=result_type,
+                summary=summary,
+                action_id=payload.get("action_id"),
+                run_id=payload.get("run_id"),
+                data=data,
+            )
+
+            if hasattr(saved, "__await__"):
+                saved = await saved
+
+            return saved
 
         except Exception:
-            logger.exception("Memory save_result failed")
+            logger.exception(
+                "Memory save_result failed"
+            )
+            return None
 
-        return None
+    async def save_chat_message(
+        self,
+        project_id: str,
+        role: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            payload = dict(data or {})
+            payload["project_id"] = project_id
+
+            result = self.memory.save_chat_message(
+                role=role,
+                message=message,
+                data=payload,
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception(
+                "Memory save_chat_message failed"
+            )
+            return None
+
+    async def save_event(
+        self,
+        project_id: str,
+        event_type: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            payload = dict(data or {})
+            payload["project_id"] = project_id
+
+            result = self.memory.save_event(
+                event_type=event_type,
+                data=payload,
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception(
+                "Memory save_event failed"
+            )
+            return None
+
+    async def save_constraint(
+        self,
+        project_id: str,
+        constraint: Any,
+    ) -> Any:
+        if not self.memory:
+            return None
+
+        try:
+            record = (
+                dict(constraint)
+                if isinstance(constraint, dict)
+                else serialize(constraint)
+            )
+
+            if not isinstance(record, dict):
+                return None
+
+            metadata = record.get("metadata")
+
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            metadata["project_id"] = project_id
+            record["metadata"] = metadata
+
+            result = self.memory.save_constraint(
+                record
+            )
+
+            if hasattr(result, "__await__"):
+                result = await result
+
+            return result
+
+        except Exception:
+            logger.exception(
+                "Memory save_constraint failed"
+            )
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +1263,11 @@ class AnalyticsAdapter:
             [],
         )
 
+        previous = context.get(
+            "previous_observations",
+            [],
+        )
+
         analytics_data: dict[str, Any] = {}
 
         # ---------------------------------------------------------------
@@ -557,14 +1276,30 @@ class AnalyticsAdapter:
 
         if analytics_prepare_for_director is not None:
             try:
-                prepared = analytics_prepare_for_director(
+                research_analysis = analyze_research(
                     observations,
+                    previous_videos=(
+                        previous or None
+                    ),
+                )
+
+                prepared = analytics_prepare_for_director(
+                    research_analysis,
                 )
 
                 if prepared is not None:
                     analytics_data["analytics"] = serialize(
                         prepared
                     )
+
+                # Keep the raw analytical payload too: opportunity
+                # assessment expects the "metrics" structure produced
+                # by analyze_research().
+                from dataclasses import asdict
+
+                analytics_data["analytics_raw"] = serialize(
+                    asdict(research_analysis)
+                )
 
             except TypeError:
                 # Some versions expect a different argument shape.
@@ -605,11 +1340,6 @@ class AnalyticsAdapter:
         # ---------------------------------------------------------------
         # Trends
         # ---------------------------------------------------------------
-
-        previous = context.get(
-            "previous_observations",
-            [],
-        )
 
         if analyze_trend is not None and (
             observations or previous
@@ -666,10 +1396,104 @@ class AnalyticsAdapter:
                 if not topic_items:
                     topic_items = observations
 
+                trend_payload = (
+                    analytics_data.get(
+                        "trends",
+                        {},
+                    )
+                    if isinstance(
+                        analytics_data.get(
+                            "trends",
+                            {},
+                        ),
+                        dict,
+                    )
+                    else {}
+                )
+
+                analytics_payload = (
+                    analytics_data.get(
+                        "analytics_raw",
+                        analytics_data.get(
+                            "analytics",
+                            {},
+                        ),
+                    )
+                    if isinstance(
+                        analytics_data.get(
+                            "analytics_raw",
+                            analytics_data.get(
+                                "analytics",
+                                {},
+                            ),
+                        ),
+                        dict,
+                    )
+                    else {}
+                )
+
+                raw_constraints = context.get(
+                    "constraints",
+                    [],
+                )
+
+                constraint_texts: list[str] = []
+
+                for item in raw_constraints or []:
+                    if isinstance(item, str):
+                        constraint_texts.append(
+                            item
+                        )
+                    elif isinstance(item, dict):
+                        value = (
+                            item.get("value")
+                            or item.get("description")
+                            or item.get("title")
+                        )
+
+                        if value:
+                            constraint_texts.append(
+                                str(value)
+                            )
+
                 for item in topic_items or []:
+                    if not isinstance(item, dict):
+                        continue
+
+                    title = (
+                        item.get("name")
+                        or item.get("title")
+                        or item.get("topic")
+                        or "Перспективное направление"
+                    )
+
                     try:
                         opportunity = assess_opportunity(
-                            item,
+                            opportunity_id=item.get(
+                                "topic_id",
+                                item.get("id"),
+                            ),
+                            title=str(title),
+                            description=str(
+                                item.get("description", "")
+                            ),
+                            analytics=analytics_payload,
+                            trend=(
+                                item.get("trend")
+                                if isinstance(
+                                    item.get("trend"),
+                                    dict,
+                                )
+                                else trend_payload
+                            ),
+                            videos=observations,
+                            constraints=(
+                                constraint_texts
+                                or None
+                            ),
+                            metadata={
+                                "source": "topic_items",
+                            },
                         )
 
                         prepared = (
@@ -768,6 +1592,130 @@ class DataAdapter:
             "relations": [],
         }
 
+        if self.youtube_registry is not None:
+            try:
+                if hasattr(
+                    self.youtube_registry,
+                    "videos",
+                ):
+                    videos = (
+                        self.youtube_registry.videos()
+                    )
+
+                    observations: list[Any] = []
+
+                    for video in videos:
+                        observation = (
+                            video.to_dict()
+                            if hasattr(
+                                video,
+                                "to_dict",
+                            )
+                            else serialize(video)
+                        )
+
+                        if not isinstance(
+                            observation,
+                            dict,
+                        ):
+                            continue
+
+                        # Lift stable video metadata (topics etc.) to
+                        # the top level so analytics can read it.
+                        video_metadata = (
+                            observation.get(
+                                "metadata",
+                                {},
+                            )
+                            if isinstance(
+                                observation.get(
+                                    "metadata",
+                                    {},
+                                ),
+                                dict,
+                            )
+                            else {}
+                        )
+
+                        for meta_key, meta_value in (
+                            video_metadata.items()
+                        ):
+                            observation.setdefault(
+                                meta_key,
+                                meta_value,
+                            )
+
+                        # Enrich with the latest snapshot metrics so the
+                        # analytics layer receives numeric observations.
+                        snapshot = None
+
+                        if hasattr(
+                            self.youtube_registry,
+                            "latest_snapshot",
+                        ):
+                            try:
+                                snapshot = (
+                                    self.youtube_registry
+                                    .latest_snapshot(
+                                        video_id=(
+                                            getattr(
+                                                video,
+                                                "video_id",
+                                                None,
+                                            )
+                                            or observation.get(
+                                                "video_id"
+                                            )
+                                        )
+                                    )
+                                )
+                            except Exception:
+                                snapshot = None
+
+                        if snapshot is not None:
+                            metrics = (
+                                snapshot.metrics
+                                if hasattr(
+                                    snapshot,
+                                    "metrics",
+                                )
+                                else (
+                                    snapshot.get(
+                                        "metrics",
+                                        {},
+                                    )
+                                    if isinstance(
+                                        snapshot,
+                                        dict,
+                                    )
+                                    else {}
+                                )
+                            )
+
+                            if isinstance(
+                                metrics,
+                                dict,
+                            ):
+                                for key, value in (
+                                    metrics.items()
+                                ):
+                                    observation.setdefault(
+                                        key,
+                                        value,
+                                    )
+
+                        observations.append(
+                            observation
+                        )
+
+                    result["observations"] = (
+                        observations
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to load youtube observations"
+                )
+
         if self.research_manager is not None:
             try:
                 if hasattr(
@@ -822,6 +1770,20 @@ class AIAdapter:
         if create_ai_provider is None:
             return
 
+        # In FREE_MODE without an API key there is no AI backend to
+        # call; disable the provider cleanly instead of failing later.
+        api_key = (
+            os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("DIRECTOR_AI_KEY")
+        )
+
+        if FREE_MODE and not api_key:
+            logger.info(
+                "FREE_MODE: AI provider disabled "
+                "(no API key configured)"
+            )
+            return
+
         try:
             self.provider = create_ai_provider()
             logger.info("AI provider initialized")
@@ -840,26 +1802,39 @@ class AIAdapter:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Compatibility method for Director.
+        Provide structured AI reasoning for a Director decision.
 
-        The current Director expects generate_decision().
-        New AI provider is intentionally kept behind this adapter.
+        Director remains the decision owner: AI only receives a
+        structured context and returns structured JSON.
         """
 
         if not self.provider:
             return {}
 
         try:
+            from ai.provider import AIMessage
             from ai.prompts import (
                 build_decision_prompt,
+                get_system_prompt,
             )
 
             prompt = build_decision_prompt(
                 context=context,
             )
 
+            messages = [
+                AIMessage(
+                    role="system",
+                    content=get_system_prompt(),
+                ),
+                AIMessage(
+                    role="user",
+                    content=prompt,
+                ),
+            ]
+
             response = await self.provider.generate_json(
-                prompt=prompt,
+                messages=messages,
             )
 
             if isinstance(response, dict):
@@ -903,7 +1878,7 @@ class Runtime:
         self.scheduler = (
             create_scheduler(
                 enabled=AUTONOMOUS_ENABLED,
-                default_project_id=DEFAULT_PROJECT_ID,
+                project_id=DEFAULT_PROJECT_ID,
             )
             if create_scheduler
             else None
@@ -1224,6 +2199,55 @@ async def _run_director(
 
         serialized = serialize(result)
 
+        # ---------------------------------------------------------------
+        # Persist the strategic outputs through Memory 2.0 so that the
+        # decision and the recommendation can be retrieved back later.
+        # ---------------------------------------------------------------
+
+        decision = getattr(
+            result,
+            "decision",
+            None,
+        )
+
+        decision_db_id = None
+
+        if decision is not None:
+            decision_db_id = (
+                await runtime.memory.save_decision(
+                    project_id=project_id,
+                    decision=decision,
+                )
+            )
+
+        recommendation = getattr(
+            result,
+            "recommendation",
+            None,
+        )
+
+        if recommendation is not None:
+            await runtime.memory.save_recommendation(
+                project_id=project_id,
+                recommendation=recommendation,
+                decision_db_id=decision_db_id,
+            )
+
+        await runtime.memory.save_event(
+            project_id=project_id,
+            event_type="director_run",
+            data={
+                "status": (
+                    serialized.get("status")
+                    if isinstance(
+                        serialized,
+                        dict,
+                    )
+                    else None
+                ),
+            },
+        )
+
         await runtime.memory.save_run(
             project_id=project_id,
             run={
@@ -1302,6 +2326,36 @@ async def director_autonomous_run(
         )
 
         serialized = serialize(result)
+
+        # Persist the strategic outputs through Memory 2.0.
+        decision = getattr(
+            director.last_result,
+            "decision",
+            None,
+        )
+
+        decision_db_id = None
+
+        if decision is not None:
+            decision_db_id = (
+                await runtime.memory.save_decision(
+                    project_id=project_id,
+                    decision=decision,
+                )
+            )
+
+        recommendation = getattr(
+            director.last_result,
+            "recommendation",
+            None,
+        )
+
+        if recommendation is not None:
+            await runtime.memory.save_recommendation(
+                project_id=project_id,
+                recommendation=recommendation,
+                decision_db_id=decision_db_id,
+            )
 
         await runtime.memory.save_run(
             project_id=project_id,
@@ -1452,6 +2506,7 @@ async def recommendation_action(
     )
 
     recommendation = None
+    memory_id: int | None = None
 
     for item in recommendations:
         item_dict = serialize(item)
@@ -1462,6 +2517,14 @@ async def recommendation_action(
             == recommendation_id
         ):
             recommendation = item
+
+            try:
+                memory_id = int(
+                    item_dict.get("id")
+                )
+            except (TypeError, ValueError):
+                memory_id = None
+
             break
 
     if recommendation is None:
@@ -1470,9 +2533,19 @@ async def recommendation_action(
             detail="Рекомендация не найдена.",
         )
 
+    # Reconstruct the Director-facing model from the Memory row so the
+    # lifecycle helpers receive the object they expect.
+    updated = _memory_row_to_director_recommendation(
+        recommendation
+        if isinstance(recommendation, dict)
+        else serialize(recommendation)
+    )
+
     action = request.action.lower().strip()
 
     try:
+        feedback_payload: dict[str, Any] | None = None
+
         if action == "accept":
             if accept_recommendation is None:
                 raise RuntimeError(
@@ -1480,9 +2553,17 @@ async def recommendation_action(
                 )
 
             updated = accept_recommendation(
-                recommendation,
+                updated,
                 feedback=request.message,
             )
+
+            feedback_payload = {
+                "recommendation_id": memory_id,
+                "feedback_type": "accept",
+                "message": request.message,
+                "reason": request.message,
+                "scope": "recommendation",
+            }
 
         elif action == "reject":
             if reject_recommendation is None:
@@ -1491,9 +2572,17 @@ async def recommendation_action(
                 )
 
             updated = reject_recommendation(
-                recommendation,
+                updated,
                 reason=request.message,
             )
+
+            feedback_payload = {
+                "recommendation_id": memory_id,
+                "feedback_type": "reject",
+                "message": request.message,
+                "reason": request.message,
+                "scope": "recommendation",
+            }
 
         elif action == "discuss":
             if discuss_recommendation is None:
@@ -1502,9 +2591,16 @@ async def recommendation_action(
                 )
 
             updated = discuss_recommendation(
-                recommendation,
+                updated,
                 message=request.message,
             )
+
+            feedback_payload = {
+                "recommendation_id": memory_id,
+                "feedback_type": "comment",
+                "message": request.message,
+                "scope": "recommendation",
+            }
 
         else:
             raise HTTPException(
@@ -1515,10 +2611,17 @@ async def recommendation_action(
                 ),
             )
 
-        saved = await runtime.memory.save_recommendation(
-            project_id=project_id,
-            recommendation=updated,
-        )
+        # Persist the state change through the Memory 2.0 feedback
+        # contour (updates the stored recommendation status).
+        saved = None
+
+        if feedback_payload is not None:
+            saved = (
+                await runtime.memory.apply_recommendation_feedback(
+                    project_id=project_id,
+                    feedback=feedback_payload,
+                )
+            )
 
         return {
             "success": True,
@@ -1570,27 +2673,20 @@ async def director_feedback(
             preference=request.preference,
         )
 
-        await runtime.memory.save_feedback(
-            project_id=request.project_id,
-            feedback=feedback,
-        )
-
         director = runtime.get_director(
             project_id=request.project_id,
         )
 
+        # Director owns the feedback contour: it updates its context and
+        # persists the feedback through the existing Memory 2.0 API.
         if hasattr(
             director,
             "apply_feedback",
         ):
-            try:
-                director.apply_feedback(
-                    feedback,
-                )
-            except Exception:
-                logger.exception(
-                    "Director apply_feedback failed"
-                )
+            await call_maybe_async(
+                director.apply_feedback,
+                feedback,
+            )
 
         return {
             "success": True,
@@ -1648,7 +2744,7 @@ async def director_chat(
         }
 
     async def run_analysis(_: Any) -> Any:
-        result = director.analyze()
+        result = await director.analyze()
 
         return {
             "message": (
@@ -1660,13 +2756,55 @@ async def director_chat(
     async def generate_recommendation(
         _: Any,
     ) -> Any:
-        result = director.create_recommendation()
+        # -------------------------------------------------------
+        # chat -> intent -> Director decision -> recommendation
+        # -> Memory -> user
+        # -------------------------------------------------------
+
+        analysis = None
+        decision = None
+
+        if (
+            director.last_result is not None
+            and director.last_result.decision is not None
+        ):
+            decision = director.last_result.decision
+            analysis = director.last_result.data.get(
+                "analysis"
+            )
+        else:
+            analysis = await director.analyze()
+            decision = await director.decide(
+                analysis
+            )
+
+        recommendation = director.create_recommendation(
+            decision,
+            analysis=analysis,
+        )
+
+        decision_db_id = (
+            await runtime.memory.save_decision(
+                project_id=request.project_id,
+                decision=decision,
+            )
+        )
+
+        saved = await runtime.memory.save_recommendation(
+            project_id=request.project_id,
+            recommendation=recommendation,
+            decision_db_id=decision_db_id,
+        )
 
         return {
             "message": (
                 "Я подготовил рекомендацию."
             ),
-            "recommendation": serialize(result),
+            "recommendation": serialize(
+                recommendation
+            ),
+            "decision": serialize(decision),
+            "saved": serialize(saved),
         }
 
     async def inspect_state(_: Any) -> Any:
@@ -1765,13 +2903,35 @@ async def director_chat(
     }
 
     try:
-        result = execute_chat_command(
+        result = await execute_chat_command(
             command,
             handlers=handlers,
         )
 
-        if hasattr(result, "__await__"):
-            result = await result
+        await runtime.memory.save_chat_message(
+            project_id=request.project_id,
+            role="user",
+            message=request.message,
+        )
+
+        message_text = (
+            result.message
+            if isinstance(result, ChatResult)
+            else str(result)
+        )
+
+        await runtime.memory.save_chat_message(
+            project_id=request.project_id,
+            role="assistant",
+            message=message_text,
+            data={
+                "action": (
+                    getattr(result, "action", None)
+                    if isinstance(result, ChatResult)
+                    else None
+                ),
+            },
+        )
 
         return serialize(result)
 
@@ -1845,7 +3005,7 @@ async def director_decision(
     )
 
     try:
-        decision = director.decide()
+        decision = await director.decide()
 
         saved = await runtime.memory.save_decision(
             project_id=project_id,
@@ -1936,7 +3096,7 @@ async def director_wakeup_trigger(
             detail="Wakeup manager unavailable.",
         )
 
-    signal = runtime.wakeup.manual(
+    signal = runtime.wakeup.notify_manual(
         project_id=project_id,
     )
 

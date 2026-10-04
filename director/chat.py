@@ -241,7 +241,7 @@ def command_to_action(command: ChatCommand) -> str:
     return mapping[command.intent]
 
 
-def execute_chat_command(
+async def execute_chat_command(
     command: ChatCommand,
     *,
     handlers: dict[str, Any] | None = None,
@@ -250,6 +250,7 @@ def execute_chat_command(
     Dispatch a parsed command to Director-owned handlers.
 
     Handlers are injected so chat does not know implementation details.
+    Async handlers are awaited.
     """
     action = command_to_action(command)
     handlers = handlers or {}
@@ -269,6 +270,9 @@ def execute_chat_command(
 
     try:
         result = handler(command)
+
+        if hasattr(result, "__await__"):
+            result = await result
 
         if isinstance(result, ChatResult):
             return result

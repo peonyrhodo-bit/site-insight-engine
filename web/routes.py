@@ -138,7 +138,7 @@ def create_router(
         )
 
         if body.autonomous:
-            cycle = director.run_autonomous_cycle(
+            cycle = await director.run_autonomous_cycle(
                 objective=body.objective
             )
 
@@ -149,7 +149,7 @@ def create_router(
                 "status": director.status(),
             }
 
-        result = director.run_once(
+        result = await director.run_once(
             objective=body.objective
         )
 
@@ -173,7 +173,7 @@ def create_router(
             mode=DirectorMode.AUTONOMOUS,
         )
 
-        cycle = director.run_autonomous_cycle(
+        cycle = await director.run_autonomous_cycle(
             objective=body.objective
         )
 
@@ -357,6 +357,24 @@ def create_router(
             body.message
         )
 
+        async def _run_analysis(_: Any) -> dict[str, Any]:
+            analysis = await director.analyze()
+
+            return {
+                "message": "Анализ выполнен.",
+                "analysis": analysis,
+            }
+
+        async def _generate_recommendation(
+            _: Any,
+        ) -> dict[str, Any]:
+            result = await director.run_once()
+
+            return {
+                "message": "Рекомендация подготовлена.",
+                "result": result.to_dict(),
+            }
+
         handlers = {
             "inspect_state": lambda _: {
                 "message": (
@@ -370,16 +388,11 @@ def create_router(
                 ),
                 "research": director.plan_research().to_dict(),
             },
-            "run_analysis": lambda _: {
-                "message": "Анализ выполнен.",
-                "analysis": director.analyze(),
-            },
-            "generate_recommendation": lambda _: (
-                director.run_once().to_dict()
+            "run_analysis": _run_analysis,
+            "generate_recommendation": (
+                _generate_recommendation
             ),
-            "continue_cycle": lambda _: (
-                director.run_once().to_dict()
-            ),
+            "continue_cycle": _generate_recommendation,
             "stop_cycle": lambda _: {
                 "message": "Текущий цикл остановлен.",
             },
@@ -391,7 +404,7 @@ def create_router(
             },
         }
 
-        result = execute_chat_command(
+        result = await execute_chat_command(
             command,
             handlers=handlers,
         )

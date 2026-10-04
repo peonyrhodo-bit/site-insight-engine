@@ -1138,8 +1138,10 @@ def calculate_global_evidence_quality(
 
     return round(
         _mean(
-            topic.confidence
-            for topic in topics
+            [
+                topic.confidence
+                for topic in topics
+            ]
         ),
         6,
     )

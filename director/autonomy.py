@@ -181,7 +181,7 @@ class DirectorAutonomy:
             message,
         )
 
-    def _safe_call(
+    async def _safe_call(
         self,
         handler: Callable | None,
         state: DirectorState,
@@ -190,9 +190,14 @@ class DirectorAutonomy:
         if handler is None:
             return None
 
-        return handler(state, payload)
+        result = handler(state, payload)
 
-    def run(
+        if hasattr(result, "__await__"):
+            result = await result
+
+        return result
+
+    async def run(
         self,
         *,
         project_id: str | None = None,
@@ -216,7 +221,7 @@ class DirectorAutonomy:
         cycle.state.cycle_count += 1
 
         try:
-            return self._run_cycle(cycle)
+            return await self._run_cycle(cycle)
         except Exception as exc:
             cycle.status = CycleStatus.ERROR
             cycle.state.status = CycleStatus.ERROR
@@ -235,7 +240,7 @@ class DirectorAutonomy:
 
             return cycle
 
-    def _run_cycle(
+    async def _run_cycle(
         self,
         cycle: DirectorCycle,
     ) -> DirectorCycle:
@@ -261,7 +266,7 @@ class DirectorAutonomy:
             "Проверяю текущее состояние проекта.",
         )
 
-        state_data = self._safe_call(
+        state_data = await self._safe_call(
             self.inspect_handler,
             cycle.state,
             None,
@@ -287,7 +292,7 @@ class DirectorAutonomy:
             "Определяю, на каком этапе сейчас находится задача.",
         )
 
-        understanding = self._safe_call(
+        understanding = await self._safe_call(
             self.understand_handler,
             cycle.state,
             state_data,
@@ -314,7 +319,7 @@ class DirectorAutonomy:
                 "Оцениваю, достаточно ли текущих данных.",
             )
 
-            assessment = self._safe_call(
+            assessment = await self._safe_call(
                 self.assess_handler,
                 cycle.state,
                 understanding,
@@ -345,7 +350,7 @@ class DirectorAutonomy:
                         "Данных пока недостаточно — планирую следующий этап исследования.",
                     )
 
-                    research_result = self._safe_call(
+                    research_result = await self._safe_call(
                         self.research_handler,
                         cycle.state,
                         assessment,
@@ -387,7 +392,7 @@ class DirectorAutonomy:
                 "Анализирую собранные данные.",
             )
 
-            analysis = self._safe_call(
+            analysis = await self._safe_call(
                 self.analyze_handler,
                 cycle.state,
                 understanding,
@@ -407,7 +412,7 @@ class DirectorAutonomy:
                 "Принимаю решение о следующем шаге.",
             )
 
-            decision = self._safe_call(
+            decision = await self._safe_call(
                 self.decide_handler,
                 cycle.state,
                 understanding,
@@ -488,7 +493,7 @@ class DirectorAutonomy:
                     "Формирую понятное предложение для пользователя.",
                 )
 
-                recommendation = self._safe_call(
+                recommendation = await self._safe_call(
                     self.recommend_handler,
                     cycle.state,
                     decision,
@@ -549,7 +554,7 @@ class DirectorAutonomy:
                     "Выполняю разрешённое действие.",
                 )
 
-                result = self._safe_call(
+                result = await self._safe_call(
                     self.act_handler,
                     cycle.state,
                     decision,
@@ -569,7 +574,7 @@ class DirectorAutonomy:
                     "Проверяю результат выполненного действия.",
                 )
 
-                evaluation = self._safe_call(
+                evaluation = await self._safe_call(
                     self.evaluate_handler,
                     cycle.state,
                     result,
@@ -583,7 +588,7 @@ class DirectorAutonomy:
                     "Фиксирую результат для следующего цикла.",
                 )
 
-                self._safe_call(
+                await self._safe_call(
                     self.learn_handler,
                     cycle.state,
                     evaluation,
@@ -603,7 +608,7 @@ class DirectorAutonomy:
                     "Действие требует внешнего исполнения, поэтому формирую предложение.",
                 )
 
-                recommendation = self._safe_call(
+                recommendation = await self._safe_call(
                     self.recommend_handler,
                     cycle.state,
                     decision,

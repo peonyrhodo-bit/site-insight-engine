@@ -1498,25 +1498,35 @@ def calculate_analysis_confidence(
         / 10.0
     )
 
-    data_completeness = _mean(
-        [
-            1.0
-            if get_video_id(video)
-            else 0.0,
-            1.0
-            if get_views(video) > 0
-            else 0.0,
-            1.0
-            if get_published_at(video)
-            else 0.0,
-            1.0
-            if (
-                get_likes(video) > 0
-                or get_comments(video) > 0
-            )
-            else 0.0,
-        ]
+    # Per-video completeness is the mean of the four availability
+    # signals; the overall score is the mean across videos.
+    # (Previously a list of per-video lists was passed to _mean,
+    # which expects numeric values.)
+    per_video_completeness = [
+        _mean(
+            [
+                1.0
+                if get_video_id(video)
+                else 0.0,
+                1.0
+                if get_views(video) > 0
+                else 0.0,
+                1.0
+                if get_published_at(video)
+                else 0.0,
+                1.0
+                if (
+                    get_likes(video) > 0
+                    or get_comments(video) > 0
+                )
+                else 0.0,
+            ]
+        )
         for video in videos
+    ]
+
+    data_completeness = _mean(
+        per_video_completeness
     )
 
     return _clamp(

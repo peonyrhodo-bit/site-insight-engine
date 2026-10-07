@@ -1318,49 +1318,17 @@ class Director:
         state: DirectorState,
         evaluation: Any,
     ) -> Any:
-        if self.memory_service is None:
-            return None
+        """
+        Final learning hook for the autonomous cycle.
 
-        writer = getattr(
-            self.memory_service,
-            "save_result",
-            None,
-        )
-
-        if writer is None:
-            return None
-
-        try:
-            summary = ""
-
-            if isinstance(evaluation, dict):
-                summary = str(
-                    evaluation.get("message")
-                    or evaluation.get("summary")
-                    or ""
-                )
-
-            saved = writer(
-                self.project_id,
-                {
-                    "type": "director_cycle",
-                    "summary": summary,
-                    "state": (
-                        state.to_dict()
-                        if hasattr(state, "to_dict")
-                        else state
-                    ),
-                    "evaluation": evaluation,
-                },
-            )
-
-            if hasattr(saved, "__await__"):
-                saved = await saved
-
-            return saved
-
-        except Exception:
-            return None
+        Persistence of the complete cycle is owned by the server
+        orchestration so run_id, decision_id, recommendation_id and
+        result_id are created in one linked persistence flow.
+        """
+        return {
+            "evaluation": evaluation,
+            "persisted_by": "cycle_orchestration",
+        }
 
     # ============================================================
     # PUBLIC ONE-STEP API

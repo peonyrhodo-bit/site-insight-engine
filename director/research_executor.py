@@ -222,11 +222,30 @@ class YouTubeResearchExecutor:
                         errors.append(f"{text}: {type(exc).__name__}: {exc}")
 
         research.mark_data_gathered("queries", "research_set")
-        if registry.videos():
+        if research.video_ids:
             research.mark_data_gathered("videos")
-        if registry.snapshots():
+        if research.snapshot_ids:
             research.mark_data_gathered("video_snapshots")
-        if relations is not None and relations.relation_count() > 0:
+
+        current_relation_objects = []
+        if relations is not None:
+            query_ids = set(research.query_ids)
+            video_ids = set(research.video_ids)
+            snapshot_ids = set(research.snapshot_ids)
+
+            for relation in relations.all_relations():
+                if (
+                    (relation.source_type == "research" and relation.source_id == research.research_id)
+                    or relation.source_id in query_ids
+                    or relation.target_id in query_ids
+                    or relation.source_id in video_ids
+                    or relation.target_id in video_ids
+                    or relation.source_id in snapshot_ids
+                    or relation.target_id in snapshot_ids
+                ):
+                    current_relation_objects.append(relation)
+
+        if current_relation_objects:
             research.mark_data_gathered("relations")
 
         if failed_queries:
@@ -235,14 +254,31 @@ class YouTubeResearchExecutor:
             research.mark_complete()
 
         if self.storage is not None:
+            # Persist the actual objects produced by this research run.
+            # Do not flush the entire in-memory registry: it may contain
+            # reusable/previous project data.
+            await _maybe_await(
+                self.storage.save_youtube_data(
+                    project_id=project_id,
+                    videos=[video.to_dict() for video in registry.videos()
+                            if video.video_id in set(research.video_ids)],
+                    snapshots=[snapshot.to_dict() for snapshot in registry.snapshots()
+                               if snapshot.snapshot_id in set(research.snapshot_ids)],
+                )
+            )
+
             await _maybe_await(
                 self.storage.save_research_data(
                     project_id=project_id,
-                    queries=registry.queries(),
-                    research_sets=research_manager.all() if research_manager is not None else [research],
-                    relations=relations.all_relations() if relations is not None else [],
+                    queries=[query.to_dict() for query in collected_queries],
+                    research_sets=[research.to_dict()],
+                    relations=[
+                        relation.to_dict()
+                        for relation in current_relation_objects
+                    ],
                 )
             )
+
             if opportunity_registry is not None:
                 await _maybe_await(
                     self.storage.save_opportunity_data(

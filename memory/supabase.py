@@ -362,6 +362,75 @@ class SupabaseMemoryBackend:
             "snapshots": snapshots,
         }
 
+    def save_youtube_data(
+        self,
+        *,
+        project_id: str,
+        videos: list[dict[str, Any]] | None = None,
+        snapshots: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Persist normalized YouTube DATA returned by Research/MCP."""
+        project_id = str(project_id)
+        saved_videos = 0
+        saved_snapshots = 0
+        snapshot_ids: list[int] = []
+
+        for video in videos or []:
+            if not isinstance(video, dict):
+                continue
+            video_id = str(video.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            data_json = self._safe_dict(video.get("metadata"))
+            data_json["project_id"] = project_id
+            payload = {
+                "video_id": video_id,
+                "data_json": data_json,
+                "first_seen": video.get("first_seen_at"),
+                "last_seen": video.get("last_seen_at"),
+            }
+            response = (
+                self.client.table("videos")
+                .upsert(payload, on_conflict="video_id")
+                .select("video_id")
+                .execute()
+            )
+            if self._safe_list(response):
+                saved_videos += 1
+
+        for snapshot in snapshots or []:
+            if not isinstance(snapshot, dict):
+                continue
+            video_id = str(snapshot.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            data_json = self._safe_dict(snapshot.get("metadata"))
+            data_json["project_id"] = project_id
+            data_json["statistics"] = self._safe_dict(
+                snapshot.get("metrics")
+            )
+            payload = {
+                "video_id": video_id,
+                "data_json": data_json,
+            }
+            response = (
+                self.client.table("video_snapshots")
+                .insert(payload)
+                .select("id")
+                .execute()
+            )
+            row_id = self._first_id(response)
+            if row_id is not None:
+                saved_snapshots += 1
+                snapshot_ids.append(row_id)
+
+        return {
+            "videos": saved_videos,
+            "snapshots": saved_snapshots,
+            "snapshot_ids": snapshot_ids,
+        }
+
+
     # ------------------------------------------------------------------
     # DATA / RESEARCH
     # ------------------------------------------------------------------

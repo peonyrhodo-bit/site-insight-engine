@@ -16,6 +16,7 @@ The server itself does not make strategic decisions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -60,6 +61,16 @@ FREE_MODE = (
 AUTONOMOUS_ENABLED = (
     os.getenv("AUTONOMOUS_ENABLED", "false").lower()
     in {"1", "true", "yes", "on"}
+)
+
+AUTONOMOUS_POLL_INTERVAL_SECONDS = max(
+    1,
+    int(os.getenv("AUTONOMOUS_POLL_INTERVAL_SECONDS", "5")),
+)
+
+AUTONOMOUS_WAKE_INTERVAL_SECONDS = max(
+    1,
+    int(os.getenv("AUTONOMOUS_WAKE_INTERVAL_SECONDS", "3600")),
 )
 
 DEFAULT_PROJECT_ID = os.getenv(
@@ -1899,6 +1910,11 @@ class Runtime:
 
         self.directors: dict[str, Director] = {}
 
+        # The scheduler/wakeup objects are deliberately kept in Runtime so
+        # the background bridge can drive them without putting timing logic
+        # into Director itself.
+        self.autonomous_worker: asyncio.Task | None = None
+
     def get_director(
         self,
         project_id: str,
@@ -2357,6 +2373,100 @@ async def _run_director(
 # ---------------------------------------------------------------------------
 
 
+async def _execute_autonomous_cycle(
+    *,
+    project_id: str,
+    objective: str | None = None,
+) -> dict[str, Any]:
+    """Run one autonomous Director cycle and persist its complete result."""
+    director = runtime.get_director(
+        project_id=project_id,
+        mode=DirectorMode.AUTONOMOUS,
+    )
+
+    if objective:
+        director.context.objective = objective
+
+    result = await call_maybe_async(
+        director.run_autonomous_cycle,
+        objective=objective,
+    )
+
+    serialized = serialize(result)
+
+    # Persist the autonomous run first so all outputs share one run_id.
+    run_id = await runtime.memory.save_run(
+        project_id=project_id,
+        run={
+            "type": "autonomous_cycle",
+            "created_at": utc_now(),
+            "result": serialized,
+        },
+    )
+
+    decision = getattr(
+        director.last_result,
+        "decision",
+        None,
+    )
+
+    decision_db_id = None
+
+    if decision is not None:
+        decision_db_id = await runtime.memory.save_decision(
+            project_id=project_id,
+            decision=decision,
+            run_id=run_id,
+        )
+
+    recommendation = getattr(
+        director.last_result,
+        "recommendation",
+        None,
+    )
+
+    recommendation_db_id = None
+
+    if recommendation is not None:
+        recommendation_db_id = (
+            await runtime.memory.save_recommendation(
+                project_id=project_id,
+                recommendation=recommendation,
+                decision_db_id=decision_db_id,
+                run_id=run_id,
+            )
+        )
+
+    result_db_id = await runtime.memory.save_result(
+        project_id=project_id,
+        result={
+            "type": "autonomous_cycle",
+            "summary": (
+                serialized.get("message", "")
+                if isinstance(serialized, dict)
+                else ""
+            ),
+            "result": serialized,
+        },
+        run_id=run_id,
+        decision_db_id=decision_db_id,
+        recommendation_db_id=recommendation_db_id,
+    )
+
+    await runtime.memory.save_event(
+        project_id=project_id,
+        event_type="director_autonomous_run",
+        data={
+            "run_id": run_id,
+            "decision_id": decision_db_id,
+            "recommendation_id": recommendation_db_id,
+            "result_id": result_db_id,
+        },
+    )
+
+    return serialized
+
+
 @app.post("/director/autonomous/run")
 async def director_autonomous_run(
     project_id: str = DEFAULT_PROJECT_ID,
@@ -2368,94 +2478,11 @@ async def director_autonomous_run(
             detail="Автономный режим отключён.",
         )
 
-    director = runtime.get_director(
-        project_id=project_id,
-        mode=DirectorMode.AUTONOMOUS,
-    )
-
-    if objective:
-        director.context.objective = objective
-
     try:
-        result = await call_maybe_async(
-            director.run_autonomous_cycle,
+        return await _execute_autonomous_cycle(
+            project_id=project_id,
             objective=objective,
         )
-
-        serialized = serialize(result)
-
-        # Persist the autonomous run first so all outputs share
-        # one persistent run_id.
-        run_id = await runtime.memory.save_run(
-            project_id=project_id,
-            run={
-                "type": "autonomous_cycle",
-                "created_at": utc_now(),
-                "result": serialized,
-            },
-        )
-
-        decision = getattr(
-            director.last_result,
-            "decision",
-            None,
-        )
-
-        decision_db_id = None
-
-        if decision is not None:
-            decision_db_id = await runtime.memory.save_decision(
-                project_id=project_id,
-                decision=decision,
-                run_id=run_id,
-            )
-
-        recommendation = getattr(
-            director.last_result,
-            "recommendation",
-            None,
-        )
-
-        recommendation_db_id = None
-
-        if recommendation is not None:
-            recommendation_db_id = (
-                await runtime.memory.save_recommendation(
-                    project_id=project_id,
-                    recommendation=recommendation,
-                    decision_db_id=decision_db_id,
-                    run_id=run_id,
-                )
-            )
-
-        result_db_id = await runtime.memory.save_result(
-            project_id=project_id,
-            result={
-                "type": "autonomous_cycle",
-                "summary": (
-                    serialized.get("message", "")
-                    if isinstance(serialized, dict)
-                    else ""
-                ),
-                "result": serialized,
-            },
-            run_id=run_id,
-            decision_db_id=decision_db_id,
-            recommendation_db_id=recommendation_db_id,
-        )
-
-        await runtime.memory.save_event(
-            project_id=project_id,
-            event_type="director_autonomous_run",
-            data={
-                "run_id": run_id,
-                "decision_id": decision_db_id,
-                "recommendation_id": recommendation_db_id,
-                "result_id": result_db_id,
-            },
-        )
-
-        return serialized
 
     except Exception as exc:
         logger.exception(
@@ -2466,6 +2493,80 @@ async def director_autonomous_run(
             status_code=500,
             detail="Не удалось выполнить автономный цикл.",
         ) from exc
+
+
+async def _autonomous_worker_loop() -> None:
+    """Continuously bridge Scheduler/WakeupManager to Director execution."""
+    logger.info(
+        "Autonomous wakeup worker started: poll=%ss interval=%ss",
+        AUTONOMOUS_POLL_INTERVAL_SECONDS,
+        AUTONOMOUS_WAKE_INTERVAL_SECONDS,
+    )
+
+    # The scheduler is in-memory, so bootstrap one recurring schedule for
+    # the default project when autonomous mode is enabled. Existing active
+    # schedules are preserved.
+    if runtime.scheduler is not None and runtime.wakeup is not None:
+        active = runtime.scheduler.list(
+            project_id=DEFAULT_PROJECT_ID,
+        )
+        if not active:
+            runtime.scheduler.schedule_interval(
+                interval_seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,
+                reason="autonomous_cycle",
+                project_id=DEFAULT_PROJECT_ID,
+                first_run_at=utc_now(),
+                metadata={"source": "autonomous_worker"},
+            )
+
+    while True:
+        try:
+            if (
+                runtime.scheduler is not None
+                and runtime.wakeup is not None
+            ):
+                # Scheduler -> WakeupManager.
+                runtime.wakeup.collect_due(
+                    runtime.scheduler,
+                )
+
+                # WakeupManager -> Director.
+                while True:
+                    signal = runtime.wakeup.next()
+                    if signal is None:
+                        break
+
+                    try:
+                        objective = signal.payload.get("objective")
+                        if not isinstance(objective, str):
+                            objective = None
+
+                        await _execute_autonomous_cycle(
+                            project_id=signal.project_id,
+                            objective=objective,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Autonomous wakeup failed: project=%s reason=%s",
+                            signal.project_id,
+                            signal.reason,
+                        )
+                    finally:
+                        # A failed cycle must not block the whole wakeup queue.
+                        runtime.wakeup.consume(signal.wakeup_id)
+
+            await asyncio.sleep(
+                AUTONOMOUS_POLL_INTERVAL_SECONDS,
+            )
+
+        except asyncio.CancelledError:
+            logger.info("Autonomous wakeup worker stopped.")
+            raise
+        except Exception:
+            logger.exception("Autonomous wakeup worker iteration failed.")
+            await asyncio.sleep(
+                AUTONOMOUS_POLL_INTERVAL_SECONDS,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3499,9 +3600,23 @@ async def startup() -> None:
         else "disabled",
     )
 
+    if AUTONOMOUS_ENABLED:
+        runtime.autonomous_worker = asyncio.create_task(
+            _autonomous_worker_loop(),
+        )
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    if runtime.autonomous_worker is not None:
+        runtime.autonomous_worker.cancel()
+        try:
+            await runtime.autonomous_worker
+        except asyncio.CancelledError:
+            pass
+        finally:
+            runtime.autonomous_worker = None
+
     logger.info(
         "Stopping %s",
         SERVICE_NAME,

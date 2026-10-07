@@ -541,13 +541,13 @@ class ResearchService:
                             }
 
                         if tool_name not in tool_names:
-                            results.append({"query": query.to_dict(), "status": "blocked", "error": f"MCP tool not available: {tool_name}"})
+                            results.append({"query": _research_query_to_dict(query, plan.research_id, len(results)), "status": "blocked", "error": f"MCP tool not available: {tool_name}"})
                             continue
 
                         tool_result = await session.call_tool(tool_name, arguments)
                         queries_sent += 1
                         results.append({
-                            "query": query.to_dict(),
+                            "query": _research_query_to_dict(query, plan.research_id, len(results)),
                             "tool": tool_name,
                             "status": "completed",
                             "result": _serialize_mcp_result(tool_result),
@@ -569,6 +569,24 @@ class ResearchService:
             "queries_sent": queries_sent,
             "results": results,
         }
+
+
+
+def _research_query_to_dict(
+    query: ResearchQuery,
+    research_id: str,
+    index: int,
+) -> dict[str, Any]:
+    """Serialize a ResearchQuery into the canonical DATA query shape."""
+    return {
+        "query_id": f"{research_id}:q:{index}",
+        "text": query.query,
+        "language": query.language,
+        "region": query.region_code,
+        "metadata": dict(query.metadata or {}),
+        "source": "youtube-mcp",
+        "status": "planned",
+    }
 
 
 def _context_topics(context: dict[str, Any]) -> list[str]:

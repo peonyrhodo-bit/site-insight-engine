@@ -979,18 +979,31 @@ def video_from_mapping(
     source: str | None = None,
 ) -> YouTubeVideo:
     """
-    Convert a raw/normalized mapping into YouTubeVideo.
+    Convert a raw/normalized YouTube MCP item into YouTubeVideo.
 
-    This intentionally accepts multiple common field names so the DATA layer
-    is not coupled to one exact MCP response shape.
+    Supports both flat MCP payloads and the nested YouTube Data API shape:
+        {"id": {"videoId": "..."}, "snippet": {...}}
+
+    The complete original item is retained in metadata so normalization
+    never becomes a data-loss boundary.
     """
-    external_id = (
-        data.get("youtube_id")
-        or data.get("video_id")
-        or data.get("id")
-    )
+    snippet = data.get("snippet")
+    snippet = snippet if isinstance(snippet, Mapping) else {}
 
-    if external_id is None:
+    raw_id = data.get("youtube_id") or data.get("video_id")
+    if raw_id is None:
+        raw_id = data.get("videoId")
+    if raw_id is None:
+        raw_id = data.get("id")
+
+    if isinstance(raw_id, Mapping):
+        raw_id = (
+            raw_id.get("videoId")
+            or raw_id.get("video_id")
+            or raw_id.get("id")
+        )
+
+    if raw_id is None:
         raise ValueError(
             "video mapping does not contain a video identifier"
         )
@@ -999,16 +1012,10 @@ def video_from_mapping(
         video_id
         if video_id is not None
         else data.get("internal_video_id")
-        or external_id
+        or raw_id
     )
 
-    youtube_id = str(
-        data.get("youtube_id")
-        or data.get("videoId")
-        or data.get("video_id")
-        or data.get("id")
-        or ""
-    )
+    youtube_id = str(raw_id)
 
     return YouTubeVideo(
         video_id=internal_id,
@@ -1016,20 +1023,27 @@ def video_from_mapping(
         title=(
             data.get("title")
             or data.get("video_title")
+            or snippet.get("title")
             or ""
         ),
         channel_id=(
             data.get("channel_id")
             or data.get("channelId")
+            or snippet.get("channelId")
         ),
         channel_title=(
             data.get("channel_title")
             or data.get("channelTitle")
+            or snippet.get("channelTitle")
         ),
-        description=data.get("description"),
+        description=(
+            data.get("description")
+            or snippet.get("description")
+        ),
         published_at=(
             data.get("published_at")
             or data.get("publishedAt")
+            or snippet.get("publishedAt")
         ),
         url=(
             data.get("url")
@@ -1051,33 +1065,45 @@ def snapshot_from_mapping(
     source: str | None = None,
 ) -> YouTubeSnapshot:
     """
-    Convert a raw/normalized metrics mapping into a snapshot.
+    Convert a raw YouTube MCP item into an immutable snapshot.
 
-    Common YouTube metrics are accepted directly. If a nested "metrics"
-    mapping exists it is preferred.
+    Explicit metrics/statistics are normalized as metrics. For search results
+    without statistics, only recognized flat metric fields are extracted;
+    the full MCP item remains in metadata.
     """
     raw_metrics = data.get("metrics")
+    if not isinstance(raw_metrics, Mapping):
+        raw_metrics = data.get("statistics")
 
     if isinstance(raw_metrics, Mapping):
         metrics = dict(raw_metrics)
     else:
-        excluded = {
-            "snapshot_id",
-            "video_id",
-            "captured_at",
-            "created_at",
-            "updated_at",
-            "research_id",
-            "query_ids",
-            "metadata",
-            "source",
+        metric_aliases = {
+            "view_count": "view_count",
+            "viewCount": "view_count",
+            "like_count": "like_count",
+            "likeCount": "like_count",
+            "comment_count": "comment_count",
+            "commentCount": "comment_count",
+            "views": "views",
+            "likes": "likes",
+            "comments": "comments",
+            "duration": "duration",
+            "age_hours": "age_hours",
+            "engagement": "engagement",
+            "views_per_hour": "views_per_hour",
+        }
+        metrics = {
+            normalized: data[key]
+            for key, normalized in metric_aliases.items()
+            if key in data
         }
 
-        metrics = {
-            key: value
-            for key, value in data.items()
-            if key not in excluded
-        }
+    metadata = dict(data)
+    if research_id is not None:
+        metadata.setdefault("research_id", research_id)
+    if query_ids is not None:
+        metadata.setdefault("query_ids", list(query_ids))
 
     return YouTubeSnapshot(
         snapshot_id=snapshot_id,
@@ -1088,7 +1114,7 @@ def snapshot_from_mapping(
             or data.get("created_at")
         ),
         metrics=metrics,
-        metadata=data.get("metadata") or {},
+        metadata=metadata,
         source=source or data.get("source"),
         research_id=research_id,
         query_ids=query_ids or data.get("query_ids") or [],

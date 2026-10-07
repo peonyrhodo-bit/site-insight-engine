@@ -183,13 +183,6 @@ class MemoryBackend(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
-    def save_recommendation_feedback(
-        self,
-        *,
-        feedback: dict[str, Any],
-    ) -> int | None:
-        ...
-
     def apply_recommendation_feedback(
         self,
         *,
@@ -704,17 +697,6 @@ class Memory:
                 limit,
                 self.DEFAULT_LIMIT_RECOMMENDATIONS,
             )
-        )
-
-    def save_recommendation_feedback(
-        self,
-        feedback: dict[str, Any],
-    ) -> int | None:
-        if not isinstance(feedback, dict):
-            raise TypeError("feedback must be a dict")
-
-        return self.backend.save_recommendation_feedback(
-            feedback=feedback
         )
 
     def apply_recommendation_feedback(

@@ -432,6 +432,119 @@ class SupabaseMemoryBackend:
 
 
     # ------------------------------------------------------------------
+    # OPPORTUNITY DATA
+    # ------------------------------------------------------------------
+
+    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        result = {
+            "channels": [],
+            "channel_snapshots": [],
+            "niches": [],
+            "niche_snapshots": [],
+        }
+        tables = {
+            "channels": "channels",
+            "channel_snapshots": "channel_snapshots",
+            "niches": "niches",
+            "niche_snapshots": "niche_snapshots",
+        }
+        for key, table in tables.items():
+            try:
+                rows = self._recent_for_project(
+                    table,
+                    limit=1000,
+                    project_id=project_id,
+                    order_key="id",
+                    default_limit=1000,
+                )
+                for row in rows:
+                    if isinstance(row.get("data_json"), dict):
+                        row["data"] = row["data_json"]
+                result[key] = rows
+            except Exception:
+                result[key] = []
+        return result
+
+    def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
+        counts = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
+        pid = str(project_id)
+
+        for item in data.get("channels") or []:
+            if not isinstance(item, dict) or not item.get("channel_id"):
+                continue
+            payload = {
+                "project_id": pid,
+                "channel_id": str(item["channel_id"]),
+                "title": item.get("title", ""),
+                "description": item.get("description"),
+                "custom_url": item.get("custom_url"),
+                "country": item.get("country"),
+                "published_at": item.get("published_at"),
+                "video_count": item.get("video_count"),
+                "subscriber_count": item.get("subscriber_count"),
+                "view_count": item.get("view_count"),
+                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
+            }
+            self.client.table("channels").upsert(payload, on_conflict="project_id,channel_id").execute()
+            counts["channels"] += 1
+
+        for item in data.get("channel_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("channel_id"):
+                continue
+            payload = {
+                "project_id": pid,
+                "channel_id": str(item["channel_id"]),
+                "captured_at": item.get("captured_at"),
+                "subscriber_count": item.get("subscriber_count"),
+                "video_count": item.get("video_count"),
+                "view_count": item.get("view_count"),
+                "new_video_count": item.get("new_video_count"),
+                "subscriber_growth": item.get("subscriber_growth"),
+                "view_growth": item.get("view_growth"),
+                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
+            }
+            self.client.table("channel_snapshots").upsert(payload, on_conflict="project_id,channel_id,captured_at").execute()
+            counts["channel_snapshots"] += 1
+
+        for item in data.get("niches") or []:
+            if not isinstance(item, dict) or not item.get("niche_id"):
+                continue
+            payload = {
+                "project_id": pid,
+                "niche_id": str(item["niche_id"]),
+                "name": item.get("name", ""),
+                "description": item.get("description"),
+                "aliases": item.get("aliases") or [],
+                "language": item.get("language"),
+                "region": item.get("region"),
+                "status": item.get("status", "active"),
+                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
+            }
+            self.client.table("niches").upsert(payload, on_conflict="project_id,niche_id").execute()
+            counts["niches"] += 1
+
+        for item in data.get("niche_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("niche_id"):
+                continue
+            payload = {
+                "project_id": pid,
+                "niche_id": str(item["niche_id"]),
+                "captured_at": item.get("captured_at"),
+                "video_count": item.get("video_count"),
+                "channel_count": item.get("channel_count"),
+                "median_views": item.get("median_views"),
+                "average_views": item.get("average_views"),
+                "growth_rate": item.get("growth_rate"),
+                "new_video_count": item.get("new_video_count"),
+                "new_channel_count": item.get("new_channel_count"),
+                "top_channel_share": item.get("top_channel_share"),
+                "competition_score": item.get("competition_score"),
+                "opportunity_score": item.get("opportunity_score"),
+                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
+            }
+            self.client.table("niche_snapshots").upsert(payload, on_conflict="project_id,niche_id,captured_at").execute()
+            counts["niche_snapshots"] += 1
+
     # DATA / RESEARCH
     # ------------------------------------------------------------------
 

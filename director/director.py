@@ -954,7 +954,10 @@ class Director:
             )
 
             if writer:
-                saved = writer(feedback_payload)
+                saved = writer(
+                    self.project_id,
+                    feedback_payload,
+                )
 
                 if hasattr(saved, "__await__"):
                     await saved
@@ -969,6 +972,7 @@ class Director:
                 if constraint_writer:
                     saved_constraint = (
                         constraint_writer(
+                            self.project_id,
                             {
                                 "title": (
                                     "Ограничение пользователя"
@@ -1337,9 +1341,10 @@ class Director:
                 )
 
             saved = writer(
-                result_type="director_cycle",
-                summary=summary,
-                data={
+                self.project_id,
+                {
+                    "type": "director_cycle",
+                    "summary": summary,
                     "state": (
                         state.to_dict()
                         if hasattr(state, "to_dict")

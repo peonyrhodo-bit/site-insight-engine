@@ -1603,8 +1603,19 @@ class DataAdapter:
                         research_id=research_id,
                         name=f"Research {research_id}",
                         objective=str(getattr(plan, "objective", "") or ""),
-                        language=getattr(plan, "language", None),
-                        region=getattr(plan, "region", None),
+                        language=(
+                            (getattr(plan, "languages", None) or [None])[0]
+                        ),
+                        region=(
+                            next(
+                                (
+                                    query.region_code
+                                    for query in (getattr(plan, "queries", None) or [])
+                                    if getattr(query, "region_code", None)
+                                ),
+                                None,
+                            )
+                        ),
                         source="youtube-mcp",
                         status="collecting",
                         metadata={"project_id": project_id},

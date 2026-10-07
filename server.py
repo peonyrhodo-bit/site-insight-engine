@@ -1916,12 +1916,18 @@ class DataAdapter:
                     relation.to_dict()
                     for relation in self.relations.all()
                 ] if self.relations is not None else []
-                result["persistence"] = saver(
+                persistence = saver(
                     project_id=project_id,
                     queries=query_payload,
                     research_sets=research_payload,
                     relations=relation_payload,
                 )
+                existing_persistence = result.get("persistence")
+                if isinstance(existing_persistence, dict) and isinstance(persistence, dict):
+                    existing_persistence.update(persistence)
+                    result["persistence"] = existing_persistence
+                else:
+                    result["persistence"] = persistence
             except Exception:
                 logger.exception(
                     "Failed to persist research DATA"

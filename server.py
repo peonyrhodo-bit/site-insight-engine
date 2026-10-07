@@ -1608,6 +1608,63 @@ class DataAdapter:
                         for snapshot in loaded_registry.snapshots():
                             self.youtube_registry.add_snapshot(snapshot)
 
+                # Research/query/relation DATA has its own persistence
+                # contour. Load it through Memory storage, then expose it
+                # to Director as ordinary DATA objects.
+                research_loader = getattr(
+                    self.storage,
+                    "load_research_data",
+                    None,
+                )
+
+                if callable(research_loader):
+                    persisted_research = research_loader(
+                        project_id=project_id,
+                    )
+
+                    if isinstance(persisted_research, dict):
+                        queries = persisted_research.get("queries") or []
+                        for row in queries:
+                            if not isinstance(row, dict):
+                                continue
+                            try:
+                                from data.youtube import YouTubeQuery
+                                self.youtube_registry.add_query(
+                                    YouTubeQuery.from_dict(row)
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to restore YouTube query"
+                                )
+
+                        if self.research_manager is not None:
+                            from data.research_sets import ResearchSet
+                            self.research_manager.clear()
+                            for row in persisted_research.get("research_sets") or []:
+                                if isinstance(row, dict):
+                                    try:
+                                        self.research_manager.add(
+                                            ResearchSet.from_dict(row)
+                                        )
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to restore research set"
+                                        )
+
+                        if self.relations is not None:
+                            from data.relations import DataRelation
+                            self.relations.clear()
+                            for row in persisted_research.get("relations") or []:
+                                if isinstance(row, dict):
+                                    try:
+                                        self.relations.add_relation(
+                                            DataRelation.from_dict(row)
+                                        )
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to restore data relation"
+                                        )
+
                 if hasattr(
                     self.youtube_registry,
                     "videos",
@@ -1779,6 +1836,39 @@ class DataAdapter:
             except Exception:
                 logger.exception(
                     "Failed to load data relations"
+                )
+
+        # Persist the complete in-memory research graph after it has been
+        # assembled. Upserts make this idempotent, so repeated state reads
+        # do not create duplicate DATA records.
+        saver = getattr(
+            self.storage,
+            "save_research_data",
+            None,
+        )
+        if callable(saver):
+            try:
+                query_payload = [
+                    query.to_dict()
+                    for query in self.youtube_registry.queries()
+                ] if self.youtube_registry is not None else []
+                research_payload = [
+                    research.to_dict()
+                    for research in self.research_manager.all()
+                ] if self.research_manager is not None else []
+                relation_payload = [
+                    relation.to_dict()
+                    for relation in self.relations.all()
+                ] if self.relations is not None else []
+                result["persistence"] = saver(
+                    project_id=project_id,
+                    queries=query_payload,
+                    research_sets=research_payload,
+                    relations=relation_payload,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist research DATA"
                 )
 
         return result

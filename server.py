@@ -838,22 +838,29 @@ class ServerMemory:
 
     async def get_context(
         self,
-        project_id: str,
-        limit: int = 20,
+        *,
+        limit_runs: int = 10,
+        limit_decisions: int = 20,
+        limit_events: int = 30,
+        limit_chat: int = 20,
+        limit_actions: int = 20,
+        limit_results: int = 20,
+        limit_recommendations: int = 20,
+        limit_constraints: int = 20,
     ) -> dict[str, Any]:
         if not self.memory:
             return {}
 
         try:
             result = self.memory.get_context(
-                limit_runs=limit,
-                limit_decisions=limit,
-                limit_events=limit,
-                limit_chat=limit,
-                limit_actions=limit,
-                limit_results=limit,
-                limit_recommendations=limit,
-                limit_constraints=limit,
+                limit_runs=limit_runs,
+                limit_decisions=limit_decisions,
+                limit_events=limit_events,
+                limit_chat=limit_chat,
+                limit_actions=limit_actions,
+                limit_results=limit_results,
+                limit_recommendations=limit_recommendations,
+                limit_constraints=limit_constraints,
             )
 
             if hasattr(result, "__await__"):
@@ -862,20 +869,12 @@ class ServerMemory:
             if not isinstance(result, dict):
                 return {}
 
-            result.setdefault(
-                "project_id",
-                project_id,
-            )
-
             self._normalize_recommendation_ids(result)
 
             return result
 
         except Exception:
-            logger.exception(
-                "Memory get_context failed: project=%s",
-                project_id,
-            )
+            logger.exception("Memory get_context failed")
             return {}
 
     async def save_run(
@@ -2375,8 +2374,7 @@ async def dashboard(
     )
 
     memory_context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=20,
+        limit_runs=20,
     )
 
     return {
@@ -2410,8 +2408,7 @@ async def director_recommendations(
     limit: int = 20,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=limit,
+        limit_runs=limit,
     )
 
     recommendations = context.get(
@@ -2435,8 +2432,7 @@ async def director_recommendation(
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=100,
+        limit_runs=100,
     )
 
     recommendations = context.get(
@@ -2474,8 +2470,7 @@ async def recommendation_action(
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=100,
+        limit_runs=100,
     )
 
     recommendations = context.get(
@@ -3121,8 +3116,7 @@ async def events(
     limit: int = 50,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=limit,
+        limit_runs=limit,
     )
 
     return {
@@ -3147,8 +3141,7 @@ async def director_history(
     limit: int = 50,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit=limit,
+        limit_runs=limit,
     )
 
     return {

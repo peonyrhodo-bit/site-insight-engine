@@ -997,8 +997,7 @@ class ServerMemory:
                 decision_db_id=decision_db_id,
             )
 
-            if run_id is not None:
-                record["run_id"] = run_id
+            if run_id is not None:                record["run_id"] = run_id
 
             if (
                 not record.get("title")
@@ -1997,8 +1996,7 @@ class DataAdapter:
                                 ),
                                 dict,
                             )
-                            else {}
-                        )
+                            else {}                        )
 
                         for meta_key, meta_value in (
                             video_metadata.items()
@@ -2319,7 +2317,8 @@ class Runtime:
 
     def __init__(self) -> None:
         self.memory = ServerMemory()
-        self.analytics = AnalyticsAdapter()\n        self.research = ResearchService() if ResearchService is not None else None
+        self.analytics = AnalyticsAdapter()
+        self.research = ResearchService() if ResearchService is not None else None
         self.data = DataAdapter(
             storage=self.memory.backend,
         )
@@ -2997,8 +2996,7 @@ async def _autonomous_worker_loop() -> None:
                         # A failed cycle must not block the whole wakeup queue.
                         runtime.wakeup.consume(signal.wakeup_id)
 
-            await asyncio.sleep(
-                AUTONOMOUS_POLL_INTERVAL_SECONDS,
+            await asyncio.sleep(                AUTONOMOUS_POLL_INTERVAL_SECONDS,
             )
 
         except asyncio.CancelledError:
@@ -3997,7 +3995,6 @@ async def unhandled_exception(
         request.method,
         request.url.path,
     )
-
     return JSONResponse(
         status_code=500,
         content={

@@ -248,7 +248,11 @@ class YouTubeResearchExecutor:
         if current_relation_objects:
             research.mark_data_gathered("relations")
 
-        if failed_queries:
+        missing_expected = research.missing_expected_data()
+        if missing_expected:
+            research.mark_data_missing(*missing_expected)
+
+        if failed_queries or missing_expected:
             research.mark_partial()
         else:
             research.mark_complete()
@@ -295,7 +299,7 @@ class YouTubeResearchExecutor:
             "queries_failed": failed_queries,
             "videos_collected": len(research.video_ids),
             "snapshots_collected": len(research.snapshot_ids),
-            "relations_created": relations.relation_count() if relations is not None else 0,
+            "relations_created": len(current_relation_objects),
             "errors": errors,
             "source": "youtube-mcp",
             "mcp_url": mcp_url,

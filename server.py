@@ -1,3 +1,4 @@
+```python
 """
 AI Director HTTP server.
 
@@ -971,8 +972,7 @@ class ServerMemory:
                     ),
                     data={
                         key: value
-                        for key, value
-                        in record.items()
+                        for key, value in record.items()
                         if key != "decision"
                     },
                 )
@@ -1029,14 +1029,14 @@ class ServerMemory:
             )
             return None
 
-    async def save_feedback(
+    async def save_recommendation_feedback(
         self,
         project_id: str,
         feedback: Any,
     ) -> Any:
         """
         Persist feedback through the Memory 2.0 recommendation
-        feedback API (the old save_feedback() method no longer exists).
+        feedback API.
         """
 
         if not self.memory:
@@ -1061,7 +1061,7 @@ class ServerMemory:
 
         except Exception:
             logger.exception(
-                "Memory save_feedback failed"
+                "Memory save_recommendation_feedback failed"
             )
             return None
 
@@ -3354,3 +3354,4 @@ async def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 application = app
+```

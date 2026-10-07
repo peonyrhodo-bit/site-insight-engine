@@ -1570,6 +1570,11 @@ class DataAdapter:
             "observations": [],
             "research_sets": [],
             "relations": [],
+            "data_inventory": {
+                "video_count": 0,
+                "snapshot_count": 0,
+                "query_count": 0,
+            },
         }
 
         if self.youtube_registry is not None:
@@ -1717,6 +1722,28 @@ class DataAdapter:
                     result["observations"] = (
                         observations
                     )
+
+                    # Expose DATA inventory explicitly so Director can
+                    # distinguish "no data" from "data exists but has not
+                    # been analyzed yet".
+                    try:
+                        result["data_inventory"] = {
+                            "video_count": len(
+                                self.youtube_registry.videos()
+                            ),
+                            "snapshot_count": len(
+                                self.youtube_registry.snapshots()
+                            ),
+                            "query_count": len(
+                                self.youtube_registry.queries()
+                            ),
+                        }
+                    except Exception:
+                        result["data_inventory"] = {
+                            "video_count": len(observations),
+                            "snapshot_count": 0,
+                            "query_count": 0,
+                        }
             except Exception:
                 logger.exception(
                     "Failed to load youtube observations"

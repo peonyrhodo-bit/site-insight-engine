@@ -44,9 +44,10 @@ FEEDBACK_TYPES = {
     "accept",
     "reject",
     "defer",
-    "investigate",
-    "change_priority",
-    "comment",
+    "modify",
+    "clarify",
+    "prefer",
+    "avoid",
 }
 
 

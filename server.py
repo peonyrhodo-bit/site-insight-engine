@@ -2065,7 +2065,7 @@ class Runtime:
 
     def __init__(self) -> None:
         self.memory = ServerMemory()
-        self.analytics = AnalyticsAdapter()
+        self.analytics = AnalyticsAdapter()\n        self.research = ResearchService() if ResearchService is not None else None
         self.data = DataAdapter(
             storage=self.memory.backend,
         )

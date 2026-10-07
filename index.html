@@ -1547,37 +1547,57 @@
         latestRun =
             latest;
 
-        const analysis =
-            getNestedData(
-                latest,
-                ["data", "analysis"],
-                {}
-            );
-
-        const experiments =
+        // Recommendations are the canonical Director output.
+        // Do not use raw Analytics experiments/topics as "AI suggestions":
+        // they are signals, not persisted Director recommendations.
+        const recommendations =
             Array.isArray(
-                analysis.experiments
+                runs.flatMap(
+                    run => Array.isArray(run.recommendations)
+                        ? run.recommendations
+                        : []
+                )
             )
-                ? analysis.experiments
-                : [];
-
-        const topics =
-            Array.isArray(
-                analysis.topics
-            )
-                ? analysis.topics
+                ? runs.flatMap(
+                    run => Array.isArray(run.recommendations)
+                        ? run.recommendations
+                        : []
+                )
                 : [];
 
         latestSuggestions =
-            [
-                ...experiments,
-                ...topics
-            ].filter(
-                value =>
-                    value !== null &&
-                    value !== undefined &&
-                    String(value).trim()
-            ).slice(0, 5);
+            recommendations.slice(0, 5);
+
+        // Backward-compatible fallback for old runs created before
+        // persisted recommendations were exposed by /director/history.
+        if (!latestSuggestions.length) {
+            const analysis =
+                getNestedData(
+                    latest,
+                    ["data", "analysis"],
+                    {}
+                );
+
+            const experiments =
+                Array.isArray(analysis.experiments)
+                    ? analysis.experiments
+                    : [];
+
+            const topics =
+                Array.isArray(analysis.topics)
+                    ? analysis.topics
+                    : [];
+
+            latestSuggestions =
+                [...experiments, ...topics]
+                    .filter(
+                        value =>
+                            value !== null &&
+                            value !== undefined &&
+                            String(value).trim()
+                    )
+                    .slice(0, 5);
+        }
 
         document.getElementById(
             "statSuggestions"
@@ -1587,20 +1607,17 @@
             );
 
         if (!latestSuggestions.length) {
-
             container.innerHTML =
                 `
                 <div class="empty">
-                    В последнем анализе пока нет отдельных предложений.
+                    Пока нет сохранённых рекомендаций Director.
                 </div>
                 `;
-
             return;
         }
 
         latestSuggestions.forEach(
-            suggestion => {
-
+            recommendation => {
                 const block =
                     document.createElement(
                         "div"
@@ -1609,12 +1626,54 @@
                 block.className =
                     "suggestion";
 
-                block.textContent =
-                    suggestion;
+                if (typeof recommendation === "string") {
+                    block.textContent =
+                        recommendation;
+                } else {
+                    const title =
+                        recommendation.title ||
+                        "Рекомендация Director";
 
-                container.appendChild(
-                    block
-                );
+                    const summary =
+                        recommendation.description ||
+                        recommendation.summary ||
+                        "";
+
+                    const action =
+                        recommendation.suggested_action ||
+                        recommendation.proposed_action ||
+                        "";
+
+                    const confidence =
+                        recommendation.confidence !== undefined
+                            ? `Уверенность: ${Math.round(
+                                Number(recommendation.confidence) * 100
+                            )}%`
+                            : "";
+
+                    block.innerHTML =
+                        `
+                        <div class="list-item-title">
+                            ${escapeHtml(title)}
+                        </div>
+                        <div class="list-item-meta">
+                            ${escapeHtml(summary)}
+                        </div>
+                        ${action
+                            ? `<div style="margin-top:8px;">
+                                <strong>Действие:</strong>
+                                ${escapeHtml(action)}
+                              </div>`
+                            : ""}
+                        ${confidence
+                            ? `<div class="list-item-meta" style="margin-top:6px;">
+                                ${escapeHtml(confidence)}
+                              </div>`
+                            : ""}
+                        `;
+                }
+
+                container.appendChild(block);
             }
         );
     }

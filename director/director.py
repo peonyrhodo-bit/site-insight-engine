@@ -246,14 +246,99 @@ class Director:
                 if isinstance(external_state, dict):
                     self._merge_context(external_state)
 
-        self.state.evidence_available = bool(
-            self.context.observations
-            or self.context.analytics
-            or self.context.topics
-            or self.context.opportunities
+        self._refresh_project_state()
+        return self.context
+
+    def _refresh_project_state(self) -> None:
+        """Reconcile persisted evidence into an operational project state."""
+        observations = [
+            item for item in self.context.observations
+            if isinstance(item, dict)
+        ]
+
+        inventory = self.context.metadata.get("data_inventory")
+        if not isinstance(inventory, dict):
+            inventory = {}
+
+        observation_count = len(observations)
+        try:
+            snapshot_count = int(inventory.get("snapshot_count") or 0)
+        except (TypeError, ValueError):
+            snapshot_count = 0
+
+        metric_keys = {
+            "views", "viewCount", "views_per_hour",
+            "likes", "likeCount", "comments", "commentCount",
+            "engagement",
+        }
+
+        metric_observations = 0
+        velocity_observations = 0
+
+        for observation in observations:
+            metrics = observation.get("metrics")
+            if not isinstance(metrics, dict):
+                metrics = {}
+
+            merged = dict(observation)
+            merged.update(metrics)
+
+            if any(
+                key in merged and merged.get(key) is not None
+                for key in metric_keys
+            ):
+                metric_observations += 1
+
+            if any(
+                key in merged and merged.get(key) is not None
+                for key in ("views_per_hour", "velocity", "growth_rate")
+            ):
+                velocity_observations += 1
+
+        gaps: list[str] = []
+
+        if observation_count == 0:
+            gaps.append(
+                "Нет сохранённых YouTube-наблюдений для текущего проекта."
+            )
+
+        if observation_count > 0 and metric_observations == 0:
+            gaps.append(
+                "У сохранённых видео нет доступных числовых метрик."
+            )
+
+        if observation_count > 0 and velocity_observations == 0:
+            gaps.append(
+                "Нет метрик скорости роста (views/hour или эквивалента)."
+            )
+
+        if snapshot_count == 0 and observation_count > 0:
+            gaps.append(
+                "Нет сохранённых исторических снимков метрик."
+            )
+
+        self.context.missing_data = gaps
+        self.state.evidence_available = observation_count > 0
+        self.state.evidence_sufficient = (
+            observation_count > 0
+            and metric_observations > 0
+            and velocity_observations > 0
         )
 
-        return self.context
+        self.context.metadata["project_state"] = {
+            "observation_count": observation_count,
+            "snapshot_count": snapshot_count,
+            "metric_observation_count": metric_observations,
+            "velocity_observation_count": velocity_observations,
+            "has_topics": bool(self.context.topics),
+            "has_analytics": bool(self.context.analytics),
+            "has_opportunities": bool(self.context.opportunities),
+            "has_research_history": bool(self.context.research_history),
+            "raw_evidence_ready_for_analytics": (
+                self.state.evidence_sufficient
+            ),
+            "missing_raw_data": list(gaps),
+        }
 
     def _merge_context(
         self,
@@ -301,24 +386,26 @@ class Director:
 
             self.context.objective = objective
 
+        self._refresh_project_state()
+        project_state = self.context.metadata.get(
+            "project_state",
+            {},
+        )
+
         return {
             "objective": objective,
             "evidence_available": self.state.evidence_available,
-            "observations_count": len(
-                self.context.observations
+            "evidence_sufficient": self.state.evidence_sufficient,
+            "observations_count": len(self.context.observations),
+            "topics_available": bool(self.context.topics),
+            "analytics_available": bool(self.context.analytics),
+            "opportunities_available": bool(self.context.opportunities),
+            "research_history_available": bool(
+                self.context.research_history
             ),
-            "topics_available": bool(
-                self.context.topics
-            ),
-            "opportunities_available": bool(
-                self.context.opportunities
-            ),
-            "missing_data": list(
-                self.context.missing_data
-            ),
-            "constraints": list(
-                self.context.constraints
-            ),
+            "missing_data": list(self.context.missing_data),
+            "constraints": list(self.context.constraints),
+            "project_state": dict(project_state),
         }
 
     # ============================================================
@@ -1105,22 +1192,20 @@ class Director:
         state: DirectorState,
         payload: Any,
     ) -> dict[str, Any]:
-        # Assessment happens before analysis in the autonomous loop.
-        # At this point the authoritative evidence flag comes from inspect().
-        # Do not require opportunities yet: analytics creates them later.
-        missing = list(
-            self.context.missing_data
-            or []
-        )
+        # Assessment runs before Analytics. Only raw research/data gaps
+        # belong here; topics/opportunities are Analytics outputs.
+        self._refresh_project_state()
 
-        sufficient = bool(
-            state.evidence_available
-            and not missing
-        )
+        missing = list(self.context.missing_data or [])
+        sufficient = bool(self.state.evidence_sufficient)
 
         return {
             "evidence_sufficient": sufficient,
             "missing_data": missing,
+            "project_state": self.context.metadata.get(
+                "project_state",
+                {},
+            ),
         }
 
     async def _autonomy_decide(

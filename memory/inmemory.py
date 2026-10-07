@@ -400,7 +400,7 @@ def save_recommendation(
             "priority": recommendation.get("priority"),
             "status": recommendation.get(
                 "status",
-                "new",
+                "pending",
             ),
             "data_json": {
                 "source_data": _safe_dict(

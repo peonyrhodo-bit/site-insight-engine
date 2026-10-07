@@ -406,6 +406,9 @@ class SupabaseMemoryBackend:
                 continue
             data_json = self._safe_dict(snapshot.get("metadata"))
             data_json["project_id"] = project_id
+            data_json["snapshot_id"] = snapshot.get("snapshot_id")
+            data_json["research_id"] = snapshot.get("research_id")
+            data_json["query_ids"] = list(snapshot.get("query_ids") or [])
             data_json["statistics"] = self._safe_dict(
                 snapshot.get("metrics")
             )

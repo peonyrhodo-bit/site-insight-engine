@@ -186,6 +186,134 @@ class SupabaseMemoryBackend:
         return rows[: self._limit(limit, default_limit)]
 
     # ------------------------------------------------------------------
+    # YOUTUBE DATA
+    # ------------------------------------------------------------------
+
+    def _paginated_rows(
+        self,
+        table_name: str,
+        *,
+        order_key: str,
+        page_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Load all rows from a DATA table using stable, paginated reads.
+
+        Supabase Data API responses are limited to a default maximum of
+        1,000 rows, so DATA loading must not rely on one unbounded select.
+        """
+        rows: list[dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            response = (
+                self.client
+                .table(table_name)
+                .select("*")
+                .order(order_key, desc=False)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = self._safe_list(response)
+            rows.extend(page)
+
+            if len(page) < page_size:
+                break
+
+            offset += page_size
+
+        return rows
+
+    def load_youtube_data(
+        self,
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Load persisted YouTube DATA into a registry-compatible payload.
+
+        Existing videos/snapshots are stored in the dedicated DATA tables;
+        this method is the persistence -> DATA boundary and does not change
+        their schema.
+        """
+        from data.youtube import (
+            YouTubeSnapshot,
+            YouTubeVideo,
+        )
+
+        expected_project = (
+            str(project_id)
+            if project_id is not None
+            else None
+        )
+
+        video_rows = self._paginated_rows(
+            "videos",
+            order_key="video_id",
+        )
+
+        videos: list[dict[str, Any]] = []
+        video_ids: set[str] = set()
+
+        for row in video_rows:
+            if (
+                expected_project is not None
+                and self._project_id_from_row(row)
+                != expected_project
+            ):
+                continue
+
+            data = self._safe_dict(row.get("data_json"))
+            payload = dict(data)
+            payload.setdefault("video_id", row.get("video_id"))
+            payload.setdefault("first_seen_at", row.get("first_seen"))
+            payload.setdefault("last_seen_at", row.get("last_seen"))
+
+            try:
+                video = YouTubeVideo.from_dict(payload)
+            except (TypeError, ValueError):
+                continue
+
+            videos.append(video.to_dict())
+            video_ids.add(str(video.video_id))
+
+        snapshot_rows = self._paginated_rows(
+            "video_snapshots",
+            order_key="id",
+        )
+
+        snapshots: list[dict[str, Any]] = []
+
+        for row in snapshot_rows:
+            row_project = self._project_id_from_row(row)
+
+            if expected_project is not None:
+                if (
+                    row_project != expected_project
+                    and str(row.get("video_id")) not in video_ids
+                ):
+                    continue
+
+            data = self._safe_dict(row.get("data_json"))
+            payload = dict(data)
+            payload.setdefault("snapshot_id", row.get("id"))
+            payload.setdefault("video_id", row.get("video_id"))
+            payload.setdefault("created_at", row.get("created_at"))
+
+            try:
+                snapshot = YouTubeSnapshot.from_dict(payload)
+            except (TypeError, ValueError):
+                continue
+
+            snapshots.append(snapshot.to_dict())
+
+        return {
+            "queries": [],
+            "videos": videos,
+            "snapshots": snapshots,
+        }
+
+    # ------------------------------------------------------------------
     # CONTEXT
     # ------------------------------------------------------------------
 

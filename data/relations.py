@@ -85,13 +85,13 @@ def _normalize_ids(
 
 
 RELATION_TYPES = {
-    "research_query",
-    "research_video",
-    "research_snapshot",
-    "query_video",
-    "video_snapshot",
-    "snapshot_video",
-    "snapshot_research",
+    "contains_query",
+    "contains_video",
+    "contains_snapshot",
+    "returned_video",
+    "has_snapshot",
+    "belongs_to_video",
+    "belongs_to_research",
 }
 
 

@@ -921,6 +921,8 @@ class ServerMemory:
         self,
         project_id: str,
         decision: Any,
+        *,
+        run_id: int | None = None,
     ) -> Any:
         if not self.memory:
             return None
@@ -931,6 +933,9 @@ class ServerMemory:
                 project_id=project_id,
             )
 
+            if run_id is not None:
+                record["run_id"] = run_id
+
             if not record:
                 return None
 
@@ -938,8 +943,16 @@ class ServerMemory:
                 self.memory,
                 "save_decision_model",
             ):
-                result = self.memory.save_decision_model(
-                    record
+                result = self.memory.save_decision(
+                    decision=str(
+                        record.get("decision", "")
+                    ),
+                    data={
+                        key: value
+                        for key, value in record.items()
+                        if key not in {"decision", "run_id"}
+                    },
+                    run_id=run_id,
                 )
             else:
                 result = self.memory.save_decision(
@@ -970,6 +983,7 @@ class ServerMemory:
         recommendation: Any,
         *,
         decision_db_id: int | None = None,
+        run_id: int | None = None,
     ) -> Any:
         if not self.memory:
             return None
@@ -980,6 +994,9 @@ class ServerMemory:
                 project_id=project_id,
                 decision_db_id=decision_db_id,
             )
+
+            if run_id is not None:
+                record["run_id"] = run_id
 
             if (
                 not record.get("title")
@@ -1041,6 +1058,10 @@ class ServerMemory:
         self,
         project_id: str,
         result: Any,
+        *,
+        run_id: int | None = None,
+        decision_db_id: int | None = None,
+        recommendation_db_id: int | None = None,
     ) -> Any:
         if not self.memory:
             return None
@@ -1066,11 +1087,23 @@ class ServerMemory:
             data = dict(payload)
             data["project_id"] = project_id
 
+            if decision_db_id is not None:
+                data["decision_db_id"] = decision_db_id
+
+            if recommendation_db_id is not None:
+                data["recommendation_db_id"] = recommendation_db_id
+
+            effective_run_id = (
+                run_id
+                if run_id is not None
+                else payload.get("run_id")
+            )
+
             saved = self.memory.save_result(
                 result_type=result_type,
                 summary=summary,
                 action_id=payload.get("action_id"),
-                run_id=payload.get("run_id"),
+                run_id=effective_run_id,
                 data=data,
             )
 
@@ -2183,51 +2216,9 @@ async def _run_director(
         # decision and the recommendation can be retrieved back later.
         # ---------------------------------------------------------------
 
-        decision = getattr(
-            result,
-            "decision",
-            None,
-        )
-
-        decision_db_id = None
-
-        if decision is not None:
-            decision_db_id = (
-                await runtime.memory.save_decision(
-                    project_id=project_id,
-                    decision=decision,
-                )
-            )
-
-        recommendation = getattr(
-            result,
-            "recommendation",
-            None,
-        )
-
-        if recommendation is not None:
-            await runtime.memory.save_recommendation(
-                project_id=project_id,
-                recommendation=recommendation,
-                decision_db_id=decision_db_id,
-            )
-
-        await runtime.memory.save_event(
-            project_id=project_id,
-            event_type="director_run",
-            data={
-                "status": (
-                    serialized.get("status")
-                    if isinstance(
-                        serialized,
-                        dict,
-                    )
-                    else None
-                ),
-            },
-        )
-
-        await runtime.memory.save_run(
+        # Persist the run first so every entity created by this
+        # Director cycle can carry the same persistent run_id.
+        run_id = await runtime.memory.save_run(
             project_id=project_id,
             run={
                 "run_id": (
@@ -2241,6 +2232,74 @@ async def _run_director(
                 "hours_back": hours_back,
                 "max_results": max_results,
                 "result": serialized,
+            },
+        )
+
+        decision = getattr(
+            result,
+            "decision",
+            None,
+        )
+
+        decision_db_id = None
+
+        if decision is not None:
+            decision_db_id = await runtime.memory.save_decision(
+                project_id=project_id,
+                decision=decision,
+                run_id=run_id,
+            )
+
+        recommendation = getattr(
+            result,
+            "recommendation",
+            None,
+        )
+
+        recommendation_db_id = None
+
+        if recommendation is not None:
+            recommendation_db_id = (
+                await runtime.memory.save_recommendation(
+                    project_id=project_id,
+                    recommendation=recommendation,
+                    decision_db_id=decision_db_id,
+                    run_id=run_id,
+                )
+            )
+
+        result_db_id = await runtime.memory.save_result(
+            project_id=project_id,
+            result={
+                "type": "director_cycle",
+                "summary": (
+                    serialized.get("message", "")
+                    if isinstance(serialized, dict)
+                    else ""
+                ),
+                "result": serialized,
+            },
+            run_id=run_id,
+            decision_db_id=decision_db_id,
+            recommendation_db_id=recommendation_db_id,
+        )
+
+        await runtime.memory.save_event(
+            project_id=project_id,
+            event_type="director_run",
+            data={
+                "run_id": run_id,
+                "decision_id": decision_db_id,
+                "recommendation_id": recommendation_db_id,
+                "result_id": result_db_id,
+                "status": (
+                    serialized.get("status")
+                    if isinstance(
+                        serialized,
+                        dict,
+                    )
+                    else None
+                ),
             },
         )
 
@@ -2306,7 +2365,17 @@ async def director_autonomous_run(
 
         serialized = serialize(result)
 
-        # Persist the strategic outputs through Memory 2.0.
+        # Persist the autonomous run first so all outputs share
+        # one persistent run_id.
+        run_id = await runtime.memory.save_run(
+            project_id=project_id,
+            run={
+                "type": "autonomous_cycle",
+                "created_at": utc_now(),
+                "result": serialized,
+            },
+        )
+
         decision = getattr(
             director.last_result,
             "decision",
@@ -2316,11 +2385,10 @@ async def director_autonomous_run(
         decision_db_id = None
 
         if decision is not None:
-            decision_db_id = (
-                await runtime.memory.save_decision(
-                    project_id=project_id,
-                    decision=decision,
-                )
+            decision_db_id = await runtime.memory.save_decision(
+                project_id=project_id,
+                decision=decision,
+                run_id=run_id,
             )
 
         recommendation = getattr(
@@ -2329,19 +2397,42 @@ async def director_autonomous_run(
             None,
         )
 
+        recommendation_db_id = None
+
         if recommendation is not None:
-            await runtime.memory.save_recommendation(
-                project_id=project_id,
-                recommendation=recommendation,
-                decision_db_id=decision_db_id,
+            recommendation_db_id = (
+                await runtime.memory.save_recommendation(
+                    project_id=project_id,
+                    recommendation=recommendation,
+                    decision_db_id=decision_db_id,
+                    run_id=run_id,
+                )
             )
 
-        await runtime.memory.save_run(
+        result_db_id = await runtime.memory.save_result(
             project_id=project_id,
-            run={
+            result={
                 "type": "autonomous_cycle",
-                "created_at": utc_now(),
+                "summary": (
+                    serialized.get("message", "")
+                    if isinstance(serialized, dict)
+                    else ""
+                ),
                 "result": serialized,
+            },
+            run_id=run_id,
+            decision_db_id=decision_db_id,
+            recommendation_db_id=recommendation_db_id,
+        )
+
+        await runtime.memory.save_event(
+            project_id=project_id,
+            event_type="director_autonomous_run",
+            data={
+                "run_id": run_id,
+                "decision_id": decision_db_id,
+                "recommendation_id": recommendation_db_id,
+                "result_id": result_db_id,
             },
         )
 

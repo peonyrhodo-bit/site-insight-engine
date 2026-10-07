@@ -243,6 +243,147 @@ def research_from_gaps(
     )
 
 
+@dataclass(frozen=True)
+class ResearchRequirement:
+    """Concrete acquisition requirement derived from Director state."""
+
+    key: str
+    description: str
+    priority: ResearchPriority
+    count: int = 0
+    needed_now: bool = True
+
+
+_REQUIREMENT_OPERATIONS: dict[str, dict[str, Any]] = {
+    "videos": {"operation": "search_videos", "target": "videos", "reuse": "reuse_existing_video_ids", "completion": "at least one relevant video is stored"},
+    "video_snapshots": {"operation": "collect_video_snapshots", "target": "video_snapshots", "reuse": "reuse_existing_snapshots_and_only_collect_missing_history", "completion": "requested videos have usable metric history"},
+    "queries": {"operation": "register_queries", "target": "queries", "reuse": "reuse_identical_query_definitions", "completion": "every executed query has a persisted query record"},
+    "research_sets": {"operation": "register_research_set", "target": "research_sets", "reuse": "reuse_matching_completed_research", "completion": "the research plan has a persisted research-set record"},
+    "relations": {"operation": "link_research_data", "target": "relations", "reuse": "reuse_existing_identical_relations", "completion": "research/query/result/data links are persisted"},
+    "channels": {"operation": "collect_channels", "target": "channels", "reuse": "reuse_channels_already_known_from_videos", "completion": "channels for relevant videos are known"},
+    "channel_snapshots": {"operation": "collect_channel_snapshots", "target": "channel_snapshots", "reuse": "reuse_existing_snapshots_and_only_collect_missing_history", "completion": "target channels have requested historical observations"},
+    "niches": {"operation": "collect_niche_evidence", "target": "niches", "reuse": "reuse_existing_niche_entities", "completion": "candidate niche evidence is collected; Director owns strategic niche decisions"},
+    "niche_snapshots": {"operation": "build_niche_snapshots", "target": "niche_snapshots", "reuse": "reuse_existing_historical_aggregates", "completion": "niche history can be derived from video/channel evidence"},
+}
+
+
+def _requirement_from_mapping(value: Any) -> ResearchRequirement | None:
+    if not isinstance(value, dict):
+        return None
+    key = str(value.get("key") or "").strip()
+    if key not in _REQUIREMENT_OPERATIONS:
+        return None
+    try:
+        priority = ResearchPriority(str(value.get("priority") or "medium"))
+    except ValueError:
+        priority = ResearchPriority.MEDIUM
+    return ResearchRequirement(
+        key=key,
+        description=str(value.get("description") or "").strip(),
+        priority=priority,
+        count=int(value.get("count") or 0),
+        needed_now=bool(value.get("needed_now", True)),
+    )
+
+
+def plan_from_requirements(
+    *,
+    objective: str,
+    requirements: Iterable[Any],
+    context: dict[str, Any] | None = None,
+    preferred_languages: Iterable[str] | None = None,
+) -> ResearchPlan:
+    """Translate Director requirements into explicit acquisition operations."""
+    normalized = [
+        item
+        for item in (_requirement_from_mapping(value) for value in requirements)
+        if item is not None and item.needed_now
+    ]
+    languages = choose_research_languages(preferred=preferred_languages)
+    context = dict(context or {})
+    topics = context.get("topics", {})
+    topic_values: list[str] = []
+    if isinstance(topics, dict):
+        values = topics.get("topics", topics.get("items", []))
+        if isinstance(values, dict):
+            values = values.values()
+        for item in values or []:
+            if isinstance(item, str) and item.strip():
+                topic_values.append(item.strip())
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("topic") or item.get("title")
+                if name:
+                    topic_values.append(str(name).strip())
+
+    directions: list[str] = []
+    queries: list[ResearchQuery] = []
+    operations: list[dict[str, Any]] = []
+
+    for item in normalized:
+        spec = _REQUIREMENT_OPERATIONS[item.key]
+        operations.append({
+            "requirement_key": item.key,
+            **spec,
+            "available_count": item.count,
+        })
+        direction = item.key
+        if topic_values and item.key in {"videos", "channels", "niches"}:
+            direction = f"{item.key}: " + ", ".join(topic_values[:8])
+        directions.append(direction)
+
+        # This is deliberately a structured command, not a prose sentence.
+        # The future MCP adapter consumes operation/data_targets metadata.
+        query_text = (
+            ", ".join(topic_values[:8])
+            if topic_values and item.key in {"videos", "channels", "niches"}
+            else item.key
+        )
+        metadata = {
+            "operation": spec["operation"],
+            "data_targets": [spec["target"]],
+            "reuse_policy": spec["reuse"],
+            "completion_criterion": spec["completion"],
+            "requirement_key": item.key,
+            "count_already_available": item.count,
+            "needed_now": item.needed_now,
+            "objective": objective,
+        }
+        for language in languages:
+            queries.append(build_query(
+                query=query_text,
+                language=language,
+                purpose=item.description,
+                priority=item.priority,
+                metadata=metadata,
+            ))
+
+    gaps = [
+        ResearchGap(
+            description=item.description,
+            importance=1.0 if item.priority == ResearchPriority.CRITICAL else (0.8 if item.priority == ResearchPriority.HIGH else 0.5),
+            suggested_method=_REQUIREMENT_OPERATIONS[item.key]["operation"],
+        )
+        for item in normalized
+    ]
+
+    return build_research_plan(
+        objective=objective,
+        directions=directions,
+        queries=queries,
+        gaps=gaps,
+        languages=languages,
+        priorities=["close_missing_data", "reuse_existing_data", "validate_signal"],
+        reason="Research converted Director data requirements into explicit acquisition operations.",
+        metadata={
+            "operations": operations,
+            "requirements": [asdict(item) for item in normalized],
+            "determination_complete": True,
+            "next_stage": "execute_operations",
+        },
+    )
+
+
+
 def plan_next_research(
     *,
     objective: str,
@@ -337,10 +478,21 @@ class ResearchService:
     ) -> ResearchPlan:
         context = dict(context or {})
 
+        metadata = context.get("metadata", {})
+        preferred_languages = metadata.get("preferred_languages", [])
+        requirements = metadata.get("data_requirements", [])
+
+        # Prefer the Director's structured requirements. String gaps remain
+        # supported for compatibility with older callers.
+        if isinstance(requirements, list) and requirements:
+            return plan_from_requirements(
+                objective=objective,
+                requirements=requirements,
+                context=context,
+                preferred_languages=(preferred_languages or None),
+            )
+
         missing_data = context.get("missing_data", [])
-        preferred_languages = context.get(
-            "metadata", {}
-        ).get("preferred_languages", [])
 
         current_topics = []
         topics = context.get("topics", {})

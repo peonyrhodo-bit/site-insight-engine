@@ -1225,9 +1225,31 @@ class Director:
             if hasattr(execution, "__await__"):
                 execution = await execution
 
+        data_ingestion: dict[str, Any] = {
+            "status": "not_executed",
+        }
+
+        if isinstance(execution, dict) and execution.get("status") == "completed":
+            ingestor = getattr(
+                self.data_service,
+                "ingest_research_execution",
+                None,
+            )
+
+            if ingestor is not None:
+                data_ingestion = ingestor(
+                    project_id=self.project_id or "default",
+                    plan=plan,
+                    execution=execution,
+                )
+
+                if hasattr(data_ingestion, "__await__"):
+                    data_ingestion = await data_ingestion
+
         return {
             "research_plan": plan.to_dict(),
             "research_execution": execution,
+            "data_ingestion": data_ingestion,
             "missing_data": [
                 gap.description
                 for gap in plan.gaps

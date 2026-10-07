@@ -319,27 +319,39 @@ def plan_from_requirements(
     queries: list[ResearchQuery] = []
     operations: list[dict[str, Any]] = []
 
+    # Only operations that actually need YouTube text search become
+    # ResearchQuery objects. Snapshot/persistence/linking operations are
+    # concrete data tasks and must not be sent to YouTube as fake queries.
+    search_operations = {"search_videos", "collect_channels", "collect_niche_evidence"}
+
+    def build_search_text(requirement: ResearchRequirement) -> str:
+        if topic_values:
+            return " ".join(topic_values[:8]).strip()
+        objective_text = " ".join(str(objective or "").split()).strip()
+        if objective_text:
+            return objective_text
+        return requirement.key.replace("_", " ")
+
     for item in normalized:
         spec = _REQUIREMENT_OPERATIONS[item.key]
+        operation = spec["operation"]
         operations.append({
             "requirement_key": item.key,
             **spec,
             "available_count": item.count,
         })
+
         direction = item.key
         if topic_values and item.key in {"videos", "channels", "niches"}:
             direction = f"{item.key}: " + ", ".join(topic_values[:8])
         directions.append(direction)
 
-        # This is deliberately a structured command, not a prose sentence.
-        # The future MCP adapter consumes operation/data_targets metadata.
-        query_text = (
-            ", ".join(topic_values[:8])
-            if topic_values and item.key in {"videos", "channels", "niches"}
-            else item.key
-        )
+        if operation not in search_operations:
+            continue
+
+        query_text = build_search_text(item)
         metadata = {
-            "operation": spec["operation"],
+            "operation": operation,
             "data_targets": [spec["target"]],
             "reuse_policy": spec["reuse"],
             "completion_criterion": spec["completion"],
@@ -347,15 +359,18 @@ def plan_from_requirements(
             "count_already_available": item.count,
             "needed_now": item.needed_now,
             "objective": objective,
+            "query_type": "youtube_search",
         }
         for language in languages:
-            queries.append(build_query(
-                query=query_text,
-                language=language,
-                purpose=item.description,
-                priority=item.priority,
-                metadata=metadata,
-            ))
+            queries.append(
+                build_query(
+                    query=query_text,
+                    language=language,
+                    purpose=item.description,
+                    priority=item.priority,
+                    metadata=metadata,
+                )
+            )
 
     gaps = [
         ResearchGap(

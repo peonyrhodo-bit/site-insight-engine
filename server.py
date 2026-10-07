@@ -1625,6 +1625,9 @@ class DataAdapter:
         videos: list[Any] = []
         snapshots: list[Any] = []
         query_video_pairs: list[tuple[Any, Any]] = []
+        channels: list[Any] = []
+
+        from data.opportunity_entities import YouTubeChannel
 
         for row in result_rows:
             if not isinstance(row, dict):
@@ -1651,8 +1654,30 @@ class DataAdapter:
             query.source = "youtube-mcp"
             self.youtube_registry.add_query(query)
 
+            operation = str(query.metadata.get("operation", "search_videos"))
             for item in items:
                 if not isinstance(item, dict):
+                    continue
+
+                if operation == "collect_channels":
+                    channel_id = (
+                        item.get("id", {}).get("channelId")
+                        if isinstance(item.get("id"), dict)
+                        else item.get("channelId") or item.get("id")
+                    )
+                    if not channel_id or self.opportunity_registry is None:
+                        continue
+                    snippet = item.get("snippet") or {}
+                    channel = YouTubeChannel(
+                        channel_id=str(channel_id),
+                        title=str(snippet.get("title") or ""),
+                        description=snippet.get("description"),
+                        published_at=snippet.get("publishedAt"),
+                        data={**item, "project_id": project_id},
+                    )
+                    channels.append(
+                        self.opportunity_registry.add_channel(channel)
+                    )
                     continue
 
                 video_id = (
@@ -1700,6 +1725,14 @@ class DataAdapter:
                     snapshots.append(snapshot)
 
         storage_result: dict[str, Any] = {}
+        if channels:
+            opportunity_saver = getattr(self.storage, "save_opportunity_data", None)
+            if callable(opportunity_saver) and self.opportunity_registry is not None:
+                storage_result["opportunity"] = opportunity_saver(
+                    project_id=project_id,
+                    data=self.opportunity_registry.to_dict(),
+                )
+
         saver = getattr(self.storage, "save_youtube_data", None)
         if callable(saver):
             storage_result = saver(
@@ -1763,6 +1796,7 @@ class DataAdapter:
             "status": "completed",
             "videos": len(videos),
             "snapshots": len(normalized_snapshots),
+            "channels": len(channels),
             "persistence": storage_result,
         }
 

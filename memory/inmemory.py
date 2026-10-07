@@ -130,6 +130,7 @@ def _insert(
 def get_context(
     self,
     *,
+    project_id: str | None = None,
     limit_runs: int = 10,
     limit_decisions: int = 20,
     limit_events: int = 30,

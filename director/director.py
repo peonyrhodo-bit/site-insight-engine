@@ -438,6 +438,7 @@ class Director:
                 self.context.research_history
             ),
             "missing_data": list(self.context.missing_data),
+            "data_requirements": list(self.context.metadata.get("data_requirements", [])),
             "constraints": list(self.context.constraints),
             "project_state": dict(project_state),
         }

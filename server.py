@@ -3293,6 +3293,7 @@ async def director_history(
     limit: int = 50,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=limit,
         limit_decisions=limit,
         limit_events=limit,

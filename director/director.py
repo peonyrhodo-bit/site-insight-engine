@@ -42,6 +42,10 @@ from .feedback import (
     DirectorFeedback,
     feedback_to_memory_record,
 )
+from .hypothesis import (
+    DirectorHypothesis,
+    build_hypothesis,
+)
 from .language import build_director_message
 from .recommendations import (
     DirectorRecommendation,
@@ -550,6 +554,11 @@ class Director:
         interpretation = self.interpret_signals(result)
         result["signal_interpretation"] = interpretation
 
+        hypothesis = self.formulate_hypothesis(result)
+        result["hypothesis"] = (
+            hypothesis.to_dict() if hypothesis is not None else None
+        )
+
         self.context.analytics = (
             result.get(
                 "analytics",
@@ -703,6 +712,132 @@ class Director:
         except (TypeError, ValueError):
             return 0.0
 
+    def formulate_hypothesis(
+        self,
+        analysis: dict[str, Any],
+    ) -> DirectorHypothesis | None:
+        """
+        Turn interpreted signals into a falsifiable strategic hypothesis.
+
+        A hypothesis must explain *why* an opportunity may work and define
+        what observation would support or falsify it. It is intentionally
+        separate from the later decision/recommendation layers.
+        """
+        interpretation = analysis.get("signal_interpretation") or self.context.metadata.get(
+            "signal_interpretation",
+            {},
+        )
+        items = interpretation.get("items", []) if isinstance(interpretation, dict) else []
+        if not items:
+            return None
+
+        candidate = max(
+            [item for item in items if isinstance(item, dict)],
+            key=lambda item: self._safe_score(item.get("overall_score")),
+            default=None,
+        )
+        if candidate is None:
+            return None
+
+        title = str(
+            candidate.get("title")
+            or "Перспективное направление"
+        ).strip()
+        opportunity_id = candidate.get("opportunity_id")
+        signals = [
+            str(x) for x in (candidate.get("signals") or []) if str(x).strip()
+        ]
+        strengths = [
+            str(x) for x in (candidate.get("strengths") or []) if str(x).strip()
+        ]
+        risks = [
+            str(x) for x in (candidate.get("risks") or []) if str(x).strip()
+        ]
+        missing = [
+            str(x) for x in (candidate.get("missing_data") or []) if str(x).strip()
+        ]
+        confidence = self._safe_score(candidate.get("confidence"))
+
+        positive = [
+            str(x)
+            for x in (candidate.get("positive_signals") or [])
+            if str(x).strip()
+        ]
+        negative = [
+            str(x)
+            for x in (candidate.get("negative_signals") or [])
+            if str(x).strip()
+        ]
+
+        if not positive and strengths:
+            positive = strengths[:4]
+
+        signal_text = ", ".join(positive[:4]) or "наблюдаемые положительные сигналы"
+        statement = (
+            f"Если развивать направление «{title}» в формате небольшого теста, "
+            f"то оно способно показать устойчивый спрос, потому что {signal_text}."
+        )
+
+        if negative:
+            rationale = (
+                f"Гипотеза основана на положительных сигналах ({', '.join(positive[:3]) or 'есть'}) "
+                f"при наличии ограничивающих факторов ({', '.join(negative[:3])})."
+            )
+        else:
+            rationale = (
+                f"Гипотеза основана на интерпретации текущих сигналов: "
+                f"{', '.join(positive[:4]) or 'положительная совокупная оценка'}."
+            )
+
+        test = (
+            f"Провести ограниченный тест контента по направлению «{title}» "
+            "и сравнить фактическую динамику просмотров и вовлечения "
+            "с текущим ориентиром выборки."
+        )
+        expected = (
+            "Направление подтверждается, если тест показывает устойчиво "
+            "положительную динамику и вовлечение не ниже текущего ориентира."
+        )
+        falsification = [
+            "Тест не показывает ожидаемой положительной динамики просмотров.",
+            "Вовлечение устойчиво ниже текущего ориентира.",
+        ]
+        if missing:
+            falsification.append(
+                "После получения недостающих данных ключевые положительные сигналы не подтверждаются."
+            )
+
+        evidence: list[dict[str, Any]] = []
+        for item in (candidate.get("evidence") or [])[:8]:
+            if isinstance(item, dict):
+                evidence.append(dict(item))
+            elif item:
+                evidence.append({"statement": str(item)})
+
+        hypothesis = build_hypothesis(
+            title=title,
+            statement=statement,
+            opportunity_id=str(opportunity_id) if opportunity_id is not None else None,
+            rationale=rationale,
+            supporting_signals=signals[:8],
+            evidence=evidence,
+            risks=risks[:8],
+            missing_data=missing[:8],
+            test=test,
+            expected_outcome=expected,
+            falsification_criteria=falsification,
+            confidence=confidence,
+            metadata={
+                "overall_score": self._safe_score(candidate.get("overall_score")),
+                "positive_signals": positive[:8],
+                "negative_signals": negative[:8],
+                "source": "director_signal_interpretation",
+            },
+        )
+
+        self.context.metadata["current_hypothesis"] = hypothesis.to_dict()
+        return hypothesis
+
     # ============================================================
     # DECISION
     # ============================================================
@@ -756,6 +891,11 @@ class Director:
             candidate,
             objective=self.context.objective or "",
         )
+
+        hypothesis = analysis.get("hypothesis")
+        if isinstance(hypothesis, dict):
+            decision.metadata["hypothesis_id"] = hypothesis.get("hypothesis_id")
+            decision.metadata["hypothesis"] = hypothesis
 
         # AI may enrich rationale, but does not replace the Director.
         if self.ai_service is not None:

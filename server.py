@@ -232,6 +232,12 @@ except Exception:
     DataRelations = None
 
 
+try:
+    from data.opportunity_registry import OpportunityDataRegistry
+except Exception:
+    OpportunityDataRegistry = None
+
+
 # Scheduler
 try:
     from scheduler.scheduler import create_scheduler
@@ -1523,6 +1529,7 @@ class DataAdapter:
         self.youtube_registry = None
         self.research_manager = None
         self.relations = None
+        self.opportunity_registry = None
 
         try:
             if YouTubeDataRegistry is not None:
@@ -1555,6 +1562,15 @@ class DataAdapter:
                 "Failed to initialize DataRelations"
             )
 
+
+        try:
+            if OpportunityDataRegistry is not None:
+                self.opportunity_registry = OpportunityDataRegistry()
+        except Exception:
+            logger.exception(
+                "Failed to initialize OpportunityDataRegistry"
+            )
+
     async def get_project_state(
         self,
         project_id: str,
@@ -1570,10 +1586,20 @@ class DataAdapter:
             "observations": [],
             "research_sets": [],
             "relations": [],
+            "channels": [],
+            "channel_snapshots": [],
+            "niches": [],
+            "niche_snapshots": [],
             "data_inventory": {
                 "video_count": 0,
                 "snapshot_count": 0,
                 "query_count": 0,
+                "research_set_count": 0,
+                "relation_count": 0,
+                "channel_count": 0,
+                "channel_snapshot_count": 0,
+                "niche_count": 0,
+                "niche_snapshot_count": 0,
             },
         }
 
@@ -1607,6 +1633,18 @@ class DataAdapter:
 
                         for snapshot in loaded_registry.snapshots():
                             self.youtube_registry.add_snapshot(snapshot)
+
+                # Channel/niche DATA has its own persistence contour.
+                opportunity_loader = getattr(
+                    self.storage,
+                    "load_opportunity_data",
+                    None,
+                )
+                if callable(opportunity_loader) and self.opportunity_registry is not None:
+                    persisted_opportunity = opportunity_loader(project_id=project_id)
+                    if isinstance(persisted_opportunity, dict):
+                        from data.opportunity_registry import OpportunityDataRegistry
+                        self.opportunity_registry = OpportunityDataRegistry.from_dict(persisted_opportunity)
 
                 # Research/query/relation DATA has its own persistence
                 # contour. Load it through Memory storage, then expose it
@@ -1794,6 +1832,12 @@ class DataAdapter:
                             "query_count": len(
                                 self.youtube_registry.queries()
                             ),
+                            "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
+                            "relation_count": len(self.relations.all()) if self.relations is not None and hasattr(self.relations, "all") else 0,
+                            "channel_count": self.opportunity_registry.counts().get("channels", 0) if self.opportunity_registry is not None else 0,
+                            "channel_snapshot_count": self.opportunity_registry.counts().get("channel_snapshots", 0) if self.opportunity_registry is not None else 0,
+                            "niche_count": self.opportunity_registry.counts().get("niches", 0) if self.opportunity_registry is not None else 0,
+                            "niche_snapshot_count": self.opportunity_registry.counts().get("niche_snapshots", 0) if self.opportunity_registry is not None else 0,
                         }
                     except Exception:
                         result["data_inventory"] = {
@@ -1823,6 +1867,18 @@ class DataAdapter:
                 logger.exception(
                     "Failed to load research sets"
                 )
+
+        if self.opportunity_registry is not None:
+            try:
+                saver = getattr(self.storage, "save_opportunity_data", None)
+                if callable(saver):
+                    result["persistence"] = result.get("persistence", {})
+                    result["persistence"]["opportunity"] = saver(
+                        project_id=project_id,
+                        data=self.opportunity_registry.to_dict(),
+                    )
+            except Exception:
+                logger.exception("Failed to persist opportunity DATA")
 
         if self.relations is not None:
             try:

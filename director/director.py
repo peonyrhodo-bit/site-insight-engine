@@ -884,7 +884,7 @@ class Director:
         Feedback becomes part of Director context and future memory.
 
         Persistence uses the existing Memory 2.0 API
-        (save_recommendation_feedback / save_constraint).
+        (apply_recommendation_feedback / save_constraint).
         """
         record = feedback_to_memory_record(
             feedback
@@ -949,7 +949,7 @@ class Director:
 
             writer = getattr(
                 self.memory_service,
-                "save_recommendation_feedback",
+                "apply_recommendation_feedback",
                 None,
             )
 

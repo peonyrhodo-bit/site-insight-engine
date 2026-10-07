@@ -1844,6 +1844,12 @@ class DataAdapter:
                             "video_count": len(observations),
                             "snapshot_count": 0,
                             "query_count": 0,
+                            "research_set_count": 0,
+                            "relation_count": 0,
+                            "channel_count": 0,
+                            "channel_snapshot_count": 0,
+                            "niche_count": 0,
+                            "niche_snapshot_count": 0,
                         }
             except Exception:
                 logger.exception(
@@ -1932,6 +1938,9 @@ class DataAdapter:
                 logger.exception(
                     "Failed to persist research DATA"
                 )
+
+        if self.opportunity_registry is not None:
+            result["opportunity_inventory"] = self.opportunity_registry.counts()
 
         return result
 

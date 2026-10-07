@@ -16,6 +16,7 @@ from uuid import uuid4
 class FeedbackType(str, Enum):
     ACCEPT = "accept"
     REJECT = "reject"
+    DEFER = "defer"
     MODIFY = "modify"
     CLARIFY = "clarify"
     PREFER = "prefer"
@@ -125,6 +126,24 @@ def reject(
         decision_id=decision_id,
         target=target,
         reason=reason,
+        metadata=metadata,
+    )
+
+
+def defer(
+    *,
+    message: str = "",
+    recommendation_id: str | None = None,
+    decision_id: str | None = None,
+    scope: FeedbackScope = FeedbackScope.RECOMMENDATION,
+    metadata: dict[str, Any] | None = None,
+) -> DirectorFeedback:
+    return create_feedback(
+        feedback_type=FeedbackType.DEFER,
+        scope=scope,
+        message=message or "Рекомендация отложена.",
+        recommendation_id=recommendation_id,
+        decision_id=decision_id,
         metadata=metadata,
     )
 

@@ -1005,42 +1005,6 @@ class ServerMemory:
             )
             return None
 
-    async def save_recommendation_feedback(
-        self,
-        project_id: str,
-        feedback: Any,
-    ) -> Any:
-        """
-        Persist feedback through the Memory 2.0 recommendation
-        feedback API.
-        """
-
-        if not self.memory:
-            return None
-
-        try:
-            record = _feedback_to_memory_payload(
-                feedback,
-                project_id=project_id,
-            )
-
-            result = (
-                self.memory.save_recommendation_feedback(
-                    record
-                )
-            )
-
-            if hasattr(result, "__await__"):
-                result = await result
-
-            return result
-
-        except Exception:
-            logger.exception(
-                "Memory save_recommendation_feedback failed"
-            )
-            return None
-
     async def apply_recommendation_feedback(
         self,
         project_id: str,

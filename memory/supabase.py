@@ -370,7 +370,7 @@ class SupabaseMemoryBackend:
         """Load persisted research/query/relation DATA for one project."""
         expected_project = str(project_id) if project_id is not None else None
         return {
-            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=100, project_id=expected_project, order_key="id", default_limit=100),
             "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
             "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
         }

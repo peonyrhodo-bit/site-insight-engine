@@ -1485,7 +1485,12 @@ class DataAdapter:
     This class does not decide strategy.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        storage: Any = None,
+    ) -> None:
+        self.storage = storage
         self.youtube_registry = None
         self.research_manager = None
         self.relations = None
@@ -1540,6 +1545,35 @@ class DataAdapter:
 
         if self.youtube_registry is not None:
             try:
+                loader = getattr(
+                    self.storage,
+                    "load_youtube_data",
+                    None,
+                )
+
+                if callable(loader):
+                    persisted = loader(
+                        project_id=project_id,
+                    )
+
+                    if isinstance(persisted, dict):
+                        loaded_registry = (
+                            YouTubeDataRegistry.from_dict(
+                                persisted
+                            )
+                        )
+
+                        self.youtube_registry.clear()
+
+                        for query in loaded_registry.queries():
+                            self.youtube_registry.add_query(query)
+
+                        for video in loaded_registry.videos():
+                            self.youtube_registry.add_video(video)
+
+                        for snapshot in loaded_registry.snapshots():
+                            self.youtube_registry.add_snapshot(snapshot)
+
                 if hasattr(
                     self.youtube_registry,
                     "videos",
@@ -1815,7 +1849,9 @@ class Runtime:
     def __init__(self) -> None:
         self.memory = ServerMemory()
         self.analytics = AnalyticsAdapter()
-        self.data = DataAdapter()
+        self.data = DataAdapter(
+            storage=self.memory.backend,
+        )
         self.ai = AIAdapter()
 
         self.scheduler = (

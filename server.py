@@ -530,7 +530,7 @@ def _feedback_to_memory_payload(
 ) -> dict[str, Any]:
     """
     Convert DirectorFeedback (or dict) into the payload expected by
-    Memory.save_recommendation_feedback() / apply_recommendation_feedback().
+    the canonical Memory recommendation-feedback operation.
     """
     if hasattr(feedback, "to_dict"):
         record = feedback.to_dict()

@@ -328,27 +328,6 @@ async def call_maybe_async(function: Any, *args: Any, **kwargs: Any) -> Any:
 # existing Memory 2.0 API (memory/memory.py + memory/*).
 # ---------------------------------------------------------------------------
 
-RECOMMENDATION_STATUS_TO_MEMORY = {
-    "draft": "new",
-    "pending": "new",
-    "accepted": "accepted",
-    "rejected": "rejected",
-    "discussed": "active",
-    "completed": "completed",
-    "cancelled": "archived",
-}
-
-MEMORY_STATUS_TO_DIRECTOR = {
-    "new": "pending",
-    "active": "pending",
-    "accepted": "accepted",
-    "rejected": "rejected",
-    "deferred": "pending",
-    "completed": "completed",
-    "archived": "cancelled",
-}
-
-
 def _enum_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
 
@@ -426,11 +405,11 @@ def _recommendation_to_memory_payload(
     if not isinstance(data, dict):
         return {}
 
-    status = _enum_value(data.get("status")) or "pending"
-    memory_status = RECOMMENDATION_STATUS_TO_MEMORY.get(
-        str(status).lower(),
-        "new",
-    )
+    # Recommendation status is canonical across Director and Memory.
+    # Do not translate it to a second lifecycle.
+    status = str(
+        _enum_value(data.get("status")) or "pending"
+    ).strip().lower()
 
     target = data.get("target")
     if hasattr(target, "to_dict"):
@@ -500,7 +479,7 @@ def _recommendation_to_memory_payload(
                 if target
                 else "research_direction"
             ),
-            "status": memory_status,
+            "status": status,
             "topic": (
                 str(target.get("title"))
                 if target and target.get("title")
@@ -670,15 +649,11 @@ def _memory_row_to_director_recommendation(
         )
 
     status_value = str(
-        row.get("status") or "new"
-    ).lower()
+        row.get("status") or "pending"
+    ).strip().lower()
 
-    status = RecommendationStatus(
-        MEMORY_STATUS_TO_DIRECTOR.get(
-            status_value,
-            "pending",
-        )
-    )
+    # Memory stores the same canonical lifecycle values as Director.
+    status = RecommendationStatus(status_value)
 
     evidence: list[RecommendationEvidence] = []
 

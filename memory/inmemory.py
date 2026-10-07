@@ -161,6 +161,27 @@ def _recent_for_project(
     return self._recent(rows, limit)
 
 # ------------------------------------------------------------------
+# YOUTUBE DATA
+# ------------------------------------------------------------------
+
+def load_youtube_data(
+    self,
+    *,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    In-memory backend has no persisted YouTube DATA tables.
+
+    The method mirrors the Supabase storage boundary so DataAdapter can
+    use one integration path regardless of the selected backend.
+    """
+    return {
+        "queries": [],
+        "videos": [],
+        "snapshots": [],
+    }
+
+# ------------------------------------------------------------------
 # CONTEXT
 # ------------------------------------------------------------------
 

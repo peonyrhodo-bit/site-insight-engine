@@ -339,7 +339,7 @@ class SupabaseMemoryBackend:
                 if key in radar:
                     metrics[key] = radar[key]
 
-            snapshot_id = row.get("id")
+            snapshot_id = data.get("snapshot_id") or row.get("id")
             video_id = row.get("video_id")
 
             if snapshot_id is None or video_id is None:

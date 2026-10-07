@@ -136,6 +136,30 @@ class SupabaseMemoryBackend:
         return max(1, min(value, 100))
 
     @classmethod
+    def _project_id_from_value(
+        cls,
+        value: Any,
+    ) -> str | None:
+        """Find an existing project_id anywhere in persisted DATA metadata."""
+        if isinstance(value, dict):
+            direct = value.get("project_id")
+            if direct is not None:
+                return str(direct)
+
+            for nested in value.values():
+                found = cls._project_id_from_value(nested)
+                if found is not None:
+                    return found
+
+        elif isinstance(value, list):
+            for nested in value:
+                found = cls._project_id_from_value(nested)
+                if found is not None:
+                    return found
+
+        return None
+
+    @classmethod
     def _project_id_from_row(
         cls,
         row: dict[str, Any],
@@ -144,18 +168,9 @@ class SupabaseMemoryBackend:
         if direct is not None:
             return str(direct)
 
-        data = cls._safe_dict(row.get("data_json"))
-        value = data.get("project_id")
-        if value is not None:
-            return str(value)
-
-        for key in ("source_data", "metadata"):
-            nested = cls._safe_dict(data.get(key))
-            value = nested.get("project_id")
-            if value is not None:
-                return str(value)
-
-        return None
+        return cls._project_id_from_value(
+            row.get("data_json")
+        )
 
     def _recent_for_project(
         self,
@@ -252,20 +267,15 @@ class SupabaseMemoryBackend:
             order_key="video_id",
         )
 
-        video_project_scoped = any(
-            self._project_id_from_row(row) is not None
-            for row in video_rows
-        )
-
         videos: list[dict[str, Any]] = []
         video_ids: set[str] = set()
 
         for row in video_rows:
+            row_project = self._project_id_from_row(row)
+
             if (
                 expected_project is not None
-                and video_project_scoped
-                and self._project_id_from_row(row)
-                != expected_project
+                and row_project != expected_project
             ):
                 continue
 
@@ -298,27 +308,16 @@ class SupabaseMemoryBackend:
             order_key="id",
         )
 
-        snapshot_project_scoped = any(
-            self._project_id_from_row(row) is not None
-            for row in snapshot_rows
-        )
-
         snapshots: list[dict[str, Any]] = []
 
         for row in snapshot_rows:
             row_project = self._project_id_from_row(row)
 
             if expected_project is not None:
-                if (
-                    snapshot_project_scoped
-                    and row_project != expected_project
-                ):
-                    continue
-
-                if (
-                    not snapshot_project_scoped
-                    and str(row.get("video_id")) not in video_ids
-                ):
+                if row_project is not None:
+                    if row_project != expected_project:
+                        continue
+                elif str(row.get("video_id")) not in video_ids:
                     continue
 
             data = self._safe_dict(row.get("data_json"))

@@ -2375,6 +2375,13 @@ async def dashboard(
 
     memory_context = await runtime.memory.get_context(
         limit_runs=20,
+        limit_decisions=20,
+        limit_events=20,
+        limit_chat=20,
+        limit_actions=20,
+        limit_results=20,
+        limit_recommendations=20,
+        limit_constraints=20,
     )
 
     return {
@@ -2409,6 +2416,13 @@ async def director_recommendations(
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
         limit_runs=limit,
+        limit_decisions=limit,
+        limit_events=limit,
+        limit_chat=limit,
+        limit_actions=limit,
+        limit_results=limit,
+        limit_recommendations=limit,
+        limit_constraints=limit,
     )
 
     recommendations = context.get(
@@ -2433,6 +2447,13 @@ async def director_recommendation(
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
         limit_runs=100,
+        limit_decisions=100,
+        limit_events=100,
+        limit_chat=100,
+        limit_actions=100,
+        limit_results=100,
+        limit_recommendations=100,
+        limit_constraints=100,
     )
 
     recommendations = context.get(
@@ -2471,6 +2492,13 @@ async def recommendation_action(
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
         limit_runs=100,
+        limit_decisions=100,
+        limit_events=100,
+        limit_chat=100,
+        limit_actions=100,
+        limit_results=100,
+        limit_recommendations=100,
+        limit_constraints=100,
     )
 
     recommendations = context.get(
@@ -3117,6 +3145,13 @@ async def events(
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
         limit_runs=limit,
+        limit_decisions=limit,
+        limit_events=limit,
+        limit_chat=limit,
+        limit_actions=limit,
+        limit_results=limit,
+        limit_recommendations=limit,
+        limit_constraints=limit,
     )
 
     return {
@@ -3142,6 +3177,13 @@ async def director_history(
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
         limit_runs=limit,
+        limit_decisions=limit,
+        limit_events=limit,
+        limit_chat=limit,
+        limit_actions=limit,
+        limit_results=limit,
+        limit_recommendations=limit,
+        limit_constraints=limit,
     )
 
     return {

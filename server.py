@@ -1901,7 +1901,7 @@ class Runtime:
         director = create_director(
             project_id=project_id,
             mode=mode,
-            memory_service=self.memory.memory,
+            memory_service=self.memory,
             analytics_service=self.analytics,
             ai_service=self.ai,
             data_service=self.data,

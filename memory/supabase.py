@@ -911,4 +911,3 @@ def get_recent_constraints(
 
     except Exception:
         return []
-```

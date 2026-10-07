@@ -433,6 +433,72 @@ class SupabaseMemoryBackend:
         return saved
 
     # ------------------------------------------------------------------
+    # OPPORTUNITY DATA (channels / niches / historical snapshots)
+    # ------------------------------------------------------------------
+
+    TABLE_CHANNELS = "channels"
+    TABLE_CHANNEL_SNAPSHOTS = "channel_snapshots"
+    TABLE_NICHES = "niches"
+    TABLE_NICHE_SNAPSHOTS = "niche_snapshots"
+
+    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, Any]:
+        """Load channel/niche identities and historical snapshots for a project."""
+        expected_project = str(project_id) if project_id is not None else None
+        return {
+            "channels": self._recent_for_project(self.TABLE_CHANNELS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "channel_snapshots": self._recent_for_project(self.TABLE_CHANNEL_SNAPSHOTS, limit=10000, project_id=expected_project, order_key="captured_at", default_limit=10000),
+            "niches": self._recent_for_project(self.TABLE_NICHES, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "niche_snapshots": self._recent_for_project(self.TABLE_NICHE_SNAPSHOTS, limit=10000, project_id=expected_project, order_key="captured_at", default_limit=10000),
+        }
+
+    def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
+        """Persist channel/niche identities and snapshots idempotently."""
+        project_id = str(project_id)
+        saved = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
+
+        for item in data.get("channels") or []:
+            if not isinstance(item, dict) or not item.get("channel_id"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_CHANNELS).upsert(payload, on_conflict="project_id,channel_id").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["channels"] += 1
+
+        for item in data.get("channel_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("channel_id") or not item.get("captured_at"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_CHANNEL_SNAPSHOTS).upsert(payload, on_conflict="project_id,channel_id,captured_at").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["channel_snapshots"] += 1
+
+        for item in data.get("niches") or []:
+            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("name"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_NICHES).upsert(payload, on_conflict="project_id,niche_id").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["niches"] += 1
+
+        for item in data.get("niche_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("captured_at"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_NICHE_SNAPSHOTS).upsert(payload, on_conflict="project_id,niche_id,captured_at").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["niche_snapshots"] += 1
+
+        return saved
+
+    # ------------------------------------------------------------------
     # CONTEXT
     # ------------------------------------------------------------------
 

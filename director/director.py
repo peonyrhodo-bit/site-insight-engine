@@ -1013,7 +1013,25 @@ class Director:
                 "topics": self.context.topics,
                 "opportunities": self.context.opportunities,
                 "analytics": self.context.analytics,
+                "hypothesis": self.context.metadata.get(
+                    "current_hypothesis"
+                ),
+                "signal_interpretation": self.context.metadata.get(
+                    "signal_interpretation",
+                    {},
+                ),
             }
+
+        # A recommendation must be traceable to the hypothesis that
+        # produced the decision. This keeps the chain explicit:
+        # signals -> interpretation -> hypothesis -> decision -> recommendation.
+        hypothesis = analysis.get("hypothesis")
+        if not isinstance(hypothesis, dict):
+            hypothesis = self.context.metadata.get("current_hypothesis")
+        if not isinstance(hypothesis, dict):
+            hypothesis = decision.metadata.get("hypothesis")
+        if not isinstance(hypothesis, dict):
+            hypothesis = None
 
         target = self._build_recommendation_target(
             analysis
@@ -1033,20 +1051,64 @@ class Director:
             decision,
         )
 
+        proposed_action = (
+            decision.next_action
+            or (
+                hypothesis.get("test")
+                if hypothesis
+                else None
+            )
+            or "Обсудить следующий шаг."
+        )
+
+        reason = decision.rationale
+        if hypothesis:
+            hypothesis_rationale = str(
+                hypothesis.get("rationale") or ""
+            ).strip()
+            if hypothesis_rationale:
+                reason = (
+                    f"{reason} "
+                    f"Основание гипотезы: {hypothesis_rationale}"
+                ).strip()
+
+        recommendation_metadata = {
+            "source": "director_hypothesis",
+            "hypothesis_id": (
+                hypothesis.get("hypothesis_id")
+                if hypothesis
+                else None
+            ),
+            "hypothesis": hypothesis,
+            "hypothesis_test": (
+                hypothesis.get("test")
+                if hypothesis
+                else None
+            ),
+            "expected_outcome": (
+                hypothesis.get("expected_outcome")
+                if hypothesis
+                else None
+            ),
+            "falsification_criteria": (
+                hypothesis.get("falsification_criteria", [])
+                if hypothesis
+                else []
+            ),
+        }
+
         recommendation = create_recommendation(
             title=title,
             summary=summary,
-            proposed_action=(
-                decision.next_action
-                or "Обсудить следующий шаг."
-            ),
-            reason=decision.rationale,
+            proposed_action=proposed_action,
+            reason=reason,
             confidence=decision.confidence,
             target=target,
             evidence=evidence,
             risks=decision.risks,
             constraints=decision.missing_data,
             decision=decision,
+            metadata=recommendation_metadata,
         )
 
         self.context.recommendations.append(
@@ -1238,6 +1300,18 @@ class Director:
     ) -> str:
         if target:
             details = []
+
+            hypothesis = self.context.metadata.get(
+                "current_hypothesis"
+            )
+            if isinstance(hypothesis, dict):
+                statement = str(
+                    hypothesis.get("statement") or ""
+                ).strip()
+                if statement:
+                    details.append(
+                        f"Гипотеза: {statement}"
+                    )
 
             if target.audience:
                 details.append(

@@ -195,9 +195,22 @@ def _first(
     *keys: str,
     default: Any = None,
 ) -> Any:
+    """Return the first available value, including dotted nested paths."""
     for key in keys:
         if key in data and data[key] is not None:
             return data[key]
+
+        current: Any = data
+        found = True
+
+        for part in key.split("."):
+            if not isinstance(current, Mapping) or part not in current:
+                found = False
+                break
+            current = current[part]
+
+        if found and current is not None:
+            return current
 
     return default
 
@@ -639,6 +652,7 @@ def calculate_video_metrics(
     *,
     reference_views: float | None = None,
     reference_engagement: float | None = None,
+    reference_views_per_hour: float | None = None,
     now: datetime | None = None,
 ) -> VideoMetrics:
     views = get_views(video)
@@ -702,17 +716,8 @@ def calculate_video_metrics(
 
     # The score is deliberately a composite signal,
     # not a "truth" metric.
-    performance_score = _clamp(
-        VIEW_WEIGHT * view_score
-        + LIKE_WEIGHT * _clamp(
-            like_rate * 100
-        )
-        + COMMENT_WEIGHT * _clamp(
-            comment_rate * 1000
-        )
-        + ENGAGEMENT_WEIGHT * engagement_score
-        + RECENCY_WEIGHT * recency_score
-    )
+    # performance_score is finalized after collection-level momentum is known.
+    performance_score = 0.0
 
     hours_since_publish = None
 
@@ -735,14 +740,24 @@ def calculate_video_metrics(
     else:
         views_per_hour = 0.0
 
-    momentum = _clamp(
-        _normalize_log_score(
-            views_per_hour,
-            max(
-                views_per_hour,
-                1.0,
-            ),
-        )
+    reference_views_per_hour = (
+        reference_views_per_hour
+        if reference_views_per_hour is not None
+        else views_per_hour
+    )
+
+    momentum = _normalize_log_score(
+        views_per_hour,
+        max(reference_views_per_hour, 1.0),
+    )
+
+    performance_score = _clamp(
+        VIEW_WEIGHT * view_score
+        + LIKE_WEIGHT * _clamp(like_rate * 100.0)
+        + COMMENT_WEIGHT * _clamp(comment_rate * 1000.0)
+        + ENGAGEMENT_WEIGHT * engagement_score
+        + RECENCY_WEIGHT * recency_score
+        + MOMENTUM_WEIGHT * momentum
     )
 
     confidence = _clamp(
@@ -857,6 +872,25 @@ def normalize_videos(
         EPSILON,
     )
 
+    # Momentum must be comparable across the current collection.
+    now = _now()
+    views_per_hour = []
+    for video in videos:
+        published_at = get_published_at(video)
+        if published_at is None:
+            views_per_hour.append(0.0)
+            continue
+        age_hours = max(
+            1.0,
+            (now - published_at).total_seconds() / 3600.0,
+        )
+        views_per_hour.append(get_views(video) / age_hours)
+
+    reference_views_per_hour = max(
+        max(views_per_hour, default=0.0),
+        1.0,
+    )
+
     normalized = []
 
     for video in videos:
@@ -864,6 +898,27 @@ def normalize_videos(
             video,
             reference_views=reference_views,
             reference_engagement=reference_engagement,
+            reference_views_per_hour=reference_views_per_hour,
+            now=now,
+        )
+
+        metrics.performance_score = _clamp(
+            VIEW_WEIGHT * _normalize_log_score(
+                metrics.views,
+                reference_views,
+            )
+            + LIKE_WEIGHT * _clamp(
+                metrics.like_rate * 100.0
+            )
+            + COMMENT_WEIGHT * _clamp(
+                metrics.comment_rate * 1000.0
+            )
+            + ENGAGEMENT_WEIGHT * _normalize_log_score(
+                metrics.engagement_rate,
+                reference_engagement,
+            )
+            + RECENCY_WEIGHT * metrics.recency_score
+            + MOMENTUM_WEIGHT * metrics.momentum
         )
 
         normalized.append(

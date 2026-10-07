@@ -135,6 +135,56 @@ class SupabaseMemoryBackend:
 
         return max(1, min(value, 100))
 
+    @classmethod
+    def _project_id_from_row(
+        cls,
+        row: dict[str, Any],
+    ) -> str | None:
+        direct = row.get("project_id")
+        if direct is not None:
+            return str(direct)
+
+        data = cls._safe_dict(row.get("data_json"))
+        value = data.get("project_id")
+        if value is not None:
+            return str(value)
+
+        for key in ("source_data", "metadata"):
+            nested = cls._safe_dict(data.get(key))
+            value = nested.get("project_id")
+            if value is not None:
+                return str(value)
+
+        return None
+
+    def _recent_for_project(
+        self,
+        table_name: str,
+        *,
+        limit: int,
+        project_id: str | None,
+        order_key: str = "created_at",
+        default_limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        response = (
+            self.client
+            .table(table_name)
+            .select("*")
+            .order(order_key, desc=True)
+            .execute()
+        )
+        rows = self._safe_list(response)
+
+        if project_id is not None:
+            project_id = str(project_id)
+            rows = [
+                row
+                for row in rows
+                if self._project_id_from_row(row) == project_id
+            ]
+
+        return rows[: self._limit(limit, default_limit)]
+
     # ------------------------------------------------------------------
     # CONTEXT
     # ------------------------------------------------------------------
@@ -154,32 +204,40 @@ class SupabaseMemoryBackend:
     ) -> dict[str, Any]:
         return {
             "runs": self.get_recent_runs(
-                limit=limit_runs
+                limit=limit_runs,
+                project_id=project_id
             ),
             "decisions": self.get_recent_decisions(
-                limit=limit_decisions
+                limit=limit_decisions,
+                project_id=project_id
             ),
             "recommendations": (
                 self.get_recent_recommendations(
-                    limit=limit_recommendations
+                    limit=limit_recommendations,
+                    project_id=project_id
                 )
             ),
             "constraints": (
                 self.get_recent_constraints(
-                    limit=limit_constraints
+                    limit=limit_constraints,
+                    project_id=project_id
                 )
             ),
             "events": self.get_recent_events(
-                limit=limit_events
+                limit=limit_events,
+                project_id=project_id
             ),
             "chat": self.get_recent_chat_messages(
-                limit=limit_chat
+                limit=limit_chat,
+                project_id=project_id
             ),
             "actions": self.get_recent_actions(
-                limit=limit_actions
+                limit=limit_actions,
+                project_id=project_id
             ),
             "results": self.get_recent_results(
-                limit=limit_results
+                limit=limit_results,
+                project_id=project_id
             ),
         }
 
@@ -213,20 +271,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 10,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_RUNS)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit, 10))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_RUNS,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=10,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # DECISIONS
@@ -258,20 +311,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_DECISIONS)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_DECISIONS,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=20,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # CHAT
@@ -305,20 +353,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_CHAT)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_CHAT,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=20,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # ACTIONS
@@ -356,20 +399,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_ACTIONS)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_ACTIONS,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=20,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # RESULTS
@@ -405,20 +443,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_RESULTS)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_RESULTS,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=20,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # EVENTS
@@ -448,20 +481,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 30,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(self.TABLE_EVENTS)
-            .select("*")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(self._limit(limit, 30))
-            .execute()
+        return self._recent_for_project(
+            self.TABLE_EVENTS,
+            limit=limit,
+            project_id=project_id,
+            order_key="created_at",
+            default_limit=30,
         )
-
-        return self._safe_list(response)
 
     # ------------------------------------------------------------------
     # RECOMMENDATIONS
@@ -565,23 +593,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            response = (
-                self.client
-                .table(
-                    self.TABLE_RECOMMENDATIONS
-                )
-                .select("*")
-                .order(
-                    "id",
-                    desc=True,
-                )
-                .limit(self._limit(limit))
-                .execute()
+            rows = self._recent_for_project(
+                self.TABLE_RECOMMENDATIONS,
+                limit=limit,
+                project_id=project_id,
+                order_key="id",
             )
-
-            rows = self._safe_list(response)
 
             for row in rows:
                 data = row.get("data_json")
@@ -868,21 +888,15 @@ class SupabaseMemoryBackend:
         self,
         *,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            response = (
-                self.client
-                .table(self.TABLE_CONSTRAINTS)
-                .select("*")
-                .order(
-                    "id",
-                    desc=True,
-                )
-                .limit(self._limit(limit))
-                .execute()
+            rows = self._recent_for_project(
+                self.TABLE_CONSTRAINTS,
+                limit=limit,
+                project_id=project_id,
+                order_key="id",
             )
-
-            rows = self._safe_list(response)
 
             for row in rows:
                 data = row.get("data_json")

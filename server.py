@@ -839,6 +839,7 @@ class ServerMemory:
     async def get_context(
         self,
         *,
+        project_id: str | None = None,
         limit_runs: int = 10,
         limit_decisions: int = 20,
         limit_events: int = 30,
@@ -853,6 +854,7 @@ class ServerMemory:
 
         try:
             result = self.memory.get_context(
+                project_id=project_id,
                 limit_runs=limit_runs,
                 limit_decisions=limit_decisions,
                 limit_events=limit_events,
@@ -2374,6 +2376,7 @@ async def dashboard(
     )
 
     memory_context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=20,
         limit_decisions=20,
         limit_events=20,
@@ -2415,6 +2418,7 @@ async def director_recommendations(
     limit: int = 20,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=limit,
         limit_decisions=limit,
         limit_events=limit,
@@ -2446,6 +2450,7 @@ async def director_recommendation(
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=100,
         limit_decisions=100,
         limit_events=100,

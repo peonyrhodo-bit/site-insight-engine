@@ -347,15 +347,6 @@ MEMORY_STATUS_TO_DIRECTOR = {
     "archived": "cancelled",
 }
 
-FEEDBACK_TYPE_TO_MEMORY = {
-    "accept": "accept",
-    "reject": "reject",
-    "modify": "investigate",
-    "clarify": "comment",
-    "prefer": "change_priority",
-    "avoid": "investigate",
-}
-
 
 def _enum_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
@@ -575,10 +566,14 @@ def _feedback_to_memory_payload(
         record.get("feedback_type")
     )
 
-    memory_type = FEEDBACK_TYPE_TO_MEMORY.get(
-        str(feedback_type or "").lower(),
-        "comment",
-    )
+    memory_type = str(
+        feedback_type or ""
+    ).strip().lower()
+
+    if not memory_type:
+        raise ValueError(
+            "feedback_type is required"
+        )
 
     recommendation_id = record.get(
         "recommendation_id"
@@ -597,10 +592,21 @@ def _feedback_to_memory_payload(
     metadata = dict(record.get("metadata") or {})
     metadata["project_id"] = project_id
 
+    if record.get("decision_id") is not None:
+        metadata.setdefault(
+            "decision_id",
+            record.get("decision_id"),
+        )
+
     if recommendation_column is None and recommendation_id:
         metadata["director_recommendation_id"] = (
             str(recommendation_id)
         )
+
+    run_id = record.get("run_id")
+
+    if run_id is None:
+        run_id = metadata.get("run_id")
 
     return {
         "recommendation_id": recommendation_column,
@@ -612,7 +618,7 @@ def _feedback_to_memory_payload(
             record.get("constraint")
             or record.get("creates_constraint")
         ),
-        "run_id": record.get("run_id"),
+        "run_id": run_id,
         "metadata": metadata,
     }
 
@@ -1663,9 +1669,6 @@ class DataAdapter:
                                                 "video_id",
                                                 None,
                                             )
-                                            or observation.get(
-                                                "video_id"
-                                            )
                                         )
                                     )
                                 )
@@ -2597,7 +2600,7 @@ async def recommendation_action(
 
             feedback_payload = {
                 "recommendation_id": memory_id,
-                "feedback_type": "comment",
+                "feedback_type": "clarify",
                 "message": request.message,
                 "scope": "recommendation",
             }

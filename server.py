@@ -1571,6 +1571,215 @@ class DataAdapter:
                 "Failed to initialize OpportunityDataRegistry"
             )
 
+
+    async def ingest_research_execution(
+        self,
+        *,
+        project_id: str,
+        plan: Any,
+        execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Convert YouTube MCP results into canonical DATA objects and persist
+        them through the storage adapter.
+        """
+        if not isinstance(execution, dict):
+            return {"status": "blocked", "videos": 0, "snapshots": 0}
+
+        result_rows = execution.get("results") or []
+        if not isinstance(result_rows, list):
+            result_rows = []
+
+        from data.research_sets import ResearchSet
+        from data.youtube import YouTubeQuery, YouTubeSnapshot, YouTubeVideo
+
+        research = None
+        if self.research_manager is not None:
+            research_id = getattr(plan, "research_id", None)
+            if research_id is not None:
+                research = self.research_manager.get(research_id)
+                if research is None:
+                    research = ResearchSet(
+                        research_id=research_id,
+                        name=f"Research {research_id}",
+                        objective=str(getattr(plan, "objective", "") or ""),
+                        language=getattr(plan, "language", None),
+                        region=getattr(plan, "region", None),
+                        source="youtube-mcp",
+                        status="collecting",
+                        metadata={"project_id": project_id},
+                    )
+                    self.research_manager.add(research)
+
+        videos: list[Any] = []
+        snapshots: list[Any] = []
+        query_video_pairs: list[tuple[Any, Any]] = []
+
+        for row in result_rows:
+            if not isinstance(row, dict):
+                continue
+
+            query_data = row.get("query")
+            if not isinstance(query_data, dict):
+                continue
+
+            try:
+                query = YouTubeQuery.from_dict(query_data)
+            except Exception:
+                continue
+
+            if row.get("status") != "completed":
+                continue
+
+            payload = self._extract_mcp_payload(row.get("result"))
+            items = payload.get("items") if isinstance(payload, dict) else []
+            if not isinstance(items, list):
+                items = []
+
+            query.status = "completed"
+            query.source = "youtube-mcp"
+            self.youtube_registry.add_query(query)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                video_id = (
+                    item.get("id", {}).get("videoId")
+                    if isinstance(item.get("id"), dict)
+                    else item.get("id")
+                )
+                if not video_id:
+                    continue
+
+                snippet = item.get("snippet") or {}
+                statistics = item.get("statistics") or {}
+
+                video = YouTubeVideo(
+                    video_id=str(video_id),
+                    youtube_id=str(video_id),
+                    title=str(snippet.get("title") or ""),
+                    channel_id=snippet.get("channelId"),
+                    channel_title=snippet.get("channelTitle"),
+                    description=snippet.get("description"),
+                    published_at=snippet.get("publishedAt"),
+                    source="youtube-mcp",
+                    metadata={
+                        **item,
+                        "project_id": project_id,
+                    },
+                )
+                stored_video = self.youtube_registry.add_video(video)
+                videos.append(stored_video)
+                query_video_pairs.append((query, stored_video))
+
+                if statistics:
+                    snapshot = YouTubeSnapshot(
+                        snapshot_id=f"pending:{video_id}",
+                        video_id=stored_video.video_id,
+                        metrics=statistics,
+                        metadata={
+                            "source_item": item,
+                            "project_id": project_id,
+                        },
+                        source="youtube-mcp",
+                        research_id=getattr(plan, "research_id", None),
+                        query_ids=[query.query_id],
+                    )
+                    snapshots.append(snapshot)
+
+        storage_result: dict[str, Any] = {}
+        saver = getattr(self.storage, "save_youtube_data", None)
+        if callable(saver):
+            storage_result = saver(
+                project_id=project_id,
+                videos=[video.to_dict() for video in videos],
+                snapshots=[snapshot.to_dict() for snapshot in snapshots],
+            )
+
+        returned_snapshot_ids = list(
+            storage_result.get("snapshot_ids") or []
+        )
+
+        # Replace temporary snapshot IDs with the actual Supabase IDs.
+        normalized_snapshots: list[Any] = []
+        for index, snapshot in enumerate(snapshots):
+            if index < len(returned_snapshot_ids):
+                snapshot.snapshot_id = returned_snapshot_ids[index]
+            normalized_snapshots.append(snapshot)
+            self.youtube_registry.add_snapshot(snapshot)
+
+        if research is not None:
+            for query, video in query_video_pairs:
+                research.add_query(query)
+                research.add_video(video)
+
+                if self.relations is not None:
+                    self.relations.link_research_query(research, query)
+                    self.relations.link_research_video(research, video)
+                    self.relations.link_query_video(query, video)
+
+            for snapshot in normalized_snapshots:
+                research.add_snapshot(snapshot)
+                if self.relations is not None:
+                    self.relations.link_research_snapshot(research, snapshot)
+                    self.relations.link_video_snapshot(snapshot.video_id, snapshot)
+
+            if normalized_snapshots or query_video_pairs:
+                research.mark_complete()
+
+        research_saver = getattr(self.storage, "save_research_data", None)
+        if callable(research_saver):
+            research_saver(
+                project_id=project_id,
+                queries=[
+                    query.to_dict()
+                    for query in self.youtube_registry.queries()
+                ],
+                research_sets=(
+                    [research.to_dict()]
+                    if research is not None
+                    else []
+                ),
+                relations=(
+                    [relation.to_dict() for relation in self.relations.all()]
+                    if self.relations is not None
+                    else []
+                ),
+            )
+
+        return {
+            "status": "completed",
+            "videos": len(videos),
+            "snapshots": len(normalized_snapshots),
+            "persistence": storage_result,
+        }
+
+    @staticmethod
+    def _extract_mcp_payload(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            if isinstance(value.get("items"), list):
+                return value
+            content = value.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    payload = DataAdapter._extract_mcp_payload(part)
+                    if payload:
+                        return payload
+            text_value = value.get("text")
+            if isinstance(text_value, str):
+                try:
+                    parsed = json.loads(text_value)
+                    return DataAdapter._extract_mcp_payload(parsed)
+                except Exception:
+                    return {}
+        elif isinstance(value, list):
+            for item in value:
+                payload = DataAdapter._extract_mcp_payload(item)
+                if payload:
+                    return payload
+        return {}
+
     async def get_project_state(
         self,
         project_id: str,

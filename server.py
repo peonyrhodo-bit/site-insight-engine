@@ -3050,7 +3050,38 @@ async def director_chat(
             },
         )
 
-        return serialize(result)
+        serialized = serialize(result)
+
+        # Keep the chat API contract consumed by the current frontend:
+        # the human-readable Director reply is exposed as result.answer.
+        return {
+            "result": {
+                "answer": (
+                    result.message
+                    if isinstance(result, ChatResult)
+                    else (
+                        serialized.get("message", "")
+                        if isinstance(serialized, dict)
+                        else str(serialized)
+                    )
+                ),
+                "data": (
+                    result.data
+                    if isinstance(result, ChatResult)
+                    else serialized
+                ),
+            },
+            "message": (
+                result.message
+                if isinstance(result, ChatResult)
+                else (
+                    serialized.get("message", "")
+                    if isinstance(serialized, dict)
+                    else str(serialized)
+                )
+            ),
+            "chat": serialized,
+        }
 
     except Exception as exc:
         logger.exception(

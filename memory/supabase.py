@@ -45,6 +45,11 @@ class SupabaseMemoryBackend:
     )
     TABLE_CONSTRAINTS = "constraints"
 
+    # DATA / Research persistence
+    TABLE_YOUTUBE_QUERIES = "youtube_queries"
+    TABLE_RESEARCH_SETS = "research_sets"
+    TABLE_DATA_RELATIONS = "data_relations"
+
     def __init__(
         self,
         client: Client | None = None,
@@ -356,6 +361,76 @@ class SupabaseMemoryBackend:
             "videos": videos,
             "snapshots": snapshots,
         }
+
+    # ------------------------------------------------------------------
+    # DATA / RESEARCH
+    # ------------------------------------------------------------------
+
+    def load_research_data(self, *, project_id: str | None = None) -> dict[str, Any]:
+        """Load persisted research/query/relation DATA for one project."""
+        expected_project = str(project_id) if project_id is not None else None
+        return {
+            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+        }
+
+    def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:
+        query = self._safe_dict(query)
+        query_id = str(query.get("query_id") or "").strip()
+        if not query_id:
+            raise ValueError("query_id is required")
+        payload = {
+            "project_id": str(project_id), "query_id": query_id,
+            "text": query.get("text", ""), "language": query.get("language"),
+            "region": query.get("region"), "metadata": self._safe_dict(query.get("metadata")),
+            "source": query.get("source"), "status": query.get("status", "planned"),
+        }
+        response = self.client.table(self.TABLE_YOUTUBE_QUERIES).upsert(payload, on_conflict="project_id,query_id").select("id").execute()
+        return self._first_id(response)
+
+    def save_research_set(self, *, project_id: str, research: dict[str, Any]) -> int | None:
+        research = self._safe_dict(research)
+        research_id = str(research.get("research_id") or "").strip()
+        if not research_id:
+            raise ValueError("research_id is required")
+        payload = {
+            "project_id": str(project_id), "research_id": research_id,
+            "name": research.get("name", ""), "objective": research.get("objective", ""),
+            "language": research.get("language"), "region": research.get("region"),
+            "languages": research.get("languages") or [], "regions": research.get("regions") or [],
+            "query_ids": research.get("query_ids") or [], "video_ids": research.get("video_ids") or [],
+            "snapshot_ids": research.get("snapshot_ids") or [], "gathered_data": research.get("gathered_data") or [],
+            "missing_data": research.get("missing_data") or [], "reusable_video_ids": research.get("reusable_video_ids") or [],
+            "reused_video_ids": research.get("reused_video_ids") or [], "source": research.get("source"),
+            "status": research.get("status", "planned"), "created_at": research.get("created_at"),
+            "updated_at": research.get("updated_at"), "completed_at": research.get("completed_at"),
+            "metadata": self._safe_dict(research.get("metadata")), "expected_data": research.get("expected_data") or [],
+        }
+        response = self.client.table(self.TABLE_RESEARCH_SETS).upsert(payload, on_conflict="project_id,research_id").select("id").execute()
+        return self._first_id(response)
+
+    def save_data_relation(self, *, project_id: str, relation: dict[str, Any]) -> int | None:
+        relation = self._safe_dict(relation)
+        payload = {
+            "project_id": str(project_id), "source_type": relation.get("source_type"),
+            "source_id": str(relation.get("source_id")), "relation": relation.get("relation"),
+            "target_type": relation.get("target_type"), "target_id": str(relation.get("target_id")),
+            "metadata": self._safe_dict(relation.get("metadata")),
+        }
+        response = self.client.table(self.TABLE_DATA_RELATIONS).upsert(payload, on_conflict="project_id,source_type,source_id,relation,target_type,target_id").select("id").execute()
+        return self._first_id(response)
+
+    def save_research_data(self, *, project_id: str, queries: list[dict[str, Any]] | None = None, research_sets: list[dict[str, Any]] | None = None, relations: list[dict[str, Any]] | None = None) -> dict[str, int]:
+        """Persist the current DATA graph using idempotent upserts."""
+        saved = {"queries": 0, "research_sets": 0, "relations": 0}
+        for query in queries or []:
+            if self.save_youtube_query(project_id=project_id, query=query) is not None: saved["queries"] += 1
+        for research in research_sets or []:
+            if self.save_research_set(project_id=project_id, research=research) is not None: saved["research_sets"] += 1
+        for relation in relations or []:
+            if self.save_data_relation(project_id=project_id, relation=relation) is not None: saved["relations"] += 1
+        return saved
 
     # ------------------------------------------------------------------
     # CONTEXT

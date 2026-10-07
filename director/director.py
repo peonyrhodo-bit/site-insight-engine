@@ -547,6 +547,9 @@ class Director:
                     result.update(external)
 
         # Keep the Director context in sync with the latest analysis.
+        interpretation = self.interpret_signals(result)
+        result["signal_interpretation"] = interpretation
+
         self.context.analytics = (
             result.get(
                 "analytics",
@@ -572,6 +575,133 @@ class Director:
         )
 
         return result
+
+    # ============================================================
+    # SIGNAL INTERPRETATION
+    # ============================================================
+
+    def interpret_signals(
+        self,
+        analysis: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Translate Analytics signals into Director-level meaning.
+
+        Analytics calculates signals and scores; the Director is
+        responsible for interpreting what those signals mean together,
+        including contradictions, evidence quality, and uncertainty.
+        """
+        opportunities = analysis.get("opportunities") or []
+        if not isinstance(opportunities, list):
+            opportunities = [opportunities]
+
+        interpretations: list[dict[str, Any]] = []
+
+        for item in opportunities:
+            if not isinstance(item, dict):
+                continue
+
+            signals = [
+                str(x)
+                for x in (item.get("signals") or [])
+                if str(x).strip()
+            ]
+            strengths = [
+                str(x)
+                for x in (item.get("strengths") or [])
+                if str(x).strip()
+            ]
+            risks = [
+                str(x)
+                for x in (item.get("risks") or [])
+                if str(x).strip()
+            ]
+            missing = [
+                str(x)
+                for x in (item.get("missing_data") or [])
+                if str(x).strip()
+            ]
+
+            score = self._safe_score(item.get("overall_score"))
+            confidence = self._safe_score(item.get("confidence"))
+            dimensions = item.get("dimensions") or {}
+
+            positive = [
+                signal for signal in signals
+                if signal in {
+                    "strong_opportunity_signal",
+                    "positive_opportunity_signal",
+                    "high_evidence_confidence",
+                    "positive_dynamics",
+                }
+            ]
+            negative = [
+                signal for signal in signals
+                if signal in {
+                    "weak_opportunity_signal",
+                    "negative_dynamics",
+                    "dense_competition",
+                    "low_evidence_confidence",
+                }
+            ]
+
+            interpretation = (
+                "Есть положительный сигнал по направлению, "
+                "но решение зависит от качества доказательств."
+            )
+
+            if positive and negative:
+                interpretation = (
+                    "Сигналы смешанные: потенциал присутствует, "
+                    "но есть факторы, ограничивающие уверенность."
+                )
+            elif negative and not positive:
+                interpretation = (
+                    "Преимущественно отрицательные сигналы: "
+                    "текущее направление не даёт достаточного основания "
+                    "для активного действия."
+                )
+            elif positive:
+                interpretation = (
+                    "Преимущественно положительные сигналы: "
+                    "направление выглядит перспективным при текущем "
+                    "уровне доказательств."
+                )
+
+            if confidence < 0.55 or missing:
+                interpretation += (
+                    " Уверенность ограничена неполнотой данных."
+                )
+
+            interpretations.append({
+                "opportunity_id": item.get("opportunity_id"),
+                "title": item.get("title", ""),
+                "interpretation": interpretation,
+                "positive_signals": positive,
+                "negative_signals": negative,
+                "signals": signals,
+                "strengths": strengths[:8],
+                "risks": risks[:8],
+                "missing_data": missing[:8],
+                "overall_score": score,
+                "confidence": confidence,
+                "dimensions": dimensions,
+            })
+
+        result = {
+            "items": interpretations,
+            "count": len(interpretations),
+        }
+
+        self.context.metadata["signal_interpretation"] = result
+        return result
+
+    @staticmethod
+    def _safe_score(value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
 
     # ============================================================
     # DECISION

@@ -123,6 +123,43 @@ def _insert(
 
     return row_id
 
+def _project_id_from_row(
+    self,
+    row: dict[str, Any],
+) -> str | None:
+    direct = row.get("project_id")
+    if direct is not None:
+        return str(direct)
+
+    data = _safe_dict(row.get("data_json"))
+    value = data.get("project_id")
+    if value is not None:
+        return str(value)
+
+    for key in ("source_data", "metadata"):
+        nested = _safe_dict(data.get(key))
+        value = nested.get("project_id")
+        if value is not None:
+            return str(value)
+
+    return None
+
+def _recent_for_project(
+    self,
+    rows: list[dict[str, Any]],
+    limit: int,
+    project_id: str | None,
+) -> list[dict[str, Any]]:
+    if project_id is not None:
+        project_id = str(project_id)
+        rows = [
+            row
+            for row in rows
+            if self._project_id_from_row(row) == project_id
+        ]
+
+    return self._recent(rows, limit)
+
 # ------------------------------------------------------------------
 # CONTEXT
 # ------------------------------------------------------------------
@@ -142,32 +179,40 @@ def get_context(
 ) -> dict[str, Any]:
     return {
         "runs": self.get_recent_runs(
-            limit=limit_runs
+            limit=limit_runs,
+            project_id=project_id
         ),
         "decisions": self.get_recent_decisions(
-            limit=limit_decisions
+            limit=limit_decisions,
+            project_id=project_id
         ),
         "recommendations": (
             self.get_recent_recommendations(
-                limit=limit_recommendations
+                limit=limit_recommendations,
+                project_id=project_id
             )
         ),
         "constraints": (
             self.get_recent_constraints(
-                limit=limit_constraints
+                limit=limit_constraints,
+                project_id=project_id
             )
         ),
         "events": self.get_recent_events(
-            limit=limit_events
+            limit=limit_events,
+            project_id=project_id
         ),
         "chat": self.get_recent_chat_messages(
-            limit=limit_chat
+            limit=limit_chat,
+            project_id=project_id
         ),
         "actions": self.get_recent_actions(
-            limit=limit_actions
+            limit=limit_actions,
+            project_id=project_id
         ),
         "results": self.get_recent_results(
-            limit=limit_results
+            limit=limit_results,
+            project_id=project_id
         ),
     }
 
@@ -195,6 +240,7 @@ def get_recent_runs(
     self,
     *,
     limit: int = 10,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._runs,
@@ -225,6 +271,7 @@ def get_recent_decisions(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._decisions,
@@ -257,6 +304,7 @@ def get_recent_chat_messages(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._chat,
@@ -293,6 +341,7 @@ def get_recent_actions(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._actions,
@@ -327,6 +376,7 @@ def get_recent_results(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._results,
@@ -355,6 +405,7 @@ def get_recent_events(
     self,
     *,
     limit: int = 30,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     return self._recent(
         self._events,
@@ -439,6 +490,7 @@ def get_recent_recommendations(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     rows = self._recent(
         self._recommendations,
@@ -661,6 +713,7 @@ def get_recent_constraints(
     self,
     *,
     limit: int = 20,
+    project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     rows = self._recent(
         self._constraints,

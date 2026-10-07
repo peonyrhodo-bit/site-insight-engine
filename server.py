@@ -1,4 +1,4 @@
-```python
+
 """
 AI Director HTTP server.
 
@@ -3354,4 +3354,3 @@ async def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 application = app
-```

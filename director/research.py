@@ -188,12 +188,18 @@ def research_from_gaps(
     queries: list[ResearchQuery] = []
 
     for gap in gaps:
-        description = _get(gap, "description", "") or _get(
-            gap, "reason", ""
-        )
-        topic = _get(gap, "topic")
-        importance = _get(gap, "importance", 0.5)
-
+        if isinstance(gap, str):
+            description = gap
+            topic = None
+            importance = 0.8
+            suggested_method = "Собрать недостающие данные через доступный Research/Data источник."
+        else:
+            description = _get(gap, "description", "") or _get(
+                gap, "reason", ""
+            )
+            topic = _get(gap, "topic")
+            importance = _get(gap, "importance", 0.5)
+            suggested_method = _get(gap, "suggested_method", "")
         if not description:
             continue
 
@@ -201,7 +207,7 @@ def research_from_gaps(
             description=str(description),
             importance=float(importance or 0.5),
             topic=topic,
-            suggested_method=_get(gap, "suggested_method", ""),
+            suggested_method=suggested_method,
         )
 
         research_gaps.append(research_gap)

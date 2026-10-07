@@ -1769,7 +1769,7 @@ class DataAdapter:
                     self.relations.link_research_snapshot(research, snapshot)
                     self.relations.link_video_snapshot(snapshot.video_id, snapshot)
 
-            if normalized_snapshots or query_video_pairs:
+            if normalized_snapshots or query_video_pairs or channels:
                 research.mark_complete()
 
         research_saver = getattr(self.storage, "save_research_data", None)

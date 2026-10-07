@@ -24,7 +24,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -1994,6 +1994,16 @@ app = FastAPI(
 
 
 # ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    """Serve the repository frontend from the same FastAPI process."""
+    return FileResponse("index.html", media_type="text/html")
+
+
+# ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
 
@@ -2095,6 +2105,30 @@ async def health() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Director status
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# System / AI status compatibility endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/system/status")
+async def system_status() -> dict[str, Any]:
+    return {
+        "service": SERVICE_NAME,
+        "environment": ENVIRONMENT,
+        "free_mode": FREE_MODE,
+        "autonomous": AUTONOMOUS_ENABLED,
+        "memory_enabled": runtime.memory.enabled,
+        "mcp_url": os.getenv("YOUTUBE_MCP_URL") or os.getenv("MCP_URL") or "",
+        "timestamp": utc_now(),
+    }
+
+@app.get("/ai/status")
+async def ai_status() -> dict[str, Any]:
+    return {
+        "enabled": runtime.ai.enabled,
+        "provider": (os.getenv("AI_PROVIDER") or os.getenv("OPENROUTER_PROVIDER") or "openrouter") if runtime.ai.enabled else None,
+    }
 
 
 @app.get("/director/status")
@@ -2572,6 +2606,7 @@ async def recommendation_action(
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=100,
         limit_decisions=100,
         limit_events=100,
@@ -3225,6 +3260,7 @@ async def events(
     limit: int = 50,
 ) -> dict[str, Any]:
     context = await runtime.memory.get_context(
+        project_id=project_id,
         limit_runs=limit,
         limit_decisions=limit,
         limit_events=limit,

@@ -159,7 +159,11 @@ class YouTubeResearchExecutor:
                             },
                         )
                         payload = _tool_payload(result)
-                        items = payload.get("items") or []
+                        if "items" not in payload or not isinstance(payload.get("items"), list):
+                            raise ValueError(
+                                "youtube_mcp_invalid_response: expected 'items' list"
+                            )
+                        items = payload["items"]
 
                         for item in items:
                             if not isinstance(item, dict):
@@ -226,11 +230,16 @@ class YouTubeResearchExecutor:
                         failed_queries += 1
                         errors.append(f"{text}: {type(exc).__name__}: {exc}")
 
-        research.mark_data_gathered("queries", "research_set")
-        if research.video_ids:
-            research.mark_data_gathered("videos")
-        if research.snapshot_ids:
-            research.mark_data_gathered("video_snapshots")
+        # A successful MCP response is a gathered data point even when
+        # it contains zero items. Empty search results are a valid research
+        # outcome and must not be confused with data that was never collected.
+        if collected_queries:
+            research.mark_data_gathered("queries")
+        research.mark_data_gathered("research_set")
+
+        successful_response_count = successful_queries
+        if successful_response_count:
+            research.mark_data_gathered("videos", "video_snapshots")
 
         current_relation_objects = []
         if relations is not None:
@@ -305,6 +314,12 @@ class YouTubeResearchExecutor:
             "videos_collected": len(research.video_ids),
             "snapshots_collected": len(research.snapshot_ids),
             "relations_created": len(current_relation_objects),
+            "gathered_data": list(research.gathered_data),
+            "missing_data": list(research.missing_data),
+            "expected_data": list(research.expected_data),
+            "missing_expected_data": research.missing_expected_data(),
+            "completeness": research.completeness,
+            "research": research.to_dict(),
             "errors": errors,
             "source": "youtube-mcp",
             "mcp_url": mcp_url,

@@ -5,15 +5,13 @@ Storage adapter for Director Memory.
 
 Architecture:
 
-```
 Director
-    ↓
+↓
 Memory
-    ↓
+↓
 SupabaseMemoryBackend
-    ↓
+↓
 Supabase
-```
 
 This file contains all storage-specific knowledge.
 
@@ -24,7 +22,7 @@ Existing tables are preserved.
 Rich Memory 2.0 fields are stored inside data_json where possible.
 """
 
-from __future__ import annotations
+from **future** import annotations
 
 import os
 from typing import Any
@@ -517,7 +515,7 @@ def save_recommendation(
         ),
         "status": recommendation.get(
             "status",
-            "new",
+            "pending",
         ),
         "data_json": {
             "source_data": self._safe_dict(

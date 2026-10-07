@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterable
 
 from .autonomy import (
     AutonomyConfig,
+    CycleStatus,
     DirectorAutonomy,
     DirectorCycle,
     DirectorPhase,
@@ -1346,13 +1347,18 @@ class Director:
         large /director/run orchestration in server.py.
         """
         try:
-            self.state.status = DirectorStatus.ANALYZING
+            if objective:
+                self.context.objective = objective
+
+            self.state.status = CycleStatus.RUNNING
+            self.state.phase = DirectorPhase.INSPECT
 
             await self.inspect()
             understanding = self.understand()
 
             if not self.state.evidence_available:
-                self.state.status = DirectorStatus.RESEARCHING
+                self.state.status = CycleStatus.RUNNING
+                self.state.phase = DirectorPhase.RESEARCH
 
                 plan = self.plan_research(
                     objective=objective
@@ -1374,11 +1380,13 @@ class Director:
                 self.last_result = result
                 return result
 
-            self.state.status = DirectorStatus.ANALYZING
+            self.state.status = CycleStatus.RUNNING
+            self.state.phase = DirectorPhase.ANALYZE
 
             analysis = await self.analyze()
 
-            self.state.status = DirectorStatus.DECIDING
+            self.state.status = CycleStatus.RUNNING
+            self.state.phase = DirectorPhase.DECIDE
 
             decision = await self.decide(
                 analysis
@@ -1387,7 +1395,8 @@ class Director:
             if decision.decision_type in {
                 DecisionType.RESEARCH,
             }:
-                self.state.status = DirectorStatus.RESEARCHING
+                self.state.status = CycleStatus.RUNNING
+                self.state.phase = DirectorPhase.RESEARCH
 
                 plan = self.plan_research(
                     objective=objective
@@ -1412,7 +1421,8 @@ class Director:
                 DecisionType.SLEEP,
                 DecisionType.NONE,
             }:
-                self.state.status = DirectorStatus.SLEEPING
+                self.state.status = CycleStatus.SLEEPING
+                self.state.phase = DirectorPhase.SLEEP
 
                 result = DirectorResult(
                     status=DirectorStatus.SLEEPING,
@@ -1427,7 +1437,8 @@ class Director:
                 self.last_result = result
                 return result
 
-            self.state.status = DirectorStatus.WAITING
+            self.state.status = CycleStatus.WAITING
+            self.state.phase = DirectorPhase.RECOMMEND
 
             recommendation = self.create_recommendation(
                 decision,
@@ -1450,7 +1461,8 @@ class Director:
             return result
 
         except Exception as exc:
-            self.state.status = DirectorStatus.ERROR
+            self.state.status = CycleStatus.ERROR
+            self.state.phase = DirectorPhase.ERROR
 
             result = DirectorResult(
                 status=DirectorStatus.ERROR,

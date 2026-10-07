@@ -1105,25 +1105,16 @@ class Director:
         state: DirectorState,
         payload: Any,
     ) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            return {
-                "evidence_sufficient": bool(
-                    self.context.opportunities
-                )
-            }
-
-        missing = payload.get(
-            "missing_data",
-            self.context.missing_data,
-        )
-
-        opportunities = payload.get(
-            "opportunities",
-            self.context.opportunities,
+        # Assessment happens before analysis in the autonomous loop.
+        # At this point the authoritative evidence flag comes from inspect().
+        # Do not require opportunities yet: analytics creates them later.
+        missing = list(
+            self.context.missing_data
+            or []
         )
 
         sufficient = bool(
-            opportunities
+            state.evidence_available
             and not missing
         )
 

@@ -22,7 +22,7 @@ Existing tables are preserved.
 Rich Memory 2.0 fields are stored inside data_json where possible.
 """
 
-from **future** import annotations
+from __future__ import annotations
 
 import os
 from typing import Any

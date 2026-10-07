@@ -1786,7 +1786,7 @@ class DataAdapter:
                     else []
                 ),
                 relations=(
-                    [relation.to_dict() for relation in self.relations.all()]
+                    [relation.to_dict() for relation in self.relations.all_relations()]
                     if self.relations is not None
                     else []
                 ),

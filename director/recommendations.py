@@ -18,9 +18,10 @@ from .decision import DirectorDecision
 class RecommendationStatus(str, Enum):
     DRAFT = "draft"
     PENDING = "pending"
+    DISCUSSED = "discussed"
+    DEFERRED = "deferred"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
-    DISCUSSED = "discussed"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
@@ -174,6 +175,19 @@ def discuss_recommendation(
 
     if message:
         recommendation.metadata.setdefault("discussion", []).append(message)
+
+    return recommendation
+
+
+def defer_recommendation(
+    recommendation: DirectorRecommendation,
+    *,
+    reason: str | None = None,
+) -> DirectorRecommendation:
+    recommendation.status = RecommendationStatus.DEFERRED
+
+    if reason:
+        recommendation.metadata["deferral_reason"] = reason
 
     return recommendation
 

@@ -1229,7 +1229,12 @@ class Director:
             "status": "not_executed",
         }
 
-        if isinstance(execution, dict) and execution.get("status") == "completed":
+        # Persisted research results must be ingested even when the
+        # research is partial: a partial run still contains usable evidence.
+        if (
+            isinstance(execution, dict)
+            and execution.get("status") in {"completed", "partial"}
+        ):
             ingestor = getattr(
                 self.data_service,
                 "ingest_research_execution",
@@ -1246,14 +1251,30 @@ class Director:
                 if hasattr(data_ingestion, "__await__"):
                     data_ingestion = await data_ingestion
 
+        # Re-read project state after Research has persisted its DATA.
+        # This closes the Research -> Director handoff: the next
+        # assessment/analyzer sees the newly collected evidence.
+        refreshed_context = await self.inspect()
+
+        research_execution = (
+            execution if isinstance(execution, dict) else {}
+        )
+        self.context.metadata["last_research_execution"] = (
+            research_execution
+        )
+        self.context.metadata["last_research_ingestion"] = (
+            data_ingestion
+        )
+
         return {
             "research_plan": plan.to_dict(),
-            "research_execution": execution,
+            "research_execution": research_execution,
             "data_ingestion": data_ingestion,
-            "missing_data": [
-                gap.description
-                for gap in plan.gaps
-            ],
+            "project_state": refreshed_context.metadata.get(
+                "project_state",
+                {},
+            ),
+            "missing_data": list(self.context.missing_data),
         }
 
     async def _autonomy_analyze(

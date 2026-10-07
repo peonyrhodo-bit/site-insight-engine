@@ -939,32 +939,17 @@ class ServerMemory:
             if not record:
                 return None
 
-            if hasattr(
-                self.memory,
-                "save_decision_model",
-            ):
-                result = self.memory.save_decision(
-                    decision=str(
-                        record.get("decision", "")
-                    ),
-                    data={
-                        key: value
-                        for key, value in record.items()
-                        if key not in {"decision", "run_id"}
-                    },
-                    run_id=run_id,
-                )
-            else:
-                result = self.memory.save_decision(
-                    decision=str(
-                        record.get("decision", "")
-                    ),
-                    data={
-                        key: value
-                        for key, value in record.items()
-                        if key != "decision"
-                    },
-                )
+            result = self.memory.save_decision(
+                decision=str(
+                    record.get("decision", "")
+                ),
+                data={
+                    key: value
+                    for key, value in record.items()
+                    if key != "decision"
+                },
+                run_id=run_id,
+            )
 
             if hasattr(result, "__await__"):
                 result = await result

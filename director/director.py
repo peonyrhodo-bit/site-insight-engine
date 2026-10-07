@@ -200,6 +200,7 @@ class Director:
 
             if loader:
                 external_context = loader(
+                    project_id=self.project_id,
                     limit_runs=10,
                     limit_decisions=20,
                     limit_events=30,

@@ -319,3 +319,55 @@ def mark_blocked(
 
 def research_to_dict(plan: ResearchPlan) -> dict[str, Any]:
     return plan.to_dict()
+
+class ResearchService:
+    """
+    Research layer entry point.
+
+    Director sends the research objective and current context here.
+    This service owns translation of missing-data signals into a
+    ResearchPlan. Data acquisition is intentionally handled separately.
+    """
+
+    def plan(
+        self,
+        *,
+        objective: str,
+        context: dict[str, Any] | None = None,
+    ) -> ResearchPlan:
+        context = dict(context or {})
+
+        missing_data = context.get("missing_data", [])
+        preferred_languages = context.get(
+            "metadata", {}
+        ).get("preferred_languages", [])
+
+        current_topics = []
+        topics = context.get("topics", {})
+
+        if isinstance(topics, dict):
+            values = topics.get("topics", topics.get("items", []))
+            if isinstance(values, dict):
+                values = values.values()
+
+            for item in values or []:
+                if isinstance(item, str):
+                    current_topics.append(item)
+                elif isinstance(item, dict):
+                    name = (
+                        item.get("name")
+                        or item.get("topic")
+                        or item.get("title")
+                    )
+                    if name:
+                        current_topics.append(str(name))
+
+        return plan_next_research(
+            objective=objective,
+            missing_data=missing_data,
+            current_topics=current_topics,
+            preferred_languages=(
+                preferred_languages or None
+            ),
+        )
+\n

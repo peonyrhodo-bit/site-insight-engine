@@ -7,6 +7,7 @@ Actual data acquisition belongs to data/youtube.py and youtube-mcp.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -477,28 +478,21 @@ def research_to_dict(plan: ResearchPlan) -> dict[str, Any]:
     return plan.to_dict()
 
 class ResearchService:
-    """
-    Research layer entry point.
+    """Research planning plus execution through the YouTube MCP boundary."""
 
-    Director sends the research objective and current context here.
-    This service owns translation of missing-data signals into a
-    ResearchPlan. Data acquisition is intentionally handled separately.
-    """
+    def __init__(self, *, mcp_url: str | None = None) -> None:
+        self.mcp_url = (
+            mcp_url
+            or os.getenv("MCP_URL")
+            or os.getenv("YOUTUBE_MCP_URL")
+            or "http://youtube-mcp:8000/mcp"
+        )
 
-    def plan(
-        self,
-        *,
-        objective: str,
-        context: dict[str, Any] | None = None,
-    ) -> ResearchPlan:
+    def plan(self, *, objective: str, context: dict[str, Any] | None = None) -> ResearchPlan:
         context = dict(context or {})
-
         metadata = context.get("metadata", {})
-        preferred_languages = metadata.get("preferred_languages", [])
-        requirements = metadata.get("data_requirements", [])
-
-        # Prefer the Director's structured requirements. String gaps remain
-        # supported for compatibility with older callers.
+        preferred_languages = metadata.get("preferred_languages", []) if isinstance(metadata, dict) else []
+        requirements = metadata.get("data_requirements", []) if isinstance(metadata, dict) else []
         if isinstance(requirements, list) and requirements:
             return plan_from_requirements(
                 objective=objective,
@@ -506,35 +500,113 @@ class ResearchService:
                 context=context,
                 preferred_languages=(preferred_languages or None),
             )
-
-        missing_data = context.get("missing_data", [])
-
-        current_topics = []
-        topics = context.get("topics", {})
-
-        if isinstance(topics, dict):
-            values = topics.get("topics", topics.get("items", []))
-            if isinstance(values, dict):
-                values = values.values()
-
-            for item in values or []:
-                if isinstance(item, str):
-                    current_topics.append(item)
-                elif isinstance(item, dict):
-                    name = (
-                        item.get("name")
-                        or item.get("topic")
-                        or item.get("title")
-                    )
-                    if name:
-                        current_topics.append(str(name))
-
         return plan_next_research(
             objective=objective,
-            missing_data=missing_data,
-            current_topics=current_topics,
-            preferred_languages=(
-                preferred_languages or None
-            ),
+            missing_data=context.get("missing_data", []),
+            current_topics=_context_topics(context),
+            preferred_languages=(preferred_languages or None),
         )
-\n
+
+    async def execute(self, plan: ResearchPlan) -> dict[str, Any]:
+        """Send executable YouTube research queries to the MCP server."""
+        if not plan.queries:
+            return {"research_id": plan.research_id, "status": "completed", "queries_sent": 0, "results": []}
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+        except Exception as exc:
+            return {"research_id": plan.research_id, "status": "blocked", "queries_sent": 0, "results": [], "error": f"MCP client unavailable: {exc}"}
+
+        results: list[dict[str, Any]] = []
+        queries_sent = 0
+        try:
+            async with streamable_http_client(self.mcp_url) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_names = {tool.name for tool in tools.tools}
+
+                    for query in plan.queries:
+                        operation = str(query.metadata.get("operation", "search_videos"))
+                        if operation == "collect_channels":
+                            tool_name = "search_channels"
+                            arguments = {"query": query.query, "max_results": query.max_results}
+                        else:
+                            tool_name = "search_videos"
+                            arguments = {
+                                "query": query.query,
+                                "max_results": query.max_results,
+                                "region_code": query.region_code,
+                                "relevance_language": query.language,
+                            }
+
+                        if tool_name not in tool_names:
+                            results.append({"query": query.to_dict(), "status": "blocked", "error": f"MCP tool not available: {tool_name}"})
+                            continue
+
+                        tool_result = await session.call_tool(tool_name, arguments)
+                        queries_sent += 1
+                        results.append({
+                            "query": query.to_dict(),
+                            "tool": tool_name,
+                            "status": "completed",
+                            "result": _serialize_mcp_result(tool_result),
+                        })
+        except Exception as exc:
+            return {
+                "research_id": plan.research_id,
+                "status": "blocked",
+                "mcp_url": self.mcp_url,
+                "queries_sent": queries_sent,
+                "results": results,
+                "error": str(exc),
+            }
+
+        return {
+            "research_id": plan.research_id,
+            "status": "completed",
+            "mcp_url": self.mcp_url,
+            "queries_sent": queries_sent,
+            "results": results,
+        }
+
+
+def _context_topics(context: dict[str, Any]) -> list[str]:
+    topics = context.get("topics", {})
+    if not isinstance(topics, dict):
+        return []
+    values = topics.get("topics", topics.get("items", []))
+    if isinstance(values, dict):
+        values = values.values()
+    result: list[str] = []
+    for item in values or []:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("topic") or item.get("title")
+            if name:
+                result.append(str(name))
+    return result
+
+
+def _serialize_mcp_result(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _serialize_mcp_result(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_mcp_result(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _serialize_mcp_result(value.model_dump())
+        except Exception:
+            pass
+    if hasattr(value, "to_dict"):
+        try:
+            return _serialize_mcp_result(value.to_dict())
+        except Exception:
+            pass
+    if hasattr(value, "text"):
+        return str(value.text)
+    return str(value)
+

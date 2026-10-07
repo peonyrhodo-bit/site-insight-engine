@@ -297,25 +297,59 @@ class Director:
 
         gaps: list[str] = []
 
-        if observation_count == 0:
-            gaps.append(
-                "Нет сохранённых YouTube-наблюдений для текущего проекта."
-            )
+        # Distinguish raw evidence from the structural evidence needed
+        # for a strategic YouTube decision. DATA supplies inventory;
+        # the Director decides which missing ingredients matter next.
+        def inventory_count(key: str) -> int:
+            try:
+                return int(inventory.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        inventory_counts = {
+            "videos": inventory_count("video_count"),
+            "video_snapshots": snapshot_count,
+            "queries": inventory_count("query_count"),
+            "research_sets": inventory_count("research_set_count"),
+            "relations": inventory_count("relation_count"),
+            "channels": inventory_count("channel_count"),
+            "channel_snapshots": inventory_count("channel_snapshot_count"),
+            "niches": inventory_count("niche_count"),
+            "niche_snapshots": inventory_count("niche_snapshot_count"),
+        }
+
+        requirements: list[dict[str, Any]] = []
+
+        def require(key: str, description: str, priority: str, *, needed_when: bool = True) -> None:
+            count = inventory_counts[key]
+            requirements.append({
+                "key": key,
+                "description": description,
+                "priority": priority,
+                "available": count > 0,
+                "count": count,
+                "needed_now": bool(needed_when and count == 0),
+            })
+
+        require("videos", "Видео для первичной картины спроса, тем и результатов.", "critical")
+        require("video_snapshots", "История метрик видео для определения скорости и динамики роста.", "high", needed_when=inventory_counts["videos"] > 0)
+        require("queries", "Сохранённые поисковые запросы, показывающие что именно уже искали.", "high")
+        require("research_sets", "История исследований, чтобы не повторять уже выполненную работу.", "high")
+        require("relations", "Связи между исследованиями, запросами, видео, результатами и решениями.", "medium")
+        require("channels", "Сущности каналов для оценки конкуренции и распределения результата.", "high", needed_when=inventory_counts["videos"] > 0)
+        require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=inventory_counts["channels"] > 0)
+        require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=inventory_counts["videos"] > 0)
+        require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=inventory_counts["niches"] > 0)
+
+        for requirement in requirements:
+            if requirement["needed_now"]:
+                gaps.append(f"{requirement['description']} (отсутствует: {requirement['key']}).")
 
         if observation_count > 0 and metric_observations == 0:
-            gaps.append(
-                "У сохранённых видео нет доступных числовых метрик."
-            )
+            gaps.append("У сохранённых видео нет доступных числовых метрик.")
 
         if observation_count > 0 and velocity_observations == 0:
-            gaps.append(
-                "Нет метрик скорости роста (views/hour или эквивалента)."
-            )
-
-        if snapshot_count == 0 and observation_count > 0:
-            gaps.append(
-                "Нет сохранённых исторических снимков метрик."
-            )
+            gaps.append("Нет метрик скорости роста (views/hour или эквивалента).")
 
         self.context.missing_data = gaps
         self.state.evidence_available = observation_count > 0
@@ -325,18 +359,18 @@ class Director:
             and velocity_observations > 0
         )
 
+        self.context.metadata["data_requirements"] = requirements
         self.context.metadata["project_state"] = {
             "observation_count": observation_count,
             "snapshot_count": snapshot_count,
             "metric_observation_count": metric_observations,
             "velocity_observation_count": velocity_observations,
+            "inventory": inventory_counts,
             "has_topics": bool(self.context.topics),
             "has_analytics": bool(self.context.analytics),
             "has_opportunities": bool(self.context.opportunities),
             "has_research_history": bool(self.context.research_history),
-            "raw_evidence_ready_for_analytics": (
-                self.state.evidence_sufficient
-            ),
+            "raw_evidence_ready_for_analytics": self.state.evidence_sufficient,
             "missing_raw_data": list(gaps),
         }
 

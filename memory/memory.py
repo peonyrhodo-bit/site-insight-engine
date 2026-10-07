@@ -358,7 +358,13 @@ class Memory:
 
             status = str(item.get("status", "")).lower()
 
-            if status in {"new", "active", "accepted", "deferred"}:
+            if status in {
+                "draft",
+                "pending",
+                "discussed",
+                "deferred",
+                "accepted",
+            }:
                 pending_recommendations.append(item)
 
         unfinished_actions = []

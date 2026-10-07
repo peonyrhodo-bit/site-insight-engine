@@ -60,6 +60,7 @@ class MemoryBackend(Protocol):
     def get_context(
         self,
         *,
+        project_id: str | None = None,
         limit_runs: int = 10,
         limit_decisions: int = 20,
         limit_events: int = 30,
@@ -270,6 +271,7 @@ class Memory:
     def get_context(
         self,
         *,
+        project_id: str | None = None,
         limit_runs: int = DEFAULT_LIMIT_RUNS,
         limit_decisions: int = DEFAULT_LIMIT_DECISIONS,
         limit_events: int = DEFAULT_LIMIT_EVENTS,
@@ -289,6 +291,7 @@ class Memory:
         """
 
         context = self.backend.get_context(
+            project_id=project_id,
             limit_runs=self._limit(
                 limit_runs,
                 self.DEFAULT_LIMIT_RUNS,

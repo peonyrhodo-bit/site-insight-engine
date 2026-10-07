@@ -252,27 +252,43 @@ class SupabaseMemoryBackend:
             order_key="video_id",
         )
 
+        video_project_scoped = any(
+            self._project_id_from_row(row) is not None
+            for row in video_rows
+        )
+
         videos: list[dict[str, Any]] = []
         video_ids: set[str] = set()
 
         for row in video_rows:
             if (
                 expected_project is not None
+                and video_project_scoped
                 and self._project_id_from_row(row)
                 != expected_project
             ):
                 continue
 
             data = self._safe_dict(row.get("data_json"))
-            payload = dict(data)
-            payload.setdefault("video_id", row.get("video_id"))
-            payload.setdefault("first_seen_at", row.get("first_seen"))
-            payload.setdefault("last_seen_at", row.get("last_seen"))
+            snippet = self._safe_dict(data.get("snippet"))
+            video_id = row.get("video_id") or data.get("id")
 
-            try:
-                video = YouTubeVideo.from_dict(payload)
-            except (TypeError, ValueError):
+            if video_id is None:
                 continue
+
+            video = YouTubeVideo(
+                video_id=video_id,
+                youtube_id=str(video_id),
+                title=str(snippet.get("title") or ""),
+                channel_id=snippet.get("channelId"),
+                channel_title=snippet.get("channelTitle"),
+                description=snippet.get("description"),
+                published_at=snippet.get("publishedAt"),
+                first_seen_at=row.get("first_seen"),
+                last_seen_at=row.get("last_seen"),
+                source="supabase",
+                metadata=data,
+            )
 
             videos.append(video.to_dict())
             video_ids.add(str(video.video_id))
@@ -282,6 +298,11 @@ class SupabaseMemoryBackend:
             order_key="id",
         )
 
+        snapshot_project_scoped = any(
+            self._project_id_from_row(row) is not None
+            for row in snapshot_rows
+        )
+
         snapshots: list[dict[str, Any]] = []
 
         for row in snapshot_rows:
@@ -289,21 +310,45 @@ class SupabaseMemoryBackend:
 
             if expected_project is not None:
                 if (
-                    row_project != expected_project
+                    snapshot_project_scoped
+                    and row_project != expected_project
+                ):
+                    continue
+
+                if (
+                    not snapshot_project_scoped
                     and str(row.get("video_id")) not in video_ids
                 ):
                     continue
 
             data = self._safe_dict(row.get("data_json"))
-            payload = dict(data)
-            payload.setdefault("snapshot_id", row.get("id"))
-            payload.setdefault("video_id", row.get("video_id"))
-            payload.setdefault("created_at", row.get("created_at"))
+            statistics = self._safe_dict(data.get("statistics"))
+            radar = self._safe_dict(data.get("_radar"))
 
-            try:
-                snapshot = YouTubeSnapshot.from_dict(payload)
-            except (TypeError, ValueError):
+            metrics = dict(statistics)
+            for key in (
+                "views",
+                "age_hours",
+                "engagement",
+                "views_per_hour",
+            ):
+                if key in radar:
+                    metrics[key] = radar[key]
+
+            snapshot_id = row.get("id")
+            video_id = row.get("video_id")
+
+            if snapshot_id is None or video_id is None:
                 continue
+
+            snapshot = YouTubeSnapshot(
+                snapshot_id=snapshot_id,
+                video_id=video_id,
+                captured_at=row.get("created_at"),
+                metrics=metrics,
+                metadata=data,
+                source="supabase",
+            )
 
             snapshots.append(snapshot.to_dict())
 

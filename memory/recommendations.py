@@ -11,11 +11,11 @@ It is not the same as:
 
 The lifecycle can be:
 
-    NEW
+    DRAFT
       ↓
-    ACTIVE
+    PENDING
       ↓
-    ACCEPTED / REJECTED / DEFERRED
+    DISCUSSED / DEFERRED / ACCEPTED / REJECTED
       ↓
     COMPLETED
       ↓
@@ -31,13 +31,14 @@ from typing import Any
 
 
 RECOMMENDATION_STATUSES = {
-    "new",
-    "active",
+    "draft",
+    "pending",
+    "discussed",
+    "deferred",
     "accepted",
     "rejected",
-    "deferred",
     "completed",
-    "archived",
+    "cancelled",
 }
 
 FEEDBACK_TYPES = {
@@ -125,7 +126,7 @@ class Recommendation:
     description: str
 
     recommendation_type: str = "research_direction"
-    status: str = "new"
+    status: str = "pending"
 
     topic: str | None = None
     region: str | None = None
@@ -266,14 +267,14 @@ class Recommendation:
         self.status = self._validate_status(status)
 
     def activate(self) -> None:
-        self.status = "active"
+        self.status = "pending"
 
     def mark_shown(
         self,
         *,
         timestamp: str | None = None,
     ) -> None:
-        self.status = "active"
+        self.status = "pending"
 
         if timestamp:
             self.shown_at = timestamp
@@ -372,7 +373,7 @@ class RecommendationManager:
         title: str,
         description: str,
         recommendation_type: str = "research_direction",
-        status: str = "new",
+        status: str = "pending",
         topic: str | None = None,
         region: str | None = None,
         language: str | None = None,
@@ -439,7 +440,7 @@ def recommendation_from_dict(
             "recommendation_type",
             "research_direction",
         ),
-        status=data.get("status", "new"),
+        status=data.get("status", "pending"),
         topic=data.get("topic"),
         region=data.get("region"),
         language=data.get("language"),

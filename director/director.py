@@ -1196,7 +1196,7 @@ class Director:
     ) -> dict[str, Any]:
         return self.understand()
 
-    def _autonomy_research(
+    async def _autonomy_research(
         self,
         state: DirectorState,
         _: Any,
@@ -1207,8 +1207,27 @@ class Director:
             plan.research_id
         )
 
+        execution: dict[str, Any] = {
+            "status": "not_executed",
+            "queries_sent": 0,
+            "results": [],
+        }
+
+        executor = getattr(
+            self.research_service,
+            "execute",
+            None,
+        )
+
+        if executor is not None:
+            execution = executor(plan)
+
+            if hasattr(execution, "__await__"):
+                execution = await execution
+
         return {
             "research_plan": plan.to_dict(),
+            "research_execution": execution,
             "missing_data": [
                 gap.description
                 for gap in plan.gaps

@@ -141,6 +141,12 @@ class YouTubeResearchExecutor:
                     collected_queries.append(query)
                     research.add_query(query)
 
+                    # A Research -> Query relation exists even when the
+                    # query returns zero videos. It describes the research
+                    # operation itself, not the search result.
+                    if relations is not None:
+                        relations.link_research_query(research, query)
+
                     try:
                         result = await session.call_tool(
                             "search_videos",
@@ -189,7 +195,6 @@ class YouTubeResearchExecutor:
                             research.add_snapshot(snapshot)
 
                             if relations is not None:
-                                relations.link_research_query(research, query)
                                 relations.link_query_video(query, video)
                                 relations.link_research_video(research, video)
                                 relations.link_research_snapshot(research, snapshot)

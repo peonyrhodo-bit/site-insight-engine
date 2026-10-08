@@ -1538,6 +1538,18 @@ class Director:
         _: Any,
     ) -> dict[str, Any]:
         context = await self.inspect()
+        inventory = context.metadata.get("data_inventory", {})
+        logger.info(
+            "DIRECTOR STATE UNDERSTOOD: project=%s videos=%s snapshots=%s channels=%s queries=%s research_sets=%s relations=%s missing=%s",
+            self.project_id,
+            inventory.get("video_count", 0),
+            inventory.get("snapshot_count", 0),
+            inventory.get("channel_count", 0),
+            inventory.get("query_count", 0),
+            inventory.get("research_set_count", 0),
+            inventory.get("relation_count", 0),
+            context.missing_data,
+        )
 
         return {
             "evidence_available": state.evidence_available,

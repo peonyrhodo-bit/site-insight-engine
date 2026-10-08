@@ -566,6 +566,10 @@ class DirectorAutonomy:
                             completed.append(research_key)
                     if research_result.get("duplicate_task"):
                         cycle.state.metadata["research_task_exhausted"] = True
+                        if task_key:
+                            completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                            if task_key not in completed:
+                                completed.append(task_key)
                 if research_result is not None:
                     understanding = research_result
                 continue

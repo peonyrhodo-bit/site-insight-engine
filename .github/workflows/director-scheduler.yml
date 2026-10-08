@@ -1,69 +1,24 @@
-name: Keep Render Services Awake
+name: Director Scheduler
 
 on:
   schedule:
-    # Render Free web services sleep after 15 minutes without inbound traffic.
-    # Run every 5 minutes to leave more margin for GitHub Actions scheduling delays.
-    - cron: "*/5 * * * *"
+    - cron: "0 */6 * * *"
 
   workflow_dispatch:
 
 jobs:
-  keepalive:
+  run-director:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
 
     steps:
-      - name: Ping all Render services
-        shell: bash
+      - name: Run Director
+        env:
+          DIRECTOR_URL: https://site-insight-engine.onrender.com/director/cron
+          DIRECTOR_CRON_SECRET: ${{ secrets.DIRECTOR_CRON_SECRET }}
         run: |
-          set -u
-
-          urls=(
-            "https://youtube-mcp-u39z.onrender.com/"
-            "https://ai-youtube-system.onrender.com/"
-            "https://site-insight-engine.onrender.com/"
-          )
-
-          pids=()
-
-          # Ping all services in parallel so a slow/cold Render service
-          # cannot delay the other services.
-          for url in "${urls[@]}"; do
-            (
-              echo "Pinging ${url}"
-
-              # Do not use --fail here: even a 4xx/5xx response is inbound
-              # traffic and therefore wakes a sleeping Render web service.
-              if curl \
-                --silent \
-                --show-error \
-                --location \
-                --retry 3 \
-                --retry-delay 2 \
-                --retry-all-errors \
-                --connect-timeout 15 \
-                --max-time 90 \
-                --output /dev/null \
-                --write-out "HTTP %{http_code} in %{time_total}s\\n" \
-                "${url}"; then
-                echo "OK: ${url}"
-                exit 0
-              else
-                echo "ERROR: request failed for ${url}" >&2
-                exit 1
-              fi
-            ) &
-            pids+=("$!")
-          done
-
-          failed=0
-
-          # Wait for every parallel ping and preserve an overall failure status.
-          for pid in "${pids[@]}"; do
-            if ! wait "${pid}"; then
-              failed=1
-            fi
-          done
-
-          exit "${failed}"
+          curl --fail-with-body \
+            --show-error \
+            --silent \
+            --request POST \
+            --header "X-Director-Cron-Secret: ${DIRECTOR_CRON_SECRET}" \
+            "${DIRECTOR_URL}"

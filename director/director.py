@@ -192,6 +192,58 @@ class Director:
         self.last_cycle: DirectorCycle | None = None
 
     # ============================================================
+    # CAPABILITIES
+    # ============================================================
+
+    def discover_capabilities(self) -> dict[str, Any]:
+        """Build the runtime map of capabilities actually available now."""
+        services = {
+            "research": self.research_service,
+            "analytics": self.analytics_service,
+            "memory": self.memory_service,
+            "ai": self.ai_service,
+            "data": self.data_service,
+        }
+        connected = {name: service is not None for name, service in services.items()}
+
+        actions: list[str] = ["inspect", "understand", "assess", "decide"]
+        if self.research_service is not None and getattr(self.research_service, "plan", None):
+            actions.extend(["research", "plan_research"])
+        if self.analytics_service is not None and getattr(self.analytics_service, "analyze", None):
+            actions.append("analyze")
+        if self.ai_service is not None:
+            actions.append("ai_assistance")
+        actions.extend(["formulate_hypothesis", "create_recommendation", "record_feedback"])
+        actions.append(
+            "execute_allowed_external_action"
+            if self.autonomy_config.allow_external_actions
+            else "request_human_confirmation"
+        )
+
+        constraints = {
+            "external_actions_allowed": self.autonomy_config.allow_external_actions,
+            "max_steps_per_cycle": self.autonomy_config.max_steps_per_cycle,
+            "max_research_steps": self.autonomy_config.max_research_steps,
+            "max_action_steps": self.autonomy_config.max_action_steps,
+        }
+        capabilities = {
+            "connected_services": connected,
+            "available_actions": actions,
+            "constraints": constraints,
+            "mode": self.mode.value,
+        }
+
+        self.context.available_actions = actions
+        self.context.resources = {"services": connected, "mode": self.mode.value}
+        self.context.metadata["capabilities"] = capabilities
+
+        logger.info(
+            "DIRECTOR CAPABILITIES: project=%s actions=%s services=%s external_actions=%s",
+            self.project_id, actions, connected, self.autonomy_config.allow_external_actions,
+        )
+        return capabilities
+
+    # ============================================================
     # STATE
     # ============================================================
 

@@ -2172,10 +2172,15 @@ class DataAdapter:
                     research.to_dict()
                     for research in self.research_manager.all()
                 ] if self.research_manager is not None else []
+                relation_items = (
+                    self.relations.all_relations()
+                    if self.relations is not None
+                    else []
+                )
                 relation_payload = [
                     relation.to_dict()
-                    for relation in self.relations.all()
-                ] if self.relations is not None else []
+                    for relation in relation_items
+                ]
                 persistence = saver(
                     project_id=project_id,
                     queries=query_payload,

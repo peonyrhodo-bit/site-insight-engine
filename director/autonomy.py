@@ -517,6 +517,55 @@ class DirectorAutonomy:
             )
 
             # -----------------------------------------------------
+            # RESEARCH DECISION
+            # -----------------------------------------------------
+            if decision_type == "research":
+                decision_metadata = (
+                    decision.get("metadata", {})
+                    if isinstance(decision, dict)
+                    else getattr(decision, "metadata", {})
+                )
+                task_key = (
+                    decision_metadata.get("task_key")
+                    if isinstance(decision_metadata, dict)
+                    else None
+                )
+                if research_steps >= self.config.max_research_steps:
+                    if task_key:
+                        completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                        if task_key not in completed:
+                            completed.append(task_key)
+                    cycle.state.metadata["research_task_exhausted"] = True
+                    continue
+
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.RESEARCH,
+                    "Решение требует конкретного исследования; проверяю, не выполнялось ли оно уже.",
+                )
+                research_result = await self._safe_call(
+                    self.research_handler,
+                    cycle.state,
+                    decision,
+                )
+                research_steps += 1
+                steps += 1
+                cycle.state.last_action = "research"
+                cycle.state.actions_taken += 1
+                cycle.state.last_result = research_result
+                if isinstance(research_result, dict):
+                    research_key = research_result.get("task_key")
+                    if research_key:
+                        completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                        if research_key not in completed:
+                            completed.append(research_key)
+                    if research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                if research_result is not None:
+                    understanding = research_result
+                continue
+
+            # -----------------------------------------------------
             # WAIT / SLEEP
             # -----------------------------------------------------
             if decision_type in {

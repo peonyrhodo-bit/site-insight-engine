@@ -1706,7 +1706,43 @@ class Director:
         state: DirectorState,
         _: Any,
     ) -> dict[str, Any]:
-        plan = self.plan_research()
+        task_gaps = None
+        task_objective = None
+        if isinstance(_, dict):
+            task_gaps = _.get("missing_data")
+            task_objective = _.get("objective") or _.get("next_action")
+        elif _ is not None:
+            task_gaps = getattr(_, "missing_data", None)
+            task_objective = getattr(_, "objective", None) or getattr(_, "next_action", None)
+
+        plan = self.plan_research(
+            objective=str(task_objective) if task_objective else None,
+            missing_data=task_gaps if isinstance(task_gaps, (list, tuple)) else None,
+        )
+        query_signature = "|".join(sorted(
+            f"{str(getattr(query, 'query', '')).strip().lower()}:{getattr(query, 'language', '')}"
+            for query in plan.queries
+        ))
+        operation_signature = "|".join(sorted(
+            str(item.get("operation") or item.get("requirement_key") or "")
+            for item in plan.metadata.get("operations", [])
+            if isinstance(item, dict)
+        ))
+        task_key = "research:" + "|".join([
+            str(plan.objective or "").strip().lower(),
+            query_signature,
+            operation_signature,
+        ])
+        completed_tasks = state.metadata.setdefault("completed_task_keys", [])
+        if task_key in completed_tasks:
+            state.metadata["research_task_exhausted"] = True
+            return {
+                "status": "skipped",
+                "duplicate_task": True,
+                "task_key": task_key,
+                "research_plan": plan.to_dict(),
+                "missing_data": list(self.context.missing_data),
+            }
 
         state.current_research_id = (
             plan.research_id
@@ -1775,8 +1811,11 @@ class Director:
         self.context.metadata["last_research_ingestion"] = (
             data_ingestion
         )
+        if task_key not in completed_tasks:
+            completed_tasks.append(task_key)
 
         return {
+            "task_key": task_key,
             "research_plan": plan.to_dict(),
             "research_execution": research_execution,
             "data_ingestion": data_ingestion,

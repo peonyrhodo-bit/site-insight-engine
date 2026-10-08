@@ -2959,7 +2959,7 @@ async def _autonomous_worker_loop() -> None:
                 interval_seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,
                 reason="autonomous_cycle",
                 project_id=DEFAULT_PROJECT_ID,
-                first_run_at=utc_now(),
+                first_run_at=datetime.now(timezone.utc),
                 metadata={"source": "autonomous_worker"},
             )
 

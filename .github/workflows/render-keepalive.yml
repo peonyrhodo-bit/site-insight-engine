@@ -1,0 +1,66 @@
+name: Render Keepalive
+
+on:
+  schedule:
+    # Render Free web services sleep after 15 minutes without inbound traffic.
+    # Run every 5 minutes. GitHub Actions schedules are best-effort.
+    - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Ping Render services only
+        shell: bash
+        run: |
+          set -u
+
+          urls=(
+            "https://youtube-mcp-u39z.onrender.com/"
+            "https://ai-youtube-system.onrender.com/"
+            "https://site-insight-engine.onrender.com/"
+          )
+
+          pids=()
+
+          # This workflow has exactly one purpose: send inbound HTTP requests
+          # to these three Render URLs so Free services do not stay asleep.
+          # It does not call Director, cron endpoints, databases, or app logic.
+          for url in "${urls[@]}"; do
+            (
+              echo "Pinging ${url}"
+
+              if curl \
+                --silent \
+                --show-error \
+                --location \
+                --retry 3 \
+                --retry-delay 2 \
+                --retry-all-errors \
+                --connect-timeout 15 \
+                --max-time 90 \
+                --output /dev/null \
+                --write-out "HTTP %{http_code} in %{time_total}s\\n" \
+                "${url}"; then
+                echo "OK: ${url}"
+                exit 0
+              else
+                echo "ERROR: request failed for ${url}" >&2
+                exit 1
+              fi
+            ) &
+            pids+=("$!")
+          done
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
+              failed=1
+            fi
+          done
+
+          exit "${failed}"

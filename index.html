@@ -268,6 +268,12 @@
             font-size: 12px;
         }
 
+        .suggestions-list {
+            max-height: 430px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
         .suggestion {
             border: 1px solid var(--border);
             border-radius: 11px;
@@ -279,24 +285,39 @@
             margin-bottom: 0;
         }
 
-        .decision-buttons {
+        .suggestion-status {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 4px 8px;
+            border-radius: 7px;
+            background: var(--soft);
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .suggestion-actions {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
             margin-top: 12px;
         }
 
-        .decision-button {
+        .suggestion-action {
             flex: 1;
-            min-width: 120px;
+            min-width: 100px;
             border: 1px solid var(--border);
             border-radius: 10px;
-            padding: 10px;
+            padding: 9px;
             background: white;
         }
 
-        .decision-button:hover {
+        .suggestion-action:hover {
             background: var(--soft);
+        }
+
+        .suggestion-action:disabled {
+            cursor: default;
+            opacity: 0.55;
         }
 
         .reports-card {
@@ -685,35 +706,11 @@
 
                 <div
                     id="suggestionsList"
+                    class="suggestions-list"
                 >
                     <div class="empty">
                         Загружаем...
                     </div>
-                </div>
-
-                <div class="decision-buttons">
-
-                    <button
-                        class="decision-button"
-                        onclick="sendDecision('approve')"
-                    >
-                        Одобрить
-                    </button>
-
-                    <button
-                        class="decision-button"
-                        onclick="sendDecision('discuss')"
-                    >
-                        Обсудить
-                    </button>
-
-                    <button
-                        class="decision-button"
-                        onclick="sendDecision('leave_as_is')"
-                    >
-                        Оставить как есть
-                    </button>
-
                 </div>
 
                 <div
@@ -1264,6 +1261,7 @@
         await Promise.all([
             loadSystemStatus(),
             loadHistory(),
+            loadRecommendations(),
             loadEvents()
         ]);
     }
@@ -1436,9 +1434,7 @@
                 runs
             );
 
-            renderSuggestions(
-                runs
-            );
+            latestRun = runs.length ? runs[0] : null;
 
         } catch (error) {
 
@@ -1521,11 +1517,71 @@
                 "suggestionsList"
             );
 
-        container.innerHTML = "";
+        async function loadRecommendations() {
 
-        latestSuggestions = [];
+        const container =
+            document.getElementById(
+                "suggestionsList"
+            );
 
-        if (!runs.length) {
+        try {
+
+            const response =
+                await fetch(
+                    "/director/recommendations?limit=100"
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error ||
+                    getNestedData(
+                        data,
+                        ["detail"],
+                        "Не удалось загрузить рекомендации"
+                    )
+                );
+            }
+
+            const recommendations =
+                Array.isArray(data.recommendations)
+                    ? data.recommendations
+                    : [];
+
+            recommendations.sort(
+                (a, b) => {
+                    const aDate = new Date(
+                        a.created_at || a.updated_at || 0
+                    ).getTime();
+
+                    const bDate = new Date(
+                        b.created_at || b.updated_at || 0
+                    ).getTime();
+
+                    return bDate - aDate;
+                }
+            );
+
+            latestSuggestions =
+                recommendations;
+
+            document.getElementById(
+                "statSuggestions"
+            ).textContent =
+                formatNumber(
+                    recommendations.length
+                );
+
+            renderRecommendations(
+                recommendations,
+                container
+            );
+
+        } catch (error) {
+
+            latestSuggestions = [];
 
             document.getElementById(
                 "statSuggestions"
@@ -1534,90 +1590,35 @@
             container.innerHTML =
                 `
                 <div class="empty">
-                    Пока нет предложений AI.
+                    Не удалось загрузить рекомендации.
                 </div>
                 `;
-
-            return;
         }
+    }
 
-        const latest =
-            runs[0];
 
-        latestRun =
-            latest;
+    function renderRecommendations(
+        recommendations,
+        container
+    ) {
 
-        // Recommendations are the canonical Director output.
-        // Do not use raw Analytics experiments/topics as "AI suggestions":
-        // they are signals, not persisted Director recommendations.
-        const recommendations =
-            Array.isArray(
-                runs.flatMap(
-                    run => Array.isArray(run.recommendations)
-                        ? run.recommendations
-                        : []
-                )
-            )
-                ? runs.flatMap(
-                    run => Array.isArray(run.recommendations)
-                        ? run.recommendations
-                        : []
-                )
-                : [];
+        container.innerHTML = "";
 
-        latestSuggestions =
-            recommendations.slice(0, 5);
+        if (!recommendations.length) {
 
-        // Backward-compatible fallback for old runs created before
-        // persisted recommendations were exposed by /director/history.
-        if (!latestSuggestions.length) {
-            const analysis =
-                getNestedData(
-                    latest,
-                    ["data", "analysis"],
-                    {}
-                );
-
-            const experiments =
-                Array.isArray(analysis.experiments)
-                    ? analysis.experiments
-                    : [];
-
-            const topics =
-                Array.isArray(analysis.topics)
-                    ? analysis.topics
-                    : [];
-
-            latestSuggestions =
-                [...experiments, ...topics]
-                    .filter(
-                        value =>
-                            value !== null &&
-                            value !== undefined &&
-                            String(value).trim()
-                    )
-                    .slice(0, 5);
-        }
-
-        document.getElementById(
-            "statSuggestions"
-        ).textContent =
-            formatNumber(
-                latestSuggestions.length
-            );
-
-        if (!latestSuggestions.length) {
             container.innerHTML =
                 `
                 <div class="empty">
                     Пока нет сохранённых рекомендаций Director.
                 </div>
                 `;
+
             return;
         }
 
-        latestSuggestions.forEach(
+        recommendations.forEach(
             recommendation => {
+
                 const block =
                     document.createElement(
                         "div"
@@ -1626,69 +1627,184 @@
                 block.className =
                     "suggestion";
 
-                if (typeof recommendation === "string") {
-                    block.textContent =
-                        recommendation;
-                } else {
-                    const title =
-                        recommendation.title ||
-                        "Рекомендация Director";
+                const title =
+                    recommendation.title ||
+                    "Рекомендация Director";
 
-                    const summary =
-                        recommendation.description ||
-                        recommendation.summary ||
-                        "";
+                const summary =
+                    recommendation.description ||
+                    recommendation.summary ||
+                    "";
 
-                    const action =
-                        recommendation.suggested_action ||
-                        recommendation.proposed_action ||
-                        "";
+                const action =
+                    recommendation.suggested_action ||
+                    recommendation.proposed_action ||
+                    "";
 
-                    const confidence =
-                        recommendation.confidence !== undefined
-                            ? `Уверенность: ${Math.round(
-                                Number(recommendation.confidence) * 100
-                            )}%`
-                            : "";
+                const confidence =
+                    recommendation.confidence !== undefined &&
+                    recommendation.confidence !== null
+                        ? "Уверенность: " +
+                          Math.round(
+                              Number(recommendation.confidence) * 100
+                          ) +
+                          "%"
+                        : "";
 
-                    block.innerHTML =
-                        `
-                        <div class="list-item-title">
-                            ${escapeHtml(title)}
-                        </div>
-                        <div class="list-item-meta">
+                const recommendationId =
+                    recommendation.recommendation_id ||
+                    recommendation.id ||
+                    "";
+
+                const status =
+                    recommendation.status ||
+                    "new";
+
+                const statusLabel = {
+                    new: "Новая",
+                    pending: "Новая",
+                    created: "Новая",
+                    published: "Опубликована",
+                    accepted: "Одобрена",
+                    rejected: "Отказано",
+                    discussed: "Обсуждается",
+                    clarify: "Обсуждается"
+                }[String(status).toLowerCase()] ||
+                    String(status);
+
+                block.innerHTML =
+                    `
+                    <div class="list-item-title">
+                        ${escapeHtml(title)}
+                    </div>
+
+                    ${summary
+                        ? `<div class="list-item-meta">
                             ${escapeHtml(summary)}
-                        </div>
-                        ${action
-                            ? `<div style="margin-top:8px;">
-                                <strong>Действие:</strong>
-                                ${escapeHtml(action)}
-                              </div>`
-                            : ""}
-                        ${confidence
-                            ? `<div class="list-item-meta" style="margin-top:6px;">
-                                ${escapeHtml(confidence)}
-                              </div>`
-                            : ""}
-                        `;
-                }
+                          </div>`
+                        : ""}
 
-                container.appendChild(block);
+                    ${action
+                        ? `<div style="margin-top:8px;">
+                            <strong>Действие:</strong>
+                            ${escapeHtml(action)}
+                          </div>`
+                        : ""}
+
+                    ${confidence
+                        ? `<div class="list-item-meta" style="margin-top:6px;">
+                            ${escapeHtml(confidence)}
+                          </div>`
+                        : ""}
+
+                    <div class="suggestion-status">
+                        ${escapeHtml(statusLabel)}
+                    </div>
+
+                    <div class="suggestion-actions">
+                        <button
+                            class="suggestion-action"
+                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'accept')"
+                            ${recommendationId ? "" : "disabled"}
+                        >
+                            Одобрить
+                        </button>
+
+                        <button
+                            class="suggestion-action"
+                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'discuss')"
+                            ${recommendationId ? "" : "disabled"}
+                        >
+                            Обсудить
+                        </button>
+
+                        <button
+                            class="suggestion-action"
+                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'reject')"
+                            ${recommendationId ? "" : "disabled"}
+                        >
+                            Отказать
+                        </button>
+                    </div>
+                    `;
+
+                container.appendChild(
+                    block
+                );
             }
         );
     }
 
 
-    async function loadEvents() {
+    async function sendRecommendationAction(
+        recommendationId,
+        action
+    ) {
+
+        const status =
+            document.getElementById(
+                "decisionStatus"
+            );
+
+        if (!recommendationId) {
+            status.textContent =
+                "У этой рекомендации нет идентификатора.";
+            return;
+        }
+
+        status.textContent =
+            "Сохраняем решение...";
 
         try {
 
             const response =
                 await fetch(
-                    "/events"
+                    "/director/recommendations/" +
+                    encodeURIComponent(
+                        recommendationId
+                    ) +
+                    "/action",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            action: action
+                        })
+                    }
                 );
 
             const data =
+                await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error ||
+                    getNestedData(
+                        data,
+                        ["detail"],
+                        "Не удалось сохранить решение"
+                    )
+                );
+            }
+
+            status.textContent =
+                "✓ Решение сохранено";
+
+            await loadRecommendations();
+            await loadEvents();
+
+        } catch (error) {
+
+            status.textContent =
+                "Не удалось сохранить решение: " +
+                error.message;
+        }
+    } const data =
                 await response.json();
 
             const events =

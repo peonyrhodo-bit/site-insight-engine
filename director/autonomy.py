@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
 from uuid import uuid4
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class DirectorPhase(str, Enum):
@@ -190,12 +194,35 @@ class DirectorAutonomy:
         if handler is None:
             return None
 
-        result = handler(state, payload)
+        handler_name = getattr(handler, "__name__", handler.__class__.__name__)
+        logger.info(
+            "DIRECTOR STEP START: handler=%s phase=%s cycle=%s",
+            handler_name,
+            state.phase.value,
+            state.cycle_count,
+        )
 
-        if hasattr(result, "__await__"):
-            result = await result
+        try:
+            result = handler(state, payload)
 
-        return result
+            if hasattr(result, "__await__"):
+                result = await result
+
+            logger.info(
+                "DIRECTOR STEP FINISH: handler=%s phase=%s cycle=%s",
+                handler_name,
+                state.phase.value,
+                state.cycle_count,
+            )
+            return result
+        except Exception:
+            logger.exception(
+                "DIRECTOR STEP FAILED: handler=%s phase=%s cycle=%s",
+                handler_name,
+                state.phase.value,
+                state.cycle_count,
+            )
+            raise
 
     async def run(
         self,

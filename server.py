@@ -149,6 +149,12 @@ except Exception:
 
 
 try:
+    from director.research_executor import YouTubeResearchExecutor
+except Exception:
+    YouTubeResearchExecutor = None
+
+
+try:
     from memory.memory import Memory
 except Exception:
     Memory = None
@@ -2319,6 +2325,18 @@ class Runtime:
         )
         self.ai = AIAdapter()
 
+        # Research executor is the concrete bridge from Director to
+        # YouTube MCP. Keep it on Runtime so every Director receives the
+        # same research execution capability as the DATA layer.
+        self.research = (
+            YouTubeResearchExecutor(
+                data_adapter=self.data,
+                storage=self.memory.backend,
+            )
+            if YouTubeResearchExecutor is not None
+            else None
+        )
+
         self.scheduler = (
             create_scheduler(
                 enabled=AUTONOMOUS_ENABLED,
@@ -2371,6 +2389,7 @@ class Runtime:
         director = create_director(
             project_id=project_id,
             mode=mode,
+            research_service=self.research,
             memory_service=self.memory,
             analytics_service=self.analytics,
             ai_service=self.ai,

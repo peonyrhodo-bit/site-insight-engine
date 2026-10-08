@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 class DirectorPhase(str, Enum):
     SLEEP = "sleep"
     WAKE = "wake"
+    CAPABILITIES = "capabilities"
     INSPECT = "inspect"
     UNDERSTAND = "understand"
     RESEARCH = "research"
@@ -128,6 +129,7 @@ class DirectorAutonomy:
         self,
         *,
         config: AutonomyConfig | None = None,
+        capabilities: Callable[[DirectorState, Any], Any] | None = None,
         inspect: Callable[[DirectorState], Any] | None = None,
         understand: Callable[[DirectorState, Any], Any] | None = None,
         research: Callable[[DirectorState, Any], Any] | None = None,
@@ -141,6 +143,7 @@ class DirectorAutonomy:
     ) -> None:
         self.config = config or AutonomyConfig()
 
+        self.capabilities_handler = capabilities
         self.inspect_handler = inspect
         self.understand_handler = understand
         self.research_handler = research
@@ -283,6 +286,24 @@ class DirectorAutonomy:
             DirectorPhase.WAKE,
             "Валерий проснулся и проверяет состояние проекта.",
         )
+
+        # ---------------------------------------------------------
+        # CAPABILITIES
+        # ---------------------------------------------------------
+        self._set_phase(
+            cycle,
+            DirectorPhase.CAPABILITIES,
+            "Проверяю, какие возможности, ресурсы и разрешения доступны сейчас.",
+        )
+
+        capabilities = await self._safe_call(
+            self.capabilities_handler,
+            cycle.state,
+            None,
+        )
+        steps += 1
+        if isinstance(capabilities, dict):
+            cycle.state.metadata["capabilities"] = capabilities
 
         # ---------------------------------------------------------
         # INSPECT

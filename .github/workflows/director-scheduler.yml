@@ -1,24 +1,54 @@
-name: Director Scheduler
+name: Keep Render Services Awake
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    # Render Free web services sleep after 15 minutes without inbound traffic.
+    # Run every 10 minutes (GitHub Actions cron uses UTC).
+    - cron: "*/10 * * * *"
 
   workflow_dispatch:
 
 jobs:
-  run-director:
+  keepalive:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
-      - name: Run Director
-        env:
-          DIRECTOR_URL: https://site-insight-engine.onrender.com/director/cron
-          DIRECTOR_CRON_SECRET: ${{ secrets.DIRECTOR_CRON_SECRET }}
+      - name: Ping all Render services
+        shell: bash
         run: |
-          curl --fail-with-body \
-            --show-error \
-            --silent \
-            --request POST \
-            --header "X-Director-Cron-Secret: ${DIRECTOR_CRON_SECRET}" \
-            "${DIRECTOR_URL}"
+          set -u
+
+          urls=(
+            "https://youtube-mcp-u39z.onrender.com/"
+            "https://ai-youtube-system.onrender.com/"
+            "https://site-insight-engine.onrender.com/"
+          )
+
+          failed=0
+
+          for url in "${urls[@]}"; do
+            echo "Pinging ${url}"
+
+            # Do not use --fail here: even a 4xx/5xx response is inbound
+            # traffic and therefore wakes a sleeping Render web service.
+            if ! curl \
+              --silent \
+              --show-error \
+              --location \
+              --retry 3 \
+              --retry-delay 2 \
+              --retry-all-errors \
+              --connect-timeout 15 \
+              --max-time 90 \
+              --output /dev/null \
+              --write-out "HTTP %{http_code} in %{time_total}s\\n" \
+              "${url}"; then
+              echo "ERROR: request failed for ${url}"
+              failed=1
+            fi
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            exit 1
+          fi

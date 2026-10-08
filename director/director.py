@@ -1153,11 +1153,13 @@ class Director:
             hypothesis = None
 
         target = self._build_recommendation_target(
-            analysis
+            analysis,
+            decision=decision,
         )
 
         evidence = self._build_recommendation_evidence(
-            analysis
+            analysis,
+            decision=decision,
         )
 
         title = self._recommendation_title(

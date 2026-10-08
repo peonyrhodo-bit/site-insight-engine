@@ -3,15 +3,15 @@ name: Keep Render Services Awake
 on:
   schedule:
     # Render Free web services sleep after 15 minutes without inbound traffic.
-    # Run every 10 minutes (GitHub Actions cron uses UTC).
-    - cron: "*/10 * * * *"
+    # Run every 5 minutes to leave more margin for GitHub Actions scheduling delays.
+    - cron: "*/5 * * * *"
 
   workflow_dispatch:
 
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
 
     steps:
       - name: Ping all Render services
@@ -25,30 +25,45 @@ jobs:
             "https://site-insight-engine.onrender.com/"
           )
 
+          pids=()
+
+          # Ping all services in parallel so a slow/cold Render service
+          # cannot delay the other services.
+          for url in "${urls[@]}"; do
+            (
+              echo "Pinging ${url}"
+
+              # Do not use --fail here: even a 4xx/5xx response is inbound
+              # traffic and therefore wakes a sleeping Render web service.
+              if curl \
+                --silent \
+                --show-error \
+                --location \
+                --retry 3 \
+                --retry-delay 2 \
+                --retry-all-errors \
+                --connect-timeout 15 \
+                --max-time 90 \
+                --output /dev/null \
+                --write-out "HTTP %{http_code} in %{time_total}s\\n" \
+                "${url}"; then
+                echo "OK: ${url}"
+                exit 0
+              else
+                echo "ERROR: request failed for ${url}" >&2
+                exit 1
+              fi
+            ) &
+            pids+=("$!")
+          done
+
           failed=0
 
-          for url in "${urls[@]}"; do
-            echo "Pinging ${url}"
-
-            # Do not use --fail here: even a 4xx/5xx response is inbound
-            # traffic and therefore wakes a sleeping Render web service.
-            if ! curl \
-              --silent \
-              --show-error \
-              --location \
-              --retry 3 \
-              --retry-delay 2 \
-              --retry-all-errors \
-              --connect-timeout 15 \
-              --max-time 90 \
-              --output /dev/null \
-              --write-out "HTTP %{http_code} in %{time_total}s\\n" \
-              "${url}"; then
-              echo "ERROR: request failed for ${url}"
+          # Wait for every parallel ping and preserve an overall failure status.
+          for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
               failed=1
             fi
           done
 
-          if [ "${failed}" -ne 0 ]; then
-            exit 1
-          fi
+          exit "${failed}"

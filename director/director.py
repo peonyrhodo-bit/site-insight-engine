@@ -1601,7 +1601,12 @@ class Director:
         if (
             isinstance(execution, dict)
             and execution.get("status") in {"completed", "partial"}
+            and not execution.get("persisted")
         ):
+            # YouTubeResearchExecutor already persists the objects it creates.
+            # Do not ingest the same MCP payload a second time: that would
+            # re-save the entire in-memory opportunity registry and can exhaust
+            # the 512 MiB Render instance.
             ingestor = getattr(
                 self.data_service,
                 "ingest_research_execution",

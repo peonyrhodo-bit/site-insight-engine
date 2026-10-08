@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Iterable
 
+import logging
+
 from .autonomy import (
     AutonomyConfig,
     CycleStatus,
@@ -58,6 +60,9 @@ from .research import (
     ResearchPlan,
     plan_next_research,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class DirectorMode(str, Enum):

@@ -925,10 +925,39 @@ class Director:
         if analysis is None:
             analysis = await self.analyze()
 
-        opportunities = analysis.get(
+        opportunities = list(analysis.get(
             "opportunities",
             self.context.opportunities,
-        )
+        ) or [])
+        all_opportunities = list(opportunities)
+        completed = self.state.metadata.get("completed_task_keys", [])
+        completed_tasks = set(completed if isinstance(completed, list) else [])
+        opportunities = [
+            item for item in opportunities
+            if self._opportunity_task_key(item) not in completed_tasks
+        ]
+
+        # If all current candidates were already handled during this wake,
+        # wait for new evidence instead of repeating a recommendation.
+        if not opportunities and all_opportunities and completed_tasks:
+            return build_decision(
+                decision_type=DecisionType.WAIT,
+                objective=self.context.objective or "Оценить следующий полезный шаг.",
+                rationale="Все доступные направления уже рассмотрены в текущем цикле. Повторять ту же задачу без новых данных не нужно.",
+                confidence=0.65,
+                next_action="Дождаться новых данных или следующего пробуждения.",
+                metadata={"reason": "all_current_opportunities_handled"},
+            )
+
+        if not opportunities and self.state.metadata.get("research_task_exhausted"):
+            return build_decision(
+                decision_type=DecisionType.WAIT,
+                objective=self.context.objective or "Оценить следующий полезный шаг.",
+                rationale="Доступное исследование уже выполнялось в этом цикле, а новых направлений для полезной работы пока нет.",
+                confidence=0.6,
+                next_action="Дождаться новых данных или следующего пробуждения.",
+                metadata={"reason": "research_already_attempted"},
+            )
 
         # --------------------------------------------------------
         # No evidence => research first.
@@ -964,6 +993,12 @@ class Director:
             candidate,
             objective=self.context.objective or "",
         )
+        decision.metadata["task_key"] = self._opportunity_task_key(candidate)
+        decision.metadata["opportunity_id"] = (
+            candidate.get("opportunity_id")
+            if isinstance(candidate, dict)
+            else getattr(candidate, "opportunity_id", None)
+        )
 
         hypothesis = analysis.get("hypothesis")
         if isinstance(hypothesis, dict):
@@ -978,6 +1013,17 @@ class Director:
             )
 
         return decision
+
+    @staticmethod
+    def _opportunity_task_key(item: Any) -> str:
+        if isinstance(item, dict):
+            identifier = item.get("opportunity_id") or item.get("id")
+            title = item.get("title") or item.get("topic") or item.get("name")
+        else:
+            identifier = getattr(item, "opportunity_id", None) or getattr(item, "id", None)
+            title = getattr(item, "title", None) or getattr(item, "topic", None) or getattr(item, "name", None)
+        value = identifier or title or repr(item)
+        return f"opportunity:{str(value).strip().lower()}"
 
     def _select_candidate(
         self,

@@ -1245,6 +1245,8 @@ class Director:
     def _build_recommendation_target(
         self,
         analysis: dict[str, Any],
+        *,
+        decision: DirectorDecision | None = None,
     ) -> RecommendationTarget | None:
         opportunities = analysis.get(
             "opportunities",
@@ -1254,9 +1256,7 @@ class Director:
         if not opportunities:
             return None
 
-        candidate = self._select_candidate(
-            opportunities
-        )
+        candidate = self._candidate_for_decision(opportunities, decision)
 
         if isinstance(candidate, dict):
             title = (
@@ -1325,6 +1325,8 @@ class Director:
     def _build_recommendation_evidence(
         self,
         analysis: dict[str, Any],
+        *,
+        decision: DirectorDecision | None = None,
     ) -> list[RecommendationEvidence]:
         evidence: list[RecommendationEvidence] = []
 
@@ -1336,9 +1338,7 @@ class Director:
         if not opportunities:
             return evidence
 
-        candidate = self._select_candidate(
-            opportunities
-        )
+        candidate = self._candidate_for_decision(opportunities, decision)
 
         if isinstance(candidate, dict):
             raw_evidence = candidate.get(
@@ -1403,6 +1403,20 @@ class Director:
                 )
 
         return evidence
+
+    def _candidate_for_decision(
+        self,
+        opportunities: Iterable[Any],
+        decision: DirectorDecision | None,
+    ) -> Any:
+        items = list(opportunities or [])
+        target_id = decision.metadata.get("opportunity_id") if decision else None
+        if target_id is not None:
+            for item in items:
+                item_id = item.get("opportunity_id") if isinstance(item, dict) else getattr(item, "opportunity_id", None)
+                if str(item_id) == str(target_id):
+                    return item
+        return self._select_candidate(items)
 
     def _recommendation_title(
         self,

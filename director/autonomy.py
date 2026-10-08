@@ -566,19 +566,22 @@ class DirectorAutonomy:
 
                 cycle.state.last_result = recommendation
 
-                if self.config.sleep_after_recommendation:
-                    self._set_phase(
-                        cycle,
-                        DirectorPhase.SLEEP,
-                        "Рекомендация сформирована. Жду решения пользователя.",
-                    )
+                task_key = None
+                if isinstance(decision, dict):
+                    task_key = decision.get("metadata", {}).get("task_key") if isinstance(decision.get("metadata"), dict) else None
+                else:
+                    metadata = getattr(decision, "metadata", {})
+                    task_key = metadata.get("task_key") if isinstance(metadata, dict) else None
+                if task_key:
+                    completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                    if task_key not in completed:
+                        completed.append(task_key)
 
-                    cycle.status = CycleStatus.WAITING
-                    cycle.state.status = CycleStatus.WAITING
-                    cycle.state.sleep_reason = (
-                        "waiting_for_user"
-                    )
-                    break
+                # A recommendation is not automatically the end of the wake.
+                # Re-enter assessment and decision so another distinct useful
+                # task can be chosen. The task ledger prevents repeats.
+                if self.config.sleep_after_recommendation and steps < self.config.max_steps_per_cycle:
+                    continue
 
             # -----------------------------------------------------
             # ACT

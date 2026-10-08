@@ -516,6 +516,7 @@ class Director:
         self,
         *,
         objective: str | None = None,
+        missing_data: Iterable[Any] | None = None,
     ) -> ResearchPlan:
         """
         Ask the research layer what should be investigated next.
@@ -534,17 +535,28 @@ class Director:
             )
 
             if planner:
+                research_context = self.context.to_dict()
+                if missing_data is not None:
+                    # The planner sees gaps for this task, not every empty
+                    # table in the project schema.
+                    research_context["missing_data"] = list(missing_data)
+                    metadata = research_context.get("metadata")
+                    if isinstance(metadata, dict):
+                        metadata = dict(metadata)
+                        metadata["data_requirements"] = []
+                        research_context["metadata"] = metadata
                 result = planner(
                     objective=objective,
-                    context=self.context.to_dict(),
+                    context=research_context,
                 )
 
                 if isinstance(result, ResearchPlan):
                     return result
 
+        gaps = list(missing_data) if missing_data is not None else list(self.context.missing_data)
         return plan_next_research(
             objective=objective,
-            missing_data=self.context.missing_data,
+            missing_data=gaps,
             current_topics=self._current_topic_names(),
         )
 

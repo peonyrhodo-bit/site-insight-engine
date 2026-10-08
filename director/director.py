@@ -1510,6 +1510,12 @@ class Director:
             learn=self._autonomy_learn,
         )
 
+        logger.info(
+            "DIRECTOR WAKE UP: starting autonomous cycle project=%s objective=%s",
+            self.project_id,
+            objective or self.context.objective,
+        )
+
         cycle = await autonomy.run(
             project_id=self.project_id,
             objective=objective or self.context.objective,

@@ -1587,10 +1587,7 @@ class Director:
         )
 
         if executor is not None:
-            execution = executor(
-                plan,
-                project_id=self.project_id or "default",
-            )
+            execution = executor(plan)
 
             if hasattr(execution, "__await__"):
                 execution = await execution

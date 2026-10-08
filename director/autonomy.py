@@ -249,6 +249,11 @@ class DirectorAutonomy:
         )
         cycle.state.status = CycleStatus.RUNNING
         cycle.state.cycle_count += 1
+        # The task ledger is per wake, not permanent memory. A later wake may
+        # reconsider a task when new evidence has arrived.
+        cycle.state.metadata["completed_task_keys"] = []
+        cycle.state.metadata.pop("research_task_exhausted", None)
+        cycle.state.metadata.pop("analyze_available_evidence", None)
 
         try:
             return await self._run_cycle(cycle)

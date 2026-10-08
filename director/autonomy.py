@@ -94,7 +94,7 @@ class CycleEvent:
 @dataclass
 class AutonomyConfig:
     enabled: bool = False
-    max_steps_per_cycle: int = 8
+    max_steps_per_cycle: int = 16
     max_research_steps: int = 2
     max_action_steps: int = 3
     allow_external_actions: bool = False

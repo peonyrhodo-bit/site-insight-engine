@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 from data.youtube import (
     YouTubeQuery,
@@ -27,6 +32,34 @@ async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+def _mcp_error_details(exc: BaseException) -> list[str]:
+    """Extract actionable HTTP/MCP details, including nested ExceptionGroups."""
+    details: list[str] = []
+    stack = [exc]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(reversed(current.exceptions))
+            continue
+        if isinstance(current, httpx.HTTPStatusError):
+            response = current.response
+            body = response.text[:2000] if response is not None else ""
+            retry_after = response.headers.get("retry-after") if response is not None else None
+            details.append(
+                "HTTPStatusError status=%s url=%s retry_after=%s body=%r headers=%s"
+                % (
+                    response.status_code if response is not None else None,
+                    response.request.url if response is not None else None,
+                    retry_after,
+                    body,
+                    dict(response.headers) if response is not None else {},
+                )
+            )
+        else:
+            details.append(f"{type(current).__name__}: {current}")
+    return details
 
 
 def _tool_payload(result: Any) -> dict[str, Any]:
@@ -114,7 +147,8 @@ class YouTubeResearchExecutor:
         failed_queries = 0
         errors: list[str] = []
 
-        async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
+        try:
+            async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
 
@@ -229,6 +263,39 @@ class YouTubeResearchExecutor:
                         query.status = "failed"
                         failed_queries += 1
                         errors.append(f"{text}: {type(exc).__name__}: {exc}")
+
+        except Exception as exc:
+            details = _mcp_error_details(exc)
+            logger.error(
+                "YOUTUBE MCP REQUEST FAILED: url=%s error_type=%s details=%s",
+                mcp_url,
+                type(exc).__name__,
+                details,
+                exc_info=True,
+            )
+            research.status = "blocked"
+            errors.append(f"mcp_transport: {type(exc).__name__}: {exc}")
+            return {
+                "status": "blocked",
+                "persisted": False,
+                "research_id": plan.research_id,
+                "queries_planned": len(plan.queries),
+                "queries_collected": successful_queries,
+                "queries_failed": failed_queries,
+                "videos_collected": len(research.video_ids),
+                "snapshots_collected": len(research.snapshot_ids),
+                "relations_created": 0,
+                "gathered_data": list(research.gathered_data),
+                "missing_data": list(research.missing_data),
+                "expected_data": list(research.expected_data),
+                "missing_expected_data": research.missing_expected_data(),
+                "completeness": research.completeness,
+                "research": research.to_dict(),
+                "errors": errors,
+                "source": "youtube-mcp",
+                "mcp_url": mcp_url,
+                "completed_at": _now(),
+            }
 
         # A successful MCP response is a gathered data point even when
         # it contains zero items. Empty search results are a valid research

@@ -385,6 +385,17 @@ class DirectorAutonomy:
                     )
                 )
 
+            # If the available research task has already been attempted
+            # (or the bounded research budget is exhausted), don't spin on
+            # ASSESS -> RESEARCH. Analyze what exists and let the Director
+            # choose another task or wait safely.
+            if not sufficient and (
+                cycle.state.metadata.get("research_task_exhausted")
+                or research_steps >= self.config.max_research_steps
+            ):
+                sufficient = True
+                cycle.state.metadata["analyze_available_evidence"] = True
+
             cycle.state.evidence_sufficient = sufficient
 
             # -----------------------------------------------------

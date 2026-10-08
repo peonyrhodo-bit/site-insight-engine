@@ -2339,7 +2339,7 @@ class Runtime:
 
         self.scheduler = (
             create_scheduler(
-                enabled=AUTONOMOUS_ENABLED,
+                enabled=True,
                 project_id=DEFAULT_PROJECT_ID,
             )
             if create_scheduler
@@ -2348,7 +2348,7 @@ class Runtime:
 
         self.wakeup = (
             create_wakeup_manager(
-                enabled=AUTONOMOUS_ENABLED,
+                enabled=True,
             )
             if create_wakeup_manager
             else None
@@ -2356,7 +2356,7 @@ class Runtime:
 
         self.jobs = (
             JobRunner(
-                enabled=AUTONOMOUS_ENABLED,
+                enabled=True,
             )
             if JobRunner
             else None
@@ -2380,11 +2380,7 @@ class Runtime:
             return existing
 
         if mode is None:
-            mode = (
-                DirectorMode.AUTONOMOUS
-                if AUTONOMOUS_ENABLED
-                else DirectorMode.ASSISTED
-            )
+            mode = DirectorMode.AUTONOMOUS
 
         director = create_director(
             project_id=project_id,
@@ -2926,12 +2922,6 @@ async def director_autonomous_run(
     project_id: str = DEFAULT_PROJECT_ID,
     objective: str | None = None,
 ) -> dict[str, Any]:
-    if not AUTONOMOUS_ENABLED:
-        raise HTTPException(
-            status_code=403,
-            detail="Автономный режим отключён.",
-        )
-
     try:
         return await _execute_autonomous_cycle(
             project_id=project_id,
@@ -4043,16 +4033,12 @@ async def startup() -> None:
     )
 
     logger.info(
-        "Autonomous mode: %s",
-        "enabled"
-        if AUTONOMOUS_ENABLED
-        else "disabled",
+        "Director continuous cycle: enabled",
     )
 
-    if AUTONOMOUS_ENABLED:
-        runtime.autonomous_worker = asyncio.create_task(
-            _autonomous_worker_loop(),
-        )
+    runtime.autonomous_worker = asyncio.create_task(
+        _autonomous_worker_loop(),
+    )
 
 
 @app.on_event("shutdown")

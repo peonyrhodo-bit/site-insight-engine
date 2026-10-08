@@ -413,6 +413,8 @@ class DirectorAutonomy:
 
                     if research_result is not None:
                         understanding = research_result
+                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
 
                     continue
 

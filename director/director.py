@@ -1555,6 +1555,7 @@ class Director:
         """
         autonomy = DirectorAutonomy(
             config=self.autonomy_config,
+            capabilities=self._autonomy_capabilities,
             inspect=self._autonomy_inspect,
             understand=self._autonomy_understand,
             research=self._autonomy_research,
@@ -1583,6 +1584,13 @@ class Director:
         self.state = cycle.state
 
         return cycle
+
+    def _autonomy_capabilities(
+        self,
+        state: DirectorState,
+        _: Any,
+    ) -> dict[str, Any]:
+        return self.discover_capabilities()
 
     async def _autonomy_inspect(
         self,

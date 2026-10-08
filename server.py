@@ -2128,19 +2128,7 @@ class DataAdapter:
                     "Failed to load research sets"
                 )
 
-        if self.opportunity_registry is not None:
-            try:
-                saver = getattr(self.storage, "save_opportunity_data", None)
-                if callable(saver):
-                    result["persistence"] = result.get("persistence", {})
-                    result["persistence"]["opportunity"] = saver(
-                        project_id=project_id,
-                        data=self.opportunity_registry.to_dict(),
-                    )
-            except Exception:
-                logger.exception("Failed to persist opportunity DATA")
-
-        if self.relations is not None:
+        # get_project_state is read-only: it must not persist DATA.\n        # Persistence belongs to explicit ingestion/write paths.\n\n        if self.relations is not None:
             try:
                 if hasattr(
                     self.relations,

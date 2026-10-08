@@ -418,10 +418,12 @@ class Director:
 
         self.context.missing_data = gaps
         self.state.evidence_available = observation_count > 0
+        # This flag means "enough raw evidence to begin analysis", not
+        # "every possible metric exists". Missing velocity lowers confidence
+        # and may become a task-specific gap, but must not block all analysis.
         self.state.evidence_sufficient = (
             observation_count > 0
             and metric_observations > 0
-            and velocity_observations > 0
         )
 
         self.context.metadata["data_requirements"] = requirements

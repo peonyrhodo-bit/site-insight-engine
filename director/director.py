@@ -1735,10 +1735,9 @@ class Director:
         # missing raw/structural evidence. Do not let existing observations
         # make the evidence look sufficient while the research inventory is
         # still incomplete.
-        sufficient = bool(
-            self.state.evidence_sufficient
-            and not missing
-        )
+        # Empty tables are not evidence that this particular task is blocked.
+        # Task-specific gaps are evaluated against the selected opportunity.
+        sufficient = bool(self.state.evidence_sufficient)
 
         return {
             "evidence_sufficient": sufficient,

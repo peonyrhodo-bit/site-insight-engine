@@ -392,15 +392,19 @@ class Director:
                 "needed_now": bool(needed_when and count == 0),
             })
 
-        require("videos", "Видео для первичной картины спроса, тем и результатов.", "critical")
-        require("video_snapshots", "История метрик видео для определения скорости и динамики роста.", "high", needed_when=inventory_counts["videos"] > 0)
-        require("queries", "Сохранённые поисковые запросы, показывающие что именно уже искали.", "high")
-        require("research_sets", "История исследований, чтобы не повторять уже выполненную работу.", "high")
-        require("relations", "Связи между исследованиями, запросами, видео, результатами и решениями.", "medium")
-        require("channels", "Сущности каналов для оценки конкуренции и распределения результата.", "high", needed_when=inventory_counts["videos"] > 0)
-        require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=inventory_counts["channels"] > 0)
-        require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=inventory_counts["videos"] > 0)
-        require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=inventory_counts["niches"] > 0)
+        # Inventory is descriptive, not a global checklist. Only raw evidence
+        # needed to begin the current discovery objective is requested
+        # automatically. Other entities become requirements only for a task
+        # that actually needs them.
+        require("videos", "Видео для первичной картины спроса, тем и результатов.", "critical", needed_when=inventory_counts["videos"] == 0)
+        require("video_snapshots", "История метрик видео для определения скорости и динамики роста.", "high", needed_when=inventory_counts["videos"] > 0 and inventory_counts["video_snapshots"] == 0)
+        require("queries", "Сохранённые поисковые запросы, показывающие что именно уже искали.", "high", needed_when=False)
+        require("research_sets", "История исследований, чтобы не повторять уже выполненную работу.", "high", needed_when=False)
+        require("relations", "Связи между исследованиями, запросами, видео, результатами и решениями.", "medium", needed_when=False)
+        require("channels", "Сущности каналов для оценки конкуренции и распределения результата.", "high", needed_when=False)
+        require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=False)
+        require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=False)
+        require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=False)
 
         for requirement in requirements:
             if requirement["needed_now"]:

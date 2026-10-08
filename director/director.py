@@ -1666,7 +1666,15 @@ class Director:
         self._refresh_project_state()
 
         missing = list(self.context.missing_data or [])
-        sufficient = bool(self.state.evidence_sufficient)
+
+        # Research must precede Analytics when the Director has identified
+        # missing raw/structural evidence. Do not let existing observations
+        # make the evidence look sufficient while the research inventory is
+        # still incomplete.
+        sufficient = bool(
+            self.state.evidence_sufficient
+            and not missing
+        )
 
         return {
             "evidence_sufficient": sufficient,

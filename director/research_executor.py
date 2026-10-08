@@ -272,9 +272,10 @@ class YouTubeResearchExecutor:
             research.mark_complete()
 
         if self.storage is not None:
-            # Persist the actual objects produced by this research run.
-            # Do not flush the entire in-memory registry: it may contain
-            # reusable/previous project data.
+            # Persist only objects created by this research run. Never flush
+            # the full in-memory opportunity registry: an inspection may
+            # already contain thousands of channels and that would turn one
+            # research cycle into thousands of Supabase upserts.
             await _maybe_await(
                 self.storage.save_youtube_data(
                     project_id=project_id,
@@ -297,16 +298,32 @@ class YouTubeResearchExecutor:
                 )
             )
 
-            if opportunity_registry is not None:
-                await _maybe_await(
-                    self.storage.save_opportunity_data(
-                        project_id=project_id,
-                        data=opportunity_registry.to_dict(),
+            if opportunity_registry is not None and channels:
+                new_channels = []
+                seen_channel_ids = set()
+                for channel in channels:
+                    channel_id = str(getattr(channel, "channel_id", "") or "")
+                    if not channel_id or channel_id in seen_channel_ids:
+                        continue
+                    seen_channel_ids.add(channel_id)
+                    new_channels.append(channel.to_dict())
+
+                if new_channels:
+                    await _maybe_await(
+                        self.storage.save_opportunity_data(
+                            project_id=project_id,
+                            data={
+                                "channels": new_channels,
+                                "channel_snapshots": [],
+                                "niches": [],
+                                "niche_snapshots": [],
+                            },
+                        )
                     )
-                )
 
         return {
             "status": research.status,
+            "persisted": self.storage is not None,
             "research_id": plan.research_id,
             "queries_planned": len(plan.queries),
             "queries_collected": successful_queries,

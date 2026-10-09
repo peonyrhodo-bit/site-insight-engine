@@ -691,7 +691,7 @@ class Director:
             )
 
             if planner:
-                research_context = self.context.to_dict()
+                research_context = self.context.to_analysis_dict()
                 if missing_data is not None:
                     # The planner sees gaps for this task, not every empty
                     # table in the project schema.
@@ -1980,9 +1980,26 @@ class Director:
     ) -> dict[str, Any]:
         task_gaps = None
         task_objective = None
+        selected_work_plan_task = None
         if isinstance(_, dict):
             task_gaps = _.get("missing_data")
             task_objective = _.get("objective") or _.get("next_action")
+            work_plan = _.get("work_plan")
+            if isinstance(work_plan, dict):
+                execution_order = work_plan.get("execution_order", [])
+                tasks = work_plan.get("tasks", [])
+                if execution_order and isinstance(tasks, list):
+                    selected_id = execution_order[0]
+                    selected_work_plan_task = next(
+                        (item for item in tasks if isinstance(item, dict) and item.get("id") == selected_id),
+                        None,
+                    )
+                    if selected_work_plan_task:
+                        task_objective = selected_work_plan_task.get("task") or task_objective
+                        task_gaps = [
+                            selected_work_plan_task.get("task", ""),
+                            selected_work_plan_task.get("reason", ""),
+                        ]
         elif _ is not None:
             task_gaps = getattr(_, "missing_data", None)
             task_objective = getattr(_, "objective", None) or getattr(_, "next_action", None)
@@ -1991,6 +2008,15 @@ class Director:
             objective=str(task_objective) if task_objective else None,
             missing_data=task_gaps if isinstance(task_gaps, (list, tuple)) else None,
         )
+        if selected_work_plan_task:
+            plan.metadata["work_plan_task"] = selected_work_plan_task
+            state.metadata["selected_work_plan_task"] = selected_work_plan_task
+            logger.info(
+                "DIRECTOR SELECTED WORK PLAN TASK: cycle=%s task=%s reason=%s",
+                state.cycle_count,
+                selected_work_plan_task.get("id"),
+                selected_work_plan_task.get("reason", ""),
+            )
         query_signature = "|".join(sorted(
             f"{str(getattr(query, 'query', '')).strip().lower()}:{getattr(query, 'language', '')}"
             for query in plan.queries

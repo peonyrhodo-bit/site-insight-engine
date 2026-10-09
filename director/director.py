@@ -706,7 +706,8 @@ class Director:
                     freshness = project_state.get("freshness", {}) if isinstance(project_state, dict) else {}
                     coverage = project_state.get("coverage", {}) if isinstance(project_state, dict) else {}
                     stored_query_count = int(coverage.get("stored_search_queries", 0) or 0)
-                    if stored_query_count < 12 or freshness.get("status") != "fresh":
+                    force_broad_discovery = any("широк" in str(item).lower() for item in (missing_data or []))
+                    if stored_query_count < 12 or freshness.get("status") != "fresh" or force_broad_discovery:
                         seed_batches = [
                             [
                                 ("emerging YouTube trends 2026", "en", "US"),

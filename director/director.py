@@ -551,8 +551,11 @@ class Director:
                     if isinstance(value, str) and value.strip():
                         topic_names.add(value.strip().lower())
 
-        quota_limit = int(os.getenv("YOUTUBE_DAILY_QUOTA_UNITS", "10000"))
-        quota_used = inventory_count("youtube_quota_units_today")
+        search_limit = int(os.getenv("YOUTUBE_SEARCH_DAILY_LIMIT", "100"))
+        search_used = inventory_count("youtube_search_calls_today")
+        search_remaining = max(search_limit - search_used, 0)
+        quota_limit = int(os.getenv("YOUTUBE_OTHER_DAILY_QUOTA_UNITS", "10000"))
+        quota_used = inventory_count("youtube_other_units_today")
         quota_remaining = max(quota_limit - quota_used, 0)
 
         self.context.metadata["data_requirements"] = requirements
@@ -574,12 +577,15 @@ class Director:
                 "known_channels": inventory_counts["channels"],
             },
             "quota": {
-                "accounting": "persisted_director_search_estimate",
-                "daily_limit_units": quota_limit,
-                "used_units_today": quota_used,
+                "accounting": "persisted_director_mcp_calls",
+                "search_calls_used_today": search_used,
+                "search_calls_limit": search_limit,
+                "search_calls_remaining": search_remaining,
+                "other_units_used_today": quota_used,
+                "other_units_limit": quota_limit,
                 "remaining_units_today": quota_remaining,
-                "estimated_units_per_search": 101,
-                "estimated_searches_affordable": quota_remaining // 101,
+                "estimated_other_units_per_search": 1,
+                "estimated_searches_affordable": min(search_remaining, quota_remaining),
             },
             "has_topics": bool(self.context.topics),
             "has_analytics": bool(self.context.analytics),
@@ -751,14 +757,16 @@ class Director:
                                 metadata={"discovery_batch": batch_index, "broad_discovery": True},
                             ))
                     remaining_units = quota.get("remaining_units_today")
-                    if remaining_units is not None:
-                        estimated_cost = int(quota.get("estimated_units_per_search", 101) or 101)
-                        max_queries = max(int(remaining_units) // estimated_cost, 0)
+                    remaining_search_calls = quota.get("search_calls_remaining")
+                    if remaining_units is not None and remaining_search_calls is not None:
+                        estimated_cost = int(quota.get("estimated_other_units_per_search", 1) or 1)
+                        max_queries = max(min(int(remaining_units) // estimated_cost, int(remaining_search_calls)), 0)
                         original_count = len(result.queries)
                         result.queries = result.queries[:max_queries]
                         result.metadata["quota_budget"] = {
                             "remaining_units": int(remaining_units),
-                            "estimated_units_per_search": estimated_cost,
+                            "estimated_other_units_per_search": estimated_cost,
+                            "search_calls_remaining": int(remaining_search_calls),
                             "queries_allowed": max_queries,
                             "queries_planned_before_cap": original_count,
                             "queries_planned_after_cap": len(result.queries),
@@ -2108,9 +2116,10 @@ class Director:
             )
 
         quota_remaining = int(quota.get("remaining_units_today", 0) or 0)
-        estimated_cost = int(quota.get("estimated_units_per_search", 101) or 101)
-        if quota_remaining < estimated_cost:
-            missing.append("Дневного бюджета YouTube API недостаточно для ещё одного поискового вызова.")
+        estimated_cost = int(quota.get("estimated_other_units_per_search", 1) or 1)
+        search_remaining = int(quota.get("search_calls_remaining", 0) or 0)
+        if quota_remaining < estimated_cost or search_remaining < 1:
+            missing.append("Исчерпан отдельный лимит поисковых вызовов YouTube или общий бюджет единиц API.")
 
         stored_query_count = int(coverage.get("stored_search_queries", 0) or 0)
         if stored_query_count < 12:
@@ -2122,7 +2131,7 @@ class Director:
             and freshness_status == "fresh"
             and stored_query_count >= 12
         )
-        if quota_remaining < estimated_cost:
+        if quota_remaining < estimated_cost or search_remaining < 1:
             sufficient = True  # Research is unavailable; analyze what exists and log the hard stop.
 
         hypothesis = self.context.metadata.get("current_hypothesis")
@@ -2171,8 +2180,8 @@ class Director:
                 {
                     "id": "use_daily_quota",
                     "task": "Продолжать полезные исследования, пока хватает измеряемого дневного бюджета и доступен MCP.",
-                    "status": "required" if quota_remaining >= estimated_cost else "blocked",
-                    "reason": f"estimated_remaining_units={quota_remaining}",
+                    "status": "required" if quota_remaining >= estimated_cost and search_remaining >= 1 else "blocked",
+                    "reason": f"search_calls_remaining={search_remaining}; other_units_remaining={quota_remaining}",
                 },
             ],
         }

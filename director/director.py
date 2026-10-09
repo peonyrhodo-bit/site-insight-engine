@@ -508,6 +508,48 @@ class Director:
             and metric_observations > 0
         )
 
+        # Freshness is based on metric capture time, never publication date.
+        snapshot_times: list[datetime] = []
+        for observation in observations:
+            captured = observation.get("snapshot_captured_at") or observation.get("captured_at")
+            if not captured:
+                continue
+            try:
+                parsed = datetime.fromisoformat(str(captured).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                snapshot_times.append(parsed.astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                continue
+        latest_snapshot = max(snapshot_times) if snapshot_times else None
+        now_utc = datetime.now(timezone.utc)
+        snapshot_age_hours = (
+            max((now_utc - latest_snapshot).total_seconds() / 3600, 0)
+            if latest_snapshot else None
+        )
+        freshness_status = (
+            "unknown" if snapshot_age_hours is None
+            else "fresh" if snapshot_age_hours <= 24
+            else "stale"
+        )
+
+        topic_names: set[str] = set()
+        for observation in observations:
+            for key in ("topic", "category", "niche"):
+                value = observation.get(key)
+                if isinstance(value, str) and value.strip():
+                    topic_names.add(value.strip().lower())
+            metadata = observation.get("metadata")
+            if isinstance(metadata, dict):
+                for key in ("topic", "category", "niche"):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        topic_names.add(value.strip().lower())
+
+        quota_limit = int(os.getenv("YOUTUBE_DAILY_QUOTA_UNITS", "10000"))
+        quota_used = inventory_count("youtube_quota_units_today")
+        quota_remaining = max(quota_limit - quota_used, 0)
+
         self.context.metadata["data_requirements"] = requirements
         self.context.metadata["project_state"] = {
             "observation_count": observation_count,
@@ -515,6 +557,25 @@ class Director:
             "metric_observation_count": metric_observations,
             "velocity_observation_count": velocity_observations,
             "inventory": inventory_counts,
+            "freshness": {
+                "status": freshness_status,
+                "latest_snapshot_at": latest_snapshot.isoformat() if latest_snapshot else None,
+                "age_hours": round(snapshot_age_hours, 2) if snapshot_age_hours is not None else None,
+                "threshold_hours": 24,
+            },
+            "coverage": {
+                "known_topic_labels": len(topic_names),
+                "stored_search_queries": inventory_counts["queries"],
+                "known_channels": inventory_counts["channels"],
+            },
+            "quota": {
+                "accounting": "persisted_director_search_estimate",
+                "daily_limit_units": quota_limit,
+                "used_units_today": quota_used,
+                "remaining_units_today": quota_remaining,
+                "estimated_units_per_search": 101,
+                "estimated_searches_affordable": quota_remaining // 101,
+            },
             "has_topics": bool(self.context.topics),
             "has_analytics": bool(self.context.analytics),
             "has_opportunities": bool(self.context.opportunities),
@@ -635,6 +696,22 @@ class Director:
                 )
 
                 if isinstance(result, ResearchPlan):
+                    project_state = self.context.metadata.get("project_state", {})
+                    quota = project_state.get("quota", {}) if isinstance(project_state, dict) else {}
+                    remaining_units = quota.get("remaining_units_today")
+                    if remaining_units is not None:
+                        estimated_cost = int(quota.get("estimated_units_per_search", 101) or 101)
+                        max_queries = max(int(remaining_units) // estimated_cost, 0)
+                        original_count = len(result.queries)
+                        result.queries = result.queries[:max_queries]
+                        result.metadata["quota_budget"] = {
+                            "remaining_units": int(remaining_units),
+                            "estimated_units_per_search": estimated_cost,
+                            "queries_allowed": max_queries,
+                            "queries_planned_before_cap": original_count,
+                            "queries_planned_after_cap": len(result.queries),
+                        }
+                        logger.info("DIRECTOR RESEARCH PLAN: objective=%s queries=%s quota_budget=%s", result.objective, [q.query for q in result.queries], result.metadata["quota_budget"])
                     return result
 
         gaps = list(missing_data) if missing_data is not None else list(self.context.missing_data)
@@ -1844,11 +1921,33 @@ class Director:
             None,
         )
 
+        logger.info(
+            "DIRECTOR RESEARCH PLAN CREATED: cycle=%s research_id=%s objective=%s query_count=%s queries=%s quota_budget=%s",
+            state.cycle_count, plan.research_id, plan.objective,
+            len(plan.queries), [q.query for q in plan.queries],
+            plan.metadata.get("quota_budget", {}),
+        )
         if executor is not None:
             execution = executor(plan)
-
             if hasattr(execution, "__await__"):
                 execution = await execution
+        else:
+            execution = {
+                "status": "blocked",
+                "reason": "research_executor_unavailable",
+                "queries_planned": len(plan.queries),
+                "queries_collected": 0,
+            }
+        logger.info(
+            "DIRECTOR RESEARCH EXECUTION: research_id=%s status=%s queries_planned=%s queries_collected=%s queries_failed=%s quota=%s errors=%s",
+            plan.research_id,
+            execution.get("status") if isinstance(execution, dict) else "invalid_result",
+            execution.get("queries_planned", len(plan.queries)) if isinstance(execution, dict) else len(plan.queries),
+            execution.get("queries_collected", 0) if isinstance(execution, dict) else 0,
+            execution.get("queries_failed", 0) if isinstance(execution, dict) else 0,
+            execution.get("quota") if isinstance(execution, dict) else None,
+            execution.get("errors", []) if isinstance(execution, dict) else [],
+        )
 
         data_ingestion: dict[str, Any] = {
             "status": "not_executed",
@@ -1895,8 +1994,18 @@ class Director:
         self.context.metadata["last_research_ingestion"] = (
             data_ingestion
         )
-        if task_key not in completed_tasks:
-            completed_tasks.append(task_key)
+        execution_status = str(research_execution.get("status") or "").lower()
+        successful_query_count = int(research_execution.get("queries_collected", 0) or 0)
+        # Failed, blocked, and zero-query plans remain retryable.
+        if execution_status in {"completed", "partial"} and successful_query_count > 0:
+            if task_key not in completed_tasks:
+                completed_tasks.append(task_key)
+        else:
+            logger.warning(
+                "DIRECTOR RESEARCH NOT MARKED COMPLETE: task_key=%s status=%s queries_collected=%s reason=%s",
+                task_key, execution_status, successful_query_count,
+                research_execution.get("reason") or research_execution.get("error"),
+            )
 
         return {
             "task_key": task_key,
@@ -1934,15 +2043,87 @@ class Director:
         # still incomplete.
         # Empty tables are not evidence that this particular task is blocked.
         # Task-specific gaps are evaluated against the selected opportunity.
-        sufficient = bool(self.state.evidence_sufficient)
+        project_state = self.context.metadata.get("project_state", {})
+        freshness = project_state.get("freshness", {}) if isinstance(project_state, dict) else {}
+        coverage = project_state.get("coverage", {}) if isinstance(project_state, dict) else {}
+        quota = project_state.get("quota", {}) if isinstance(project_state, dict) else {}
+        freshness_status = freshness.get("status", "unknown")
+        if freshness_status != "fresh":
+            missing.append(
+                "Обновить метрики YouTube: свежесть выборки "
+                + ("неизвестна." if freshness_status == "unknown" else "ниже порога 24 часа.")
+            )
+
+        quota_remaining = int(quota.get("remaining_units_today", 0) or 0)
+        estimated_cost = int(quota.get("estimated_units_per_search", 101) or 101)
+        if quota_remaining < estimated_cost:
+            missing.append("Дневного бюджета YouTube API недостаточно для ещё одного поискового вызова.")
+
+        sufficient = bool(self.state.evidence_sufficient) and freshness_status == "fresh"
+        if quota_remaining < estimated_cost:
+            sufficient = True  # Research is unavailable; analyze what exists and log the hard stop.
+
+        hypothesis = self.context.metadata.get("current_hypothesis")
+        hypothesis_status = (
+            hypothesis.get("status", "unvalidated")
+            if isinstance(hypothesis, dict) else "not_formulated"
+        )
+        work_plan = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "cycle": state.cycle_count,
+            "goal": self.context.objective or "Найти и проверить перспективные направления YouTube.",
+            "basis": {
+                "video_count": project_state.get("observation_count", 0),
+                "snapshot_count": project_state.get("snapshot_count", 0),
+                "freshness": freshness,
+                "coverage": coverage,
+                "hypothesis_status": hypothesis_status,
+                "quota": quota,
+                "missing_data": list(dict.fromkeys(missing)),
+            },
+            "tasks": [
+                {
+                    "id": "refresh_evidence",
+                    "task": "Получить свежие метрики YouTube и повторные измерения по уже найденным видео.",
+                    "status": "required" if freshness_status != "fresh" else "satisfied",
+                    "reason": f"freshness={freshness_status}",
+                },
+                {
+                    "id": "discover_broadly",
+                    "task": "Искать новые направления широко — по разным темам, языкам, регионам и форматам, а не только проверять прежние гипотезы.",
+                    "status": "required" if inventory.get("query_count", 0) == 0 or freshness_status != "fresh" else "next",
+                    "reason": "Сопоставить новые поисковые результаты с текущей базой.",
+                },
+                {
+                    "id": "validate_hypotheses",
+                    "task": "Сформулировать проверяемые гипотезы, собрать сравнимые доказательства и обновить статус каждой гипотезы.",
+                    "status": "required" if hypothesis_status in {"not_formulated", "unvalidated", "provisional"} else "next",
+                    "reason": f"hypothesis_status={hypothesis_status}",
+                },
+                {
+                    "id": "persist_and_reinspect",
+                    "task": "Сохранить поисковые запросы, результаты и снимки метрик; перечитать состояние после исследования.",
+                    "status": "required",
+                    "reason": "Каждый выполненный поиск должен оставлять проверяемый след.",
+                },
+                {
+                    "id": "use_daily_quota",
+                    "task": "Продолжать полезные исследования, пока хватает измеряемого дневного бюджета и доступен MCP.",
+                    "status": "required" if quota_remaining >= estimated_cost else "blocked",
+                    "reason": f"estimated_remaining_units={quota_remaining}",
+                },
+            ],
+        }
+        state.metadata["project_assessment"] = work_plan["basis"]
+        state.metadata["work_plan"] = work_plan
+        logger.info("DIRECTOR PROJECT ASSESSMENT: %s", json.dumps(work_plan["basis"], ensure_ascii=False, default=str))
+        logger.info("DIRECTOR WORK PLAN: %s", json.dumps(work_plan, ensure_ascii=False, default=str))
 
         return {
             "evidence_sufficient": sufficient,
-            "missing_data": missing,
-            "project_state": self.context.metadata.get(
-                "project_state",
-                {},
-            ),
+            "missing_data": list(dict.fromkeys(missing)),
+            "project_state": project_state,
+            "work_plan": work_plan,
         }
 
     async def _autonomy_decide(

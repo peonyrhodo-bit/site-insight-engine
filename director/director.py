@@ -2196,6 +2196,9 @@ class Director:
             "basis": {
                 "video_count": project_state.get("observation_count", 0),
                 "snapshot_count": project_state.get("snapshot_count", 0),
+                "data_inventory": self.context.metadata.get("data_inventory", {}),
+                "available_actions": list(self.context.available_actions),
+                "connected_services": self.context.metadata.get("capabilities", {}).get("connected_services", {}),
                 "freshness": freshness,
                 "coverage": coverage,
                 "hypothesis_status": hypothesis_status,

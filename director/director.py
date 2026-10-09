@@ -219,6 +219,60 @@ class Director:
         self.last_result: DirectorResult | None = None
         self.last_cycle: DirectorCycle | None = None
 
+    def to_ai_decision_dict(self) -> dict[str, Any]:
+        """Build a bounded context payload for decision-enrichment AI.
+
+        The full evidence set remains available to local analytics, but sending
+        thousands of raw video/snapshot rows to the AI provider creates an
+        avoidable serialization and prompt-memory spike. Decision enrichment
+        should use the current analysis plus a small representative sample.
+        """
+        sample_fields = (
+            "video_id", "title", "name", "channel_title", "channel_id",
+            "views", "viewCount", "likes", "likeCount", "comments",
+            "commentCount", "views_per_hour", "velocity", "growth_rate",
+            "published_at", "metrics",
+        )
+        observation_sample = []
+        for item in self.observations[:8]:
+            if not isinstance(item, dict):
+                continue
+            observation_sample.append({
+                key: item[key]
+                for key in sample_fields
+                if key in item
+            })
+
+        return {
+            "project_id": self.project_id,
+            "objective": self.objective,
+            "channels": self.channels[:20],
+            "strategies": self.strategies[:10],
+            "observations": {
+                "total_count": len(self.observations),
+                "sample": observation_sample,
+            },
+            "analytics": self.analytics,
+            "topics": self.topics,
+            "opportunities": self.opportunities[:20],
+            "research_history": self.research_history[-10:],
+            "decisions": self.decisions[-10:],
+            "recommendations": self.recommendations[-10:],
+            "feedback": self.feedback[-10:],
+            "constraints": self.constraints[:20],
+            "resources": self.resources,
+            "available_actions": self.available_actions,
+            "missing_data": self.missing_data,
+            "metadata": {
+                key: self.metadata[key]
+                for key in (
+                    "project_state", "data_inventory", "capabilities",
+                    "signal_interpretation", "current_hypothesis",
+                )
+                if key in self.metadata
+            },
+        }
+
     # ============================================================
     # CAPABILITIES
     # ============================================================
@@ -1109,7 +1163,7 @@ class Director:
                     "decision": decision.to_dict(),
                     "analysis": analysis,
                     "director_context": (
-                        self.context.to_analysis_dict()
+                        self.context.to_ai_decision_dict()
                     ),
                 }
             )

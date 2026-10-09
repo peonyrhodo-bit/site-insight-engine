@@ -61,6 +61,8 @@ from .recommendations import (
 )
 from .research import (
     ResearchPlan,
+    ResearchPriority,
+    build_query,
     plan_next_research,
 )
 
@@ -701,6 +703,52 @@ class Director:
                 if isinstance(result, ResearchPlan):
                     project_state = self.context.metadata.get("project_state", {})
                     quota = project_state.get("quota", {}) if isinstance(project_state, dict) else {}
+                    freshness = project_state.get("freshness", {}) if isinstance(project_state, dict) else {}
+                    coverage = project_state.get("coverage", {}) if isinstance(project_state, dict) else {}
+                    stored_query_count = int(coverage.get("stored_search_queries", 0) or 0)
+                    if stored_query_count < 12 or freshness.get("status") != "fresh":
+                        seed_batches = [
+                            [
+                                ("emerging YouTube trends 2026", "en", "US"),
+                                ("fast growing YouTube Shorts topics", "en", "US"),
+                                ("новые тренды YouTube 2026", "ru", "RU"),
+                                ("популярные новые форматы YouTube Shorts", "ru", "RU"),
+                            ],
+                            [
+                                ("new YouTube channel niches with low competition", "en", "US"),
+                                ("recently viral educational videos YouTube", "en", "GB"),
+                                ("растущие ниши YouTube с низкой конкуренцией", "ru", "RU"),
+                                ("вирусные образовательные видео YouTube", "ru", "RU"),
+                            ],
+                            [
+                                ("popular DIY and home improvement Shorts", "en", "US"),
+                                ("new gaming and entertainment trends YouTube", "en", "CA"),
+                                ("популярные DIY и домашние проекты Shorts", "ru", "RU"),
+                                ("новые игровые и развлекательные тренды YouTube", "ru", "RU"),
+                            ],
+                            [
+                                ("new creator formats and faceless channels YouTube", "en", "US"),
+                                ("fast growing lifestyle and hobby topics YouTube", "en", "AU"),
+                                ("новые форматы авторских и безликих каналов YouTube", "ru", "RU"),
+                                ("быстрорастущие темы лайфстайл и хобби YouTube", "ru", "RU"),
+                            ],
+                        ]
+                        batch_index = (stored_query_count // 4) % len(seed_batches)
+                        existing = {
+                            (str(q.query).strip().lower(), str(q.language).lower())
+                            for q in result.queries
+                        }
+                        for text, language, region in seed_batches[batch_index]:
+                            if (text.lower(), language) in existing:
+                                continue
+                            result.queries.append(build_query(
+                                query=text,
+                                language=language,
+                                region_code=region,
+                                purpose="Широкое обнаружение новых направлений вне прежних гипотез.",
+                                priority=ResearchPriority.HIGH,
+                                metadata={"discovery_batch": batch_index, "broad_discovery": True},
+                            ))
                     remaining_units = quota.get("remaining_units_today")
                     if remaining_units is not None:
                         estimated_cost = int(quota.get("estimated_units_per_search", 101) or 101)
@@ -713,6 +761,7 @@ class Director:
                             "queries_allowed": max_queries,
                             "queries_planned_before_cap": original_count,
                             "queries_planned_after_cap": len(result.queries),
+                            "daily_quota_units_used_estimate": quota.get("used_units_today", 0),
                         }
                         logger.info("DIRECTOR RESEARCH PLAN: objective=%s queries=%s quota_budget=%s", result.objective, [q.query for q in result.queries], result.metadata["quota_budget"])
                     return result
@@ -2062,7 +2111,16 @@ class Director:
         if quota_remaining < estimated_cost:
             missing.append("Дневного бюджета YouTube API недостаточно для ещё одного поискового вызова.")
 
-        sufficient = bool(self.state.evidence_sufficient) and freshness_status == "fresh"
+        stored_query_count = int(coverage.get("stored_search_queries", 0) or 0)
+        if stored_query_count < 12:
+            missing.append(
+                f"Расширить широкое покрытие YouTube: сохранено поисковых запросов {stored_query_count}/12 для первичного сравнения направлений."
+            )
+        sufficient = (
+            bool(self.state.evidence_sufficient)
+            and freshness_status == "fresh"
+            and stored_query_count >= 12
+        )
         if quota_remaining < estimated_cost:
             sufficient = True  # Research is unavailable; analyze what exists and log the hard stop.
 

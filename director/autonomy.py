@@ -283,6 +283,22 @@ class DirectorAutonomy:
         research_steps = 0
         action_steps = 0
 
+        def research_result_exhausts_task(result: Any) -> bool:
+            """Stop retry loops when research cannot produce a usable attempt."""
+            if not isinstance(result, dict):
+                return True
+            if result.get("duplicate_task"):
+                return True
+            execution = result.get("research_execution")
+            if not isinstance(execution, dict):
+                execution = result
+            status = str(execution.get("status") or "").lower()
+            try:
+                queries_collected = int(execution.get("queries_collected", 0) or 0)
+            except (TypeError, ValueError):
+                queries_collected = 0
+            return status not in {"completed", "partial"} or queries_collected <= 0
+
         # ---------------------------------------------------------
         # WAKE
         # ---------------------------------------------------------
@@ -429,7 +445,7 @@ class DirectorAutonomy:
 
                     if research_result is not None:
                         understanding = research_result
-                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                    if research_result_exhausts_task(research_result):
                         cycle.state.metadata["research_task_exhausted"] = True
 
                     continue
@@ -631,7 +647,7 @@ class DirectorAutonomy:
                     cycle.state.last_action = "research"
                     cycle.state.actions_taken += 1
                     cycle.state.last_result = research_result
-                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                    if research_result_exhausts_task(research_result):
                         cycle.state.metadata["research_task_exhausted"] = True
                     if research_result is not None:
                         understanding = research_result

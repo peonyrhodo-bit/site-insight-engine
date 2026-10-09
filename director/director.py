@@ -1911,9 +1911,59 @@ class Director:
             context.missing_data,
         )
 
+        inventory = context.metadata.get("data_inventory", {})
+        project_state = context.metadata.get("project_state", {})
+        capabilities = context.metadata.get("capabilities", {})
+        recent_research = [
+            {
+                key: item.get(key)
+                for key in ("research_id", "name", "objective", "status", "created_at", "completed_at")
+                if key in item
+            }
+            for item in (context.research_history[-8:] if context.research_history else [])
+            if isinstance(item, dict)
+        ]
+        wake_snapshot = {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "project_id": self.project_id,
+            "objective": context.objective or state.objective,
+            "inventory": {
+                "videos": inventory.get("video_count", project_state.get("observation_count", 0)),
+                "video_snapshots": inventory.get("snapshot_count", project_state.get("snapshot_count", 0)),
+                "search_queries": inventory.get("query_count", project_state.get("coverage", {}).get("stored_search_queries", 0)),
+                "research_sets": inventory.get("research_set_count", 0),
+                "relations": inventory.get("relation_count", 0),
+                "channels": inventory.get("channel_count", 0),
+                "niches": inventory.get("niche_count", 0),
+            },
+            "freshness": project_state.get("freshness", {}),
+            "coverage": project_state.get("coverage", {}),
+            "quota": project_state.get("quota", {}),
+            "hypothesis": context.metadata.get("current_hypothesis", {}),
+            "topics_summary": {
+                "available": bool(context.topics),
+                "keys": list(context.topics.keys())[:20] if isinstance(context.topics, dict) else [],
+            },
+            "analytics_summary": {
+                "available": bool(context.analytics),
+                "keys": list(context.analytics.keys())[:20] if isinstance(context.analytics, dict) else [],
+            },
+            "opportunity_count": len(context.opportunities),
+            "recent_research": recent_research,
+            "missing_data": list(context.missing_data),
+            "available_actions": list(context.available_actions),
+            "connected_services": capabilities.get("connected_services", {}),
+        }
+        state.metadata["wake_snapshot"] = wake_snapshot
+        logger.info(
+            "DIRECTOR WAKE SNAPSHOT: %s",
+            json.dumps(wake_snapshot, ensure_ascii=False, default=str),
+        )
+
         return {
             "evidence_available": state.evidence_available,
             "context": context.to_dict(),
+            "wake_snapshot": wake_snapshot,
         }
 
     def _autonomy_understand(

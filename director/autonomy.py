@@ -94,7 +94,7 @@ class CycleEvent:
 @dataclass
 class AutonomyConfig:
     enabled: bool = False
-    max_steps_per_cycle: int = 8
+    max_steps_per_cycle: int = 16
     max_research_steps: int = 2
     max_action_steps: int = 3
     allow_external_actions: bool = False
@@ -249,6 +249,11 @@ class DirectorAutonomy:
         )
         cycle.state.status = CycleStatus.RUNNING
         cycle.state.cycle_count += 1
+        # The task ledger is per wake, not permanent memory. A later wake may
+        # reconsider a task when new evidence has arrived.
+        cycle.state.metadata["completed_task_keys"] = []
+        cycle.state.metadata.pop("research_task_exhausted", None)
+        cycle.state.metadata.pop("analyze_available_evidence", None)
 
         try:
             return await self._run_cycle(cycle)
@@ -385,6 +390,17 @@ class DirectorAutonomy:
                     )
                 )
 
+            # If the available research task has already been attempted
+            # (or the bounded research budget is exhausted), don't spin on
+            # ASSESS -> RESEARCH. Analyze what exists and let the Director
+            # choose another task or wait safely.
+            if not sufficient and (
+                cycle.state.metadata.get("research_task_exhausted")
+                or research_steps >= self.config.max_research_steps
+            ):
+                sufficient = True
+                cycle.state.metadata["analyze_available_evidence"] = True
+
             cycle.state.evidence_sufficient = sufficient
 
             # -----------------------------------------------------
@@ -413,6 +429,8 @@ class DirectorAutonomy:
 
                     if research_result is not None:
                         understanding = research_result
+                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
 
                     continue
 
@@ -504,6 +522,59 @@ class DirectorAutonomy:
             )
 
             # -----------------------------------------------------
+            # RESEARCH DECISION
+            # -----------------------------------------------------
+            if decision_type == "research":
+                decision_metadata = (
+                    decision.get("metadata", {})
+                    if isinstance(decision, dict)
+                    else getattr(decision, "metadata", {})
+                )
+                task_key = (
+                    decision_metadata.get("task_key")
+                    if isinstance(decision_metadata, dict)
+                    else None
+                )
+                if research_steps >= self.config.max_research_steps:
+                    if task_key:
+                        completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                        if task_key not in completed:
+                            completed.append(task_key)
+                    cycle.state.metadata["research_task_exhausted"] = True
+                    continue
+
+                self._set_phase(
+                    cycle,
+                    DirectorPhase.RESEARCH,
+                    "Решение требует конкретного исследования; проверяю, не выполнялось ли оно уже.",
+                )
+                research_result = await self._safe_call(
+                    self.research_handler,
+                    cycle.state,
+                    decision,
+                )
+                research_steps += 1
+                steps += 1
+                cycle.state.last_action = "research"
+                cycle.state.actions_taken += 1
+                cycle.state.last_result = research_result
+                if isinstance(research_result, dict):
+                    research_key = research_result.get("task_key")
+                    if research_key:
+                        completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                        if research_key not in completed:
+                            completed.append(research_key)
+                    if research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                        if task_key:
+                            completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                            if task_key not in completed:
+                                completed.append(task_key)
+                if research_result is not None:
+                    understanding = research_result
+                continue
+
+            # -----------------------------------------------------
             # WAIT / SLEEP
             # -----------------------------------------------------
             if decision_type in {
@@ -564,19 +635,22 @@ class DirectorAutonomy:
 
                 cycle.state.last_result = recommendation
 
-                if self.config.sleep_after_recommendation:
-                    self._set_phase(
-                        cycle,
-                        DirectorPhase.SLEEP,
-                        "Рекомендация сформирована. Жду решения пользователя.",
-                    )
+                task_key = None
+                if isinstance(decision, dict):
+                    task_key = decision.get("metadata", {}).get("task_key") if isinstance(decision.get("metadata"), dict) else None
+                else:
+                    metadata = getattr(decision, "metadata", {})
+                    task_key = metadata.get("task_key") if isinstance(metadata, dict) else None
+                if task_key:
+                    completed = cycle.state.metadata.setdefault("completed_task_keys", [])
+                    if task_key not in completed:
+                        completed.append(task_key)
 
-                    cycle.status = CycleStatus.WAITING
-                    cycle.state.status = CycleStatus.WAITING
-                    cycle.state.sleep_reason = (
-                        "waiting_for_user"
-                    )
-                    break
+                # A recommendation is not automatically the end of the wake.
+                # Re-enter assessment and decision so another distinct useful
+                # task can be chosen. The task ledger prevents repeats.
+                if self.config.sleep_after_recommendation and steps < self.config.max_steps_per_cycle:
+                    continue
 
             # -----------------------------------------------------
             # ACT

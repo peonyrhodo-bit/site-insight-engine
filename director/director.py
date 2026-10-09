@@ -392,15 +392,19 @@ class Director:
                 "needed_now": bool(needed_when and count == 0),
             })
 
-        require("videos", "Видео для первичной картины спроса, тем и результатов.", "critical")
-        require("video_snapshots", "История метрик видео для определения скорости и динамики роста.", "high", needed_when=inventory_counts["videos"] > 0)
-        require("queries", "Сохранённые поисковые запросы, показывающие что именно уже искали.", "high")
-        require("research_sets", "История исследований, чтобы не повторять уже выполненную работу.", "high")
-        require("relations", "Связи между исследованиями, запросами, видео, результатами и решениями.", "medium")
-        require("channels", "Сущности каналов для оценки конкуренции и распределения результата.", "high", needed_when=inventory_counts["videos"] > 0)
-        require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=inventory_counts["channels"] > 0)
-        require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=inventory_counts["videos"] > 0)
-        require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=inventory_counts["niches"] > 0)
+        # Inventory is descriptive, not a global checklist. Only raw evidence
+        # needed to begin the current discovery objective is requested
+        # automatically. Other entities become requirements only for a task
+        # that actually needs them.
+        require("videos", "Видео для первичной картины спроса, тем и результатов.", "critical", needed_when=inventory_counts["videos"] == 0)
+        require("video_snapshots", "История метрик видео для определения скорости и динамики роста.", "high", needed_when=inventory_counts["videos"] > 0 and inventory_counts["video_snapshots"] == 0)
+        require("queries", "Сохранённые поисковые запросы, показывающие что именно уже искали.", "high", needed_when=False)
+        require("research_sets", "История исследований, чтобы не повторять уже выполненную работу.", "high", needed_when=False)
+        require("relations", "Связи между исследованиями, запросами, видео, результатами и решениями.", "medium", needed_when=False)
+        require("channels", "Сущности каналов для оценки конкуренции и распределения результата.", "high", needed_when=False)
+        require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=False)
+        require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=False)
+        require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=False)
 
         for requirement in requirements:
             if requirement["needed_now"]:
@@ -414,10 +418,12 @@ class Director:
 
         self.context.missing_data = gaps
         self.state.evidence_available = observation_count > 0
+        # This flag means "enough raw evidence to begin analysis", not
+        # "every possible metric exists". Missing velocity lowers confidence
+        # and may become a task-specific gap, but must not block all analysis.
         self.state.evidence_sufficient = (
             observation_count > 0
             and metric_observations > 0
-            and velocity_observations > 0
         )
 
         self.context.metadata["data_requirements"] = requirements
@@ -512,6 +518,7 @@ class Director:
         self,
         *,
         objective: str | None = None,
+        missing_data: Iterable[Any] | None = None,
     ) -> ResearchPlan:
         """
         Ask the research layer what should be investigated next.
@@ -530,17 +537,28 @@ class Director:
             )
 
             if planner:
+                research_context = self.context.to_dict()
+                if missing_data is not None:
+                    # The planner sees gaps for this task, not every empty
+                    # table in the project schema.
+                    research_context["missing_data"] = list(missing_data)
+                    metadata = research_context.get("metadata")
+                    if isinstance(metadata, dict):
+                        metadata = dict(metadata)
+                        metadata["data_requirements"] = []
+                        research_context["metadata"] = metadata
                 result = planner(
                     objective=objective,
-                    context=self.context.to_dict(),
+                    context=research_context,
                 )
 
                 if isinstance(result, ResearchPlan):
                     return result
 
+        gaps = list(missing_data) if missing_data is not None else list(self.context.missing_data)
         return plan_next_research(
             objective=objective,
-            missing_data=self.context.missing_data,
+            missing_data=gaps,
             current_topics=self._current_topic_names(),
         )
 
@@ -909,10 +927,39 @@ class Director:
         if analysis is None:
             analysis = await self.analyze()
 
-        opportunities = analysis.get(
+        opportunities = list(analysis.get(
             "opportunities",
             self.context.opportunities,
-        )
+        ) or [])
+        all_opportunities = list(opportunities)
+        completed = self.state.metadata.get("completed_task_keys", [])
+        completed_tasks = set(completed if isinstance(completed, list) else [])
+        opportunities = [
+            item for item in opportunities
+            if self._opportunity_task_key(item) not in completed_tasks
+        ]
+
+        # If all current candidates were already handled during this wake,
+        # wait for new evidence instead of repeating a recommendation.
+        if not opportunities and all_opportunities and completed_tasks:
+            return build_decision(
+                decision_type=DecisionType.WAIT,
+                objective=self.context.objective or "Оценить следующий полезный шаг.",
+                rationale="Все доступные направления уже рассмотрены в текущем цикле. Повторять ту же задачу без новых данных не нужно.",
+                confidence=0.65,
+                next_action="Дождаться новых данных или следующего пробуждения.",
+                metadata={"reason": "all_current_opportunities_handled"},
+            )
+
+        if not opportunities and self.state.metadata.get("research_task_exhausted"):
+            return build_decision(
+                decision_type=DecisionType.WAIT,
+                objective=self.context.objective or "Оценить следующий полезный шаг.",
+                rationale="Доступное исследование уже выполнялось в этом цикле, а новых направлений для полезной работы пока нет.",
+                confidence=0.6,
+                next_action="Дождаться новых данных или следующего пробуждения.",
+                metadata={"reason": "research_already_attempted"},
+            )
 
         # --------------------------------------------------------
         # No evidence => research first.
@@ -948,6 +995,12 @@ class Director:
             candidate,
             objective=self.context.objective or "",
         )
+        decision.metadata["task_key"] = self._opportunity_task_key(candidate)
+        decision.metadata["opportunity_id"] = (
+            candidate.get("opportunity_id")
+            if isinstance(candidate, dict)
+            else getattr(candidate, "opportunity_id", None)
+        )
 
         hypothesis = analysis.get("hypothesis")
         if isinstance(hypothesis, dict):
@@ -962,6 +1015,17 @@ class Director:
             )
 
         return decision
+
+    @staticmethod
+    def _opportunity_task_key(item: Any) -> str:
+        if isinstance(item, dict):
+            identifier = item.get("opportunity_id") or item.get("id")
+            title = item.get("title") or item.get("topic") or item.get("name")
+        else:
+            identifier = getattr(item, "opportunity_id", None) or getattr(item, "id", None)
+            title = getattr(item, "title", None) or getattr(item, "topic", None) or getattr(item, "name", None)
+        value = identifier or title or repr(item)
+        return f"opportunity:{str(value).strip().lower()}"
 
     def _select_candidate(
         self,
@@ -1091,11 +1155,13 @@ class Director:
             hypothesis = None
 
         target = self._build_recommendation_target(
-            analysis
+            analysis,
+            decision=decision,
         )
 
         evidence = self._build_recommendation_evidence(
-            analysis
+            analysis,
+            decision=decision,
         )
 
         title = self._recommendation_title(
@@ -1181,6 +1247,8 @@ class Director:
     def _build_recommendation_target(
         self,
         analysis: dict[str, Any],
+        *,
+        decision: DirectorDecision | None = None,
     ) -> RecommendationTarget | None:
         opportunities = analysis.get(
             "opportunities",
@@ -1190,9 +1258,7 @@ class Director:
         if not opportunities:
             return None
 
-        candidate = self._select_candidate(
-            opportunities
-        )
+        candidate = self._candidate_for_decision(opportunities, decision)
 
         if isinstance(candidate, dict):
             title = (
@@ -1261,6 +1327,8 @@ class Director:
     def _build_recommendation_evidence(
         self,
         analysis: dict[str, Any],
+        *,
+        decision: DirectorDecision | None = None,
     ) -> list[RecommendationEvidence]:
         evidence: list[RecommendationEvidence] = []
 
@@ -1272,9 +1340,7 @@ class Director:
         if not opportunities:
             return evidence
 
-        candidate = self._select_candidate(
-            opportunities
-        )
+        candidate = self._candidate_for_decision(opportunities, decision)
 
         if isinstance(candidate, dict):
             raw_evidence = candidate.get(
@@ -1339,6 +1405,20 @@ class Director:
                 )
 
         return evidence
+
+    def _candidate_for_decision(
+        self,
+        opportunities: Iterable[Any],
+        decision: DirectorDecision | None,
+    ) -> Any:
+        items = list(opportunities or [])
+        target_id = decision.metadata.get("opportunity_id") if decision else None
+        if target_id is not None:
+            for item in items:
+                item_id = item.get("opportunity_id") if isinstance(item, dict) else getattr(item, "opportunity_id", None)
+                if str(item_id) == str(target_id):
+                    return item
+        return self._select_candidate(items)
 
     def _recommendation_title(
         self,
@@ -1628,7 +1708,43 @@ class Director:
         state: DirectorState,
         _: Any,
     ) -> dict[str, Any]:
-        plan = self.plan_research()
+        task_gaps = None
+        task_objective = None
+        if isinstance(_, dict):
+            task_gaps = _.get("missing_data")
+            task_objective = _.get("objective") or _.get("next_action")
+        elif _ is not None:
+            task_gaps = getattr(_, "missing_data", None)
+            task_objective = getattr(_, "objective", None) or getattr(_, "next_action", None)
+
+        plan = self.plan_research(
+            objective=str(task_objective) if task_objective else None,
+            missing_data=task_gaps if isinstance(task_gaps, (list, tuple)) else None,
+        )
+        query_signature = "|".join(sorted(
+            f"{str(getattr(query, 'query', '')).strip().lower()}:{getattr(query, 'language', '')}"
+            for query in plan.queries
+        ))
+        operation_signature = "|".join(sorted(
+            str(item.get("operation") or item.get("requirement_key") or "")
+            for item in plan.metadata.get("operations", [])
+            if isinstance(item, dict)
+        ))
+        task_key = "research:" + "|".join([
+            str(plan.objective or "").strip().lower(),
+            query_signature,
+            operation_signature,
+        ])
+        completed_tasks = state.metadata.setdefault("completed_task_keys", [])
+        if task_key in completed_tasks:
+            state.metadata["research_task_exhausted"] = True
+            return {
+                "status": "skipped",
+                "duplicate_task": True,
+                "task_key": task_key,
+                "research_plan": plan.to_dict(),
+                "missing_data": list(self.context.missing_data),
+            }
 
         state.current_research_id = (
             plan.research_id
@@ -1697,8 +1813,11 @@ class Director:
         self.context.metadata["last_research_ingestion"] = (
             data_ingestion
         )
+        if task_key not in completed_tasks:
+            completed_tasks.append(task_key)
 
         return {
+            "task_key": task_key,
             "research_plan": plan.to_dict(),
             "research_execution": research_execution,
             "data_ingestion": data_ingestion,
@@ -1731,10 +1850,9 @@ class Director:
         # missing raw/structural evidence. Do not let existing observations
         # make the evidence look sufficient while the research inventory is
         # still incomplete.
-        sufficient = bool(
-            self.state.evidence_sufficient
-            and not missing
-        )
+        # Empty tables are not evidence that this particular task is blocked.
+        # Task-specific gaps are evaluated against the selected opportunity.
+        sufficient = bool(self.state.evidence_sufficient)
 
         return {
             "evidence_sufficient": sufficient,

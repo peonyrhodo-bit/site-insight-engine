@@ -2052,6 +2052,13 @@ class DataAdapter:
                                 )
                             )
 
+                            captured_at = (
+                                getattr(snapshot, "captured_at", None)
+                                if not isinstance(snapshot, dict)
+                                else snapshot.get("captured_at")
+                            )
+                            if captured_at:
+                                observation["snapshot_captured_at"] = str(captured_at)
                             if isinstance(
                                 metrics,
                                 dict,
@@ -2085,6 +2092,20 @@ class DataAdapter:
                             ),
                             "query_count": len(
                                 self.youtube_registry.queries()
+                            ),
+                            "latest_snapshot_at": max(
+                                (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
+                                default=None,
+                            ),
+                            "youtube_quota_units_today": sum(
+                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("quota_units", 0) or 0), 0)
+                                for query in self.youtube_registry.queries()
+                                if str(getattr(query, "created_at", "") or "")[:10] == datetime.now(timezone.utc).date().isoformat()
+                            ),
+                            "youtube_search_calls_today": sum(
+                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("search_calls", 0) or 0), 0)
+                                for query in self.youtube_registry.queries()
+                                if str(getattr(query, "created_at", "") or "")[:10] == datetime.now(timezone.utc).date().isoformat()
                             ),
                             "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
                             "relation_count": len(self.relations.all()) if self.relations is not None and hasattr(self.relations, "all") else 0,

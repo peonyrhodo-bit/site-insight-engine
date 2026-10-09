@@ -2209,8 +2209,8 @@ class Director:
                 {
                     "id": "refresh_evidence",
                     "task": "Получить свежие метрики YouTube и повторные измерения по уже найденным видео.",
-                    "status": "required" if freshness_status != "fresh" else "satisfied",
-                    "reason": f"freshness={freshness_status}",
+                    "status": ("required" if freshness_status != "fresh" else "satisfied") if getattr(self.research_service, "refresh_existing_video_stats", None) else ("blocked" if freshness_status != "fresh" else "satisfied"),
+                    "reason": f"freshness={freshness_status}; refresh_existing_video_stats_available={bool(getattr(self.research_service, 'refresh_existing_video_stats', None))}",
                 },
                 {
                     "id": "discover_broadly",

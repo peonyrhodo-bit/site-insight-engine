@@ -770,7 +770,7 @@ class Director:
                             "queries_allowed": max_queries,
                             "queries_planned_before_cap": original_count,
                             "queries_planned_after_cap": len(result.queries),
-                            "daily_quota_units_used_estimate": quota.get("used_units_today", 0),
+                            "other_units_used_today": quota.get("other_units_used_today", 0),
                         }
                         logger.info("DIRECTOR RESEARCH PLAN: objective=%s queries=%s quota_budget=%s", result.objective, [q.query for q in result.queries], result.metadata["quota_budget"])
                     return result

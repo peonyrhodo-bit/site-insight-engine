@@ -585,6 +585,41 @@ class DirectorAutonomy:
                 "none",
                 None,
             }:
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                if (
+                    remaining_units >= 101
+                    and research_steps < self.config.max_research_steps
+                    and not cycle.state.metadata.get("research_task_exhausted")
+                    and self.research_handler is not None
+                ):
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.RESEARCH,
+                        "Рекомендация пока не обоснована, а дневной бюджет ещё доступен — продолжаю широкое исследование.",
+                    )
+                    research_result = await self._safe_call(
+                        self.research_handler,
+                        cycle.state,
+                        {
+                            "objective": "Продолжить широкое обнаружение и проверку перспективных направлений YouTube.",
+                            "missing_data": [
+                                "Расширить широкое покрытие YouTube по новым темам, языкам, регионам и форматам; проверить свежие результаты и не ограничиваться прежними гипотезами."
+                            ],
+                        },
+                    )
+                    research_steps += 1
+                    steps += 1
+                    cycle.state.last_action = "research"
+                    cycle.state.actions_taken += 1
+                    cycle.state.last_result = research_result
+                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                    if research_result is not None:
+                        understanding = research_result
+                    continue
+
                 self._set_phase(
                     cycle,
                     DirectorPhase.SLEEP,

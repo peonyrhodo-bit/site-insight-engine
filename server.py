@@ -21,6 +21,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -2079,6 +2080,21 @@ class DataAdapter:
                         observations
                     )
 
+                    quota_timezone = ZoneInfo("America/Los_Angeles")
+                    quota_today = datetime.now(quota_timezone).date()
+
+                    def query_counts_toward_today(query: Any) -> bool:
+                        created_at = str(getattr(query, "created_at", "") or "")
+                        if not created_at:
+                            return False
+                        try:
+                            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            return created.astimezone(quota_timezone).date() == quota_today
+                        except (TypeError, ValueError):
+                            return False
+
                     # Expose DATA inventory explicitly so Director can
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
@@ -2100,12 +2116,12 @@ class DataAdapter:
                             "youtube_other_units_today": sum(
                                 max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)
                                 for query in self.youtube_registry.queries()
-                                if str(getattr(query, "created_at", "") or "")[:10] == datetime.now(timezone.utc).date().isoformat()
+                                if query_counts_toward_today(query)
                             ),
                             "youtube_search_calls_today": sum(
                                 max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("search_calls", 0) or 0), 0)
                                 for query in self.youtube_registry.queries()
-                                if str(getattr(query, "created_at", "") or "")[:10] == datetime.now(timezone.utc).date().isoformat()
+                                if query_counts_toward_today(query)
                             ),
                             "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
                             "relation_count": len(self.relations.all()) if self.relations is not None and hasattr(self.relations, "all") else 0,

@@ -2261,8 +2261,8 @@ class Director:
                 {
                     "id": "use_daily_quota",
                     "task": "Продолжать полезные исследования, пока хватает измеряемого дневного бюджета и доступен MCP.",
-                    "status": "required" if quota_remaining >= estimated_cost and search_remaining >= 1 else "blocked",
-                    "reason": f"search_calls_remaining={search_remaining}; other_units_remaining={quota_remaining}",
+                    "status": "required" if quota_remaining >= estimated_cost and search_remaining >= 1 and self.context.metadata.get("capabilities", {}).get("connected_services", {}).get("research", False) else "blocked",
+                    "reason": f"search_calls_remaining={search_remaining}; other_units_remaining={quota_remaining}; research_service={self.context.metadata.get('capabilities', {}).get('connected_services', {}).get('research', False)}",
                 },
             ],
         }

@@ -525,6 +525,20 @@ class DirectorAutonomy:
             # RESEARCH DECISION
             # -----------------------------------------------------
             if decision_type == "research":
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                if remaining_units < 101:
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.WAIT,
+                        "По измеряемому остатку бюджета YouTube API новый поиск сегодня недоступен.",
+                    )
+                    cycle.status = CycleStatus.WAITING
+                    cycle.state.status = CycleStatus.WAITING
+                    cycle.state.sleep_reason = "youtube_quota_exhausted_or_insufficient"
+                    break
+
                 decision_metadata = (
                     decision.get("metadata", {})
                     if isinstance(decision, dict)

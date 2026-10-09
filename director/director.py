@@ -1962,7 +1962,7 @@ class Director:
 
         return {
             "evidence_available": state.evidence_available,
-            "context": context.to_dict(),
+            "context": context.to_analysis_dict(),
             "wake_snapshot": wake_snapshot,
         }
 

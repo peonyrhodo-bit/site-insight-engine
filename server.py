@@ -21,6 +21,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -2052,6 +2053,13 @@ class DataAdapter:
                                 )
                             )
 
+                            captured_at = (
+                                getattr(snapshot, "captured_at", None)
+                                if not isinstance(snapshot, dict)
+                                else snapshot.get("captured_at")
+                            )
+                            if captured_at:
+                                observation["snapshot_captured_at"] = str(captured_at)
                             if isinstance(
                                 metrics,
                                 dict,
@@ -2072,6 +2080,21 @@ class DataAdapter:
                         observations
                     )
 
+                    quota_timezone = ZoneInfo("America/Los_Angeles")
+                    quota_today = datetime.now(quota_timezone).date()
+
+                    def query_counts_toward_today(query: Any) -> bool:
+                        created_at = str(getattr(query, "created_at", "") or "")
+                        if not created_at:
+                            return False
+                        try:
+                            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            return created.astimezone(quota_timezone).date() == quota_today
+                        except (TypeError, ValueError):
+                            return False
+
                     # Expose DATA inventory explicitly so Director can
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
@@ -2085,6 +2108,20 @@ class DataAdapter:
                             ),
                             "query_count": len(
                                 self.youtube_registry.queries()
+                            ),
+                            "latest_snapshot_at": max(
+                                (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
+                                default=None,
+                            ),
+                            "youtube_other_units_today": sum(
+                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)
+                                for query in self.youtube_registry.queries()
+                                if query_counts_toward_today(query)
+                            ),
+                            "youtube_search_calls_today": sum(
+                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("search_calls", 0) or 0), 0)
+                                for query in self.youtube_registry.queries()
+                                if query_counts_toward_today(query)
                             ),
                             "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
                             "relation_count": len(self.relations.all()) if self.relations is not None and hasattr(self.relations, "all") else 0,
@@ -3912,14 +3949,32 @@ async def director_debug(
         project_id=project_id,
     )
 
+    context = director.context
+    inventory = context.metadata.get("data_inventory", {})
+    project_state = context.metadata.get("project_state", {})
     return {
         "project_id": project_id,
-        "director": serialize(
-            director.status()
-        ),
-        "context": serialize(
-            director.context,
-        ),
+        "director": serialize(director.status()),
+        # Diagnostic endpoints should show the facts used for decisions,
+        # not serialize thousands of full video records into one response.
+        "context": serialize({
+            "project_id": context.project_id,
+            "objective": context.objective,
+            "observation_count": len(context.observations),
+            "research_history_count": len(context.research_history),
+            "decision_count": len(context.decisions),
+            "recommendation_count": len(context.recommendations),
+            "opportunity_count": len(context.opportunities),
+            "topic_keys": list(context.topics.keys())[:30] if isinstance(context.topics, dict) else [],
+            "analytics_keys": list(context.analytics.keys())[:30] if isinstance(context.analytics, dict) else [],
+            "missing_data": list(context.missing_data),
+            "available_actions": list(context.available_actions),
+            "data_inventory": inventory,
+            "project_state": project_state,
+        }),
+        "wake_snapshot": serialize(director.state.metadata.get("wake_snapshot", {})),
+        "project_assessment": serialize(director.state.metadata.get("project_assessment", {})),
+        "current_work_plan": serialize(director.state.metadata.get("work_plan", {})),
         "runtime": {
             "memory": runtime.memory.enabled,
             "ai": runtime.ai.enabled,

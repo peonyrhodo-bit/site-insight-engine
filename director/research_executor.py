@@ -143,106 +143,125 @@ class YouTubeResearchExecutor:
             research_manager.add(research)
 
         collected_queries: list[YouTubeQuery] = []
+        channels: list[YouTubeChannel] = []
         successful_queries = 0
         failed_queries = 0
         errors: list[str] = []
 
         try:
             async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-
-                for index, planned_query in enumerate(plan.queries):
-                    text = str(getattr(planned_query, "query", "") or "").strip()
-                    if not text:
-                        continue
-
-                    query_id = f"{plan.research_id}_q_{index + 1}"
-                    query = YouTubeQuery(
-                        query_id=query_id,
-                        text=text,
-                        language=getattr(planned_query, "language", None),
-                        region=getattr(planned_query, "region_code", None),
-                        source="director",
-                        status="running",
-                        metadata={
-                            "research_id": plan.research_id,
-                            "purpose": getattr(planned_query, "purpose", ""),
-                            "priority": str(getattr(planned_query, "priority", "medium")),
-                        },
-                    )
-                    registry.add_query(query)
-                    collected_queries.append(query)
-                    research.add_query(query)
-
-                    # A Research -> Query relation exists even when the
-                    # query returns zero videos. It describes the research
-                    # operation itself, not the search result.
-                    if relations is not None:
-                        relations.link_research_query(research, query)
-
-                    try:
-                        result = await session.call_tool(
-                            "search_videos",
-                            {
-                                "query": text,
-                                "max_results": int(getattr(planned_query, "max_results", 25) or 25),
-                                "region_code": getattr(planned_query, "region_code", None),
-                                "relevance_language": getattr(planned_query, "language", None),
-                                "order": "relevance",
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+    
+                    for index, planned_query in enumerate(plan.queries):
+                        text = str(getattr(planned_query, "query", "") or "").strip()
+                        if not text:
+                            continue
+    
+                        query_id = f"{plan.research_id}_q_{index + 1}"
+                        query = YouTubeQuery(
+                            query_id=query_id,
+                            text=text,
+                            language=getattr(planned_query, "language", None),
+                            region=getattr(planned_query, "region_code", None),
+                            source="director",
+                            status="running",
+                            metadata={
+                                "research_id": plan.research_id,
+                                "purpose": getattr(planned_query, "purpose", ""),
+                                "priority": str(getattr(planned_query, "priority", "medium")),
+                                "quota": {"search_calls": 1, "other_units": 1, "estimated": True},
                             },
                         )
-                        payload = _tool_payload(result)
-                        if "items" not in payload or not isinstance(payload.get("items"), list):
-                            raise ValueError(
-                                "youtube_mcp_invalid_response: expected 'items' list"
+                        registry.add_query(query)
+                        collected_queries.append(query)
+                        research.add_query(query)
+    
+                        # A Research -> Query relation exists even when the
+                        # query returns zero videos. It describes the research
+                        # operation itself, not the search result.
+                        if relations is not None:
+                            relations.link_research_query(research, query)
+    
+                        try:
+                            result = await session.call_tool(
+                                "search_videos",
+                                {
+                                    "query": text,
+                                    "max_results": int(getattr(planned_query, "max_results", 25) or 25),
+                                    "region_code": getattr(planned_query, "region_code", None),
+                                    "relevance_language": getattr(planned_query, "language", None),
+                                    "order": "relevance",
+                                },
                             )
-                        items = payload["items"]
-
-                        for item in items:
-                            if not isinstance(item, dict):
-                                continue
-
-                            raw_id = (
-                                item.get("id", {}).get("videoId")
-                                if isinstance(item.get("id"), dict)
-                                else item.get("video_id")
+                            payload = _tool_payload(result)
+                            quota_report = payload.get("_quota", {}) if isinstance(payload, dict) else {}
+                            try:
+                                other_units = int(quota_report.get("other_units", 1 if payload.get("items") else 0))
+                            except (TypeError, ValueError):
+                                other_units = 1 if payload.get("items") else 0
+                            query.metadata["quota"] = {
+                                "search_calls": int(quota_report.get("search_calls", 1) or 1),
+                                "other_units": max(other_units, 0),
+                                "search_list_calls": int(quota_report.get("search_list_calls", 1) or 0),
+                                "videos_list_calls": int(quota_report.get("videos_list_calls", 1) or 0),
+                                "estimated": "_quota" not in payload,
+                            }
+                            logger.info(
+                                "YOUTUBE QUOTA USAGE: research_id=%s query_id=%s search=%r search_calls=%s other_units=%s report=%s",
+                                plan.research_id, query.query_id, text,
+                                query.metadata["quota"]["search_calls"],
+                                query.metadata["quota"]["other_units"], query.metadata["quota"],
                             )
-                            if not raw_id:
-                                raw_id = item.get("youtube_id") or item.get("id")
-                            if not raw_id:
-                                continue
-
-                            video = video_from_mapping(
-                                item,
-                                video_id=str(raw_id),
-                                source="youtube-mcp",
-                            )
-                            video = registry.add_video(video)
-                            research.add_video(video)
-
-                            snapshot = snapshot_from_mapping(
-                                item,
-                                snapshot_id=f"{plan.research_id}_s_{uuid4().hex[:12]}",
-                                video_id=video.video_id,
-                                research_id=plan.research_id,
-                                query_ids=[query.query_id],
-                                source="youtube-mcp",
-                            )
-                            registry.add_snapshot(snapshot)
-                            research.add_snapshot(snapshot)
-
-                            if relations is not None:
-                                relations.link_query_video(query, video)
-                                relations.link_research_video(research, video)
-                                relations.link_research_snapshot(research, snapshot)
-                                relations.link_video_snapshot(video, snapshot)
-
-                            snippet = item.get("snippet") or {}
-                            channel_id = snippet.get("channelId") or video.channel_id
-                            if channel_id and opportunity_registry is not None:
-                                opportunity_registry.add_channel(
-                                    YouTubeChannel(
+                            if "items" not in payload or not isinstance(payload.get("items"), list):
+                                raise ValueError(
+                                    "youtube_mcp_invalid_response: expected 'items' list"
+                                )
+                            items = payload["items"]
+    
+                            for item in items:
+                                if not isinstance(item, dict):
+                                    continue
+    
+                                raw_id = (
+                                    item.get("id", {}).get("videoId")
+                                    if isinstance(item.get("id"), dict)
+                                    else item.get("video_id")
+                                )
+                                if not raw_id:
+                                    raw_id = item.get("youtube_id") or item.get("id")
+                                if not raw_id:
+                                    continue
+    
+                                video = video_from_mapping(
+                                    item,
+                                    video_id=str(raw_id),
+                                    source="youtube-mcp",
+                                )
+                                video = registry.add_video(video)
+                                research.add_video(video)
+    
+                                snapshot = snapshot_from_mapping(
+                                    item,
+                                    snapshot_id=f"{plan.research_id}_s_{uuid4().hex[:12]}",
+                                    video_id=video.video_id,
+                                    research_id=plan.research_id,
+                                    query_ids=[query.query_id],
+                                    source="youtube-mcp",
+                                )
+                                registry.add_snapshot(snapshot)
+                                research.add_snapshot(snapshot)
+    
+                                if relations is not None:
+                                    relations.link_query_video(query, video)
+                                    relations.link_research_video(research, video)
+                                    relations.link_research_snapshot(research, snapshot)
+                                    relations.link_video_snapshot(video, snapshot)
+    
+                                snippet = item.get("snippet") or {}
+                                channel_id = snippet.get("channelId") or video.channel_id
+                                if channel_id and opportunity_registry is not None:
+                                    channel = YouTubeChannel(
                                         channel_id=str(channel_id),
                                         title=str(
                                             snippet.get("channelTitle")
@@ -254,16 +273,17 @@ class YouTubeResearchExecutor:
                                             "last_research_id": plan.research_id,
                                         },
                                     )
-                                )
-
-                        query.status = "completed"
-                        successful_queries += 1
-
-                    except Exception as exc:
-                        query.status = "failed"
-                        failed_queries += 1
-                        errors.append(f"{text}: {type(exc).__name__}: {exc}")
-
+                                    opportunity_registry.add_channel(channel)
+                                    channels.append(channel)
+    
+                            query.status = "completed"
+                            successful_queries += 1
+    
+                        except Exception as exc:
+                            query.status = "failed"
+                            failed_queries += 1
+                            errors.append(f"{text}: {type(exc).__name__}: {exc}")
+    
         except Exception as exc:
             details = _mcp_error_details(exc)
             logger.error(
@@ -405,6 +425,10 @@ class YouTubeResearchExecutor:
             "completeness": research.completeness,
             "research": research.to_dict(),
             "errors": errors,
+            "quota": {
+                "search_calls": sum(int((query.metadata.get("quota") or {}).get("search_calls", 0) or 0) for query in collected_queries),
+                "other_units": sum(int((query.metadata.get("quota") or {}).get("other_units", 0) or 0) for query in collected_queries),
+            },
             "source": "youtube-mcp",
             "mcp_url": mcp_url,
             "completed_at": _now(),

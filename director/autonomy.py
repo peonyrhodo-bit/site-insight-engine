@@ -94,8 +94,8 @@ class CycleEvent:
 @dataclass
 class AutonomyConfig:
     enabled: bool = False
-    max_steps_per_cycle: int = 16
-    max_research_steps: int = 2
+    max_steps_per_cycle: int = 32
+    max_research_steps: int = 10
     max_action_steps: int = 3
     allow_external_actions: bool = False
     sleep_after_recommendation: bool = True
@@ -254,6 +254,9 @@ class DirectorAutonomy:
         cycle.state.metadata["completed_task_keys"] = []
         cycle.state.metadata.pop("research_task_exhausted", None)
         cycle.state.metadata.pop("analyze_available_evidence", None)
+        # A new wake must never display the previous wake's assessment as current.
+        for key in ("wake_snapshot", "project_assessment", "work_plan", "selected_work_plan_task"):
+            cycle.state.metadata.pop(key, None)
 
         try:
             return await self._run_cycle(cycle)
@@ -282,6 +285,22 @@ class DirectorAutonomy:
         steps = 0
         research_steps = 0
         action_steps = 0
+
+        def research_result_exhausts_task(result: Any) -> bool:
+            """Stop retry loops when research cannot produce a usable attempt."""
+            if not isinstance(result, dict):
+                return True
+            if result.get("duplicate_task"):
+                return True
+            execution = result.get("research_execution")
+            if not isinstance(execution, dict):
+                execution = result
+            status = str(execution.get("status") or "").lower()
+            try:
+                queries_collected = int(execution.get("queries_collected", 0) or 0)
+            except (TypeError, ValueError):
+                queries_collected = 0
+            return status not in {"completed", "partial"} or queries_collected <= 0
 
         # ---------------------------------------------------------
         # WAKE
@@ -429,7 +448,7 @@ class DirectorAutonomy:
 
                     if research_result is not None:
                         understanding = research_result
-                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                    if research_result_exhausts_task(research_result):
                         cycle.state.metadata["research_task_exhausted"] = True
 
                     continue
@@ -525,6 +544,21 @@ class DirectorAutonomy:
             # RESEARCH DECISION
             # -----------------------------------------------------
             if decision_type == "research":
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
+                if remaining_units < 1 or remaining_search_calls < 1:
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.WAIT,
+                        "По измеряемому остатку бюджета YouTube API новый поиск сегодня недоступен.",
+                    )
+                    cycle.status = CycleStatus.WAITING
+                    cycle.state.status = CycleStatus.WAITING
+                    cycle.state.sleep_reason = "youtube_quota_exhausted_or_insufficient"
+                    break
+
                 decision_metadata = (
                     decision.get("metadata", {})
                     if isinstance(decision, dict)
@@ -560,7 +594,9 @@ class DirectorAutonomy:
                 cycle.state.last_result = research_result
                 if isinstance(research_result, dict):
                     research_key = research_result.get("task_key")
-                    if research_key:
+                    research_status = str(research_result.get("research_execution", {}).get("status", research_result.get("status", ""))).lower()
+                    research_queries = int(research_result.get("research_execution", {}).get("queries_collected", 0) or 0)
+                    if research_key and research_status in {"completed", "partial"} and research_queries > 0:
                         completed = cycle.state.metadata.setdefault("completed_task_keys", [])
                         if research_key not in completed:
                             completed.append(research_key)
@@ -583,6 +619,43 @@ class DirectorAutonomy:
                 "none",
                 None,
             }:
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
+                if (
+                    remaining_units >= 1
+                    and remaining_search_calls >= 1
+                    and research_steps < self.config.max_research_steps
+                    and not cycle.state.metadata.get("research_task_exhausted")
+                    and self.research_handler is not None
+                ):
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.RESEARCH,
+                        "Рекомендация пока не обоснована, а дневной бюджет ещё доступен — продолжаю широкое исследование.",
+                    )
+                    research_result = await self._safe_call(
+                        self.research_handler,
+                        cycle.state,
+                        {
+                            "objective": "Продолжить широкое обнаружение и проверку перспективных направлений YouTube.",
+                            "missing_data": [
+                                "Расширить широкое покрытие YouTube по новым темам, языкам, регионам и форматам; проверить свежие результаты и не ограничиваться прежними гипотезами."
+                            ],
+                        },
+                    )
+                    research_steps += 1
+                    steps += 1
+                    cycle.state.last_action = "research"
+                    cycle.state.actions_taken += 1
+                    cycle.state.last_result = research_result
+                    if research_result_exhausts_task(research_result):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                    if research_result is not None:
+                        understanding = research_result
+                    continue
+
                 self._set_phase(
                     cycle,
                     DirectorPhase.SLEEP,
@@ -606,6 +679,43 @@ class DirectorAutonomy:
                 "publish",
                 "ask_user",
             }:
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
+                if (
+                    remaining_units >= 1
+                    and remaining_search_calls >= 1
+                    and research_steps < self.config.max_research_steps
+                    and not cycle.state.metadata.get("research_task_exhausted")
+                    and self.research_handler is not None
+                ):
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.RESEARCH,
+                        "Есть кандидат на рекомендацию, но дневной бюджет позволяет собрать дополнительные независимые доказательства — продолжаю проверку.",
+                    )
+                    research_result = await self._safe_call(
+                        self.research_handler,
+                        cycle.state,
+                        {
+                            "objective": "Проверить текущие гипотезы дополнительными данными и продолжить широкое исследование YouTube.",
+                            "missing_data": [
+                                "Продолжить широкое покрытие и собрать независимые подтверждающие или опровергающие данные для текущих гипотез."
+                            ],
+                        },
+                    )
+                    research_steps += 1
+                    steps += 1
+                    cycle.state.last_action = "research"
+                    cycle.state.actions_taken += 1
+                    cycle.state.last_result = research_result
+                    if research_result_exhausts_task(research_result):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                    if research_result is not None:
+                        understanding = research_result
+                    continue
+
                 self._set_phase(
                     cycle,
                     DirectorPhase.RECOMMEND,

@@ -3949,20 +3949,32 @@ async def director_debug(
         project_id=project_id,
     )
 
+    context = director.context
+    inventory = context.metadata.get("data_inventory", {})
+    project_state = context.metadata.get("project_state", {})
     return {
         "project_id": project_id,
-        "director": serialize(
-            director.status()
-        ),
-        "context": serialize(
-            director.context,
-        ),
-        "project_assessment": serialize(
-            director.state.metadata.get("project_assessment", {})
-        ),
-        "current_work_plan": serialize(
-            director.state.metadata.get("work_plan", {})
-        ),
+        "director": serialize(director.status()),
+        # Diagnostic endpoints should show the facts used for decisions,
+        # not serialize thousands of full video records into one response.
+        "context": serialize({
+            "project_id": context.project_id,
+            "objective": context.objective,
+            "observation_count": len(context.observations),
+            "research_history_count": len(context.research_history),
+            "decision_count": len(context.decisions),
+            "recommendation_count": len(context.recommendations),
+            "opportunity_count": len(context.opportunities),
+            "topic_keys": list(context.topics.keys())[:30] if isinstance(context.topics, dict) else [],
+            "analytics_keys": list(context.analytics.keys())[:30] if isinstance(context.analytics, dict) else [],
+            "missing_data": list(context.missing_data),
+            "available_actions": list(context.available_actions),
+            "data_inventory": inventory,
+            "project_state": project_state,
+        }),
+        "wake_snapshot": serialize(director.state.metadata.get("wake_snapshot", {})),
+        "project_assessment": serialize(director.state.metadata.get("project_assessment", {})),
+        "current_work_plan": serialize(director.state.metadata.get("work_plan", {})),
         "runtime": {
             "memory": runtime.memory.enabled,
             "ai": runtime.ai.enabled,

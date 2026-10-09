@@ -94,8 +94,8 @@ class CycleEvent:
 @dataclass
 class AutonomyConfig:
     enabled: bool = False
-    max_steps_per_cycle: int = 16
-    max_research_steps: int = 2
+    max_steps_per_cycle: int = 32
+    max_research_steps: int = 10
     max_action_steps: int = 3
     allow_external_actions: bool = False
     sleep_after_recommendation: bool = True
@@ -643,6 +643,41 @@ class DirectorAutonomy:
                 "publish",
                 "ask_user",
             }:
+                assessment_state = cycle.state.metadata.get("project_assessment", {})
+                quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
+                remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                if (
+                    remaining_units >= 101
+                    and research_steps < self.config.max_research_steps
+                    and not cycle.state.metadata.get("research_task_exhausted")
+                    and self.research_handler is not None
+                ):
+                    self._set_phase(
+                        cycle,
+                        DirectorPhase.RESEARCH,
+                        "Есть кандидат на рекомендацию, но дневной бюджет позволяет собрать дополнительные независимые доказательства — продолжаю проверку.",
+                    )
+                    research_result = await self._safe_call(
+                        self.research_handler,
+                        cycle.state,
+                        {
+                            "objective": "Проверить текущие гипотезы дополнительными данными и продолжить широкое исследование YouTube.",
+                            "missing_data": [
+                                "Продолжить широкое покрытие и собрать независимые подтверждающие или опровергающие данные для текущих гипотез."
+                            ],
+                        },
+                    )
+                    research_steps += 1
+                    steps += 1
+                    cycle.state.last_action = "research"
+                    cycle.state.actions_taken += 1
+                    cycle.state.last_result = research_result
+                    if isinstance(research_result, dict) and research_result.get("duplicate_task"):
+                        cycle.state.metadata["research_task_exhausted"] = True
+                    if research_result is not None:
+                        understanding = research_result
+                    continue
+
                 self._set_phase(
                     cycle,
                     DirectorPhase.RECOMMEND,

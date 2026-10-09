@@ -560,7 +560,9 @@ class DirectorAutonomy:
                 cycle.state.last_result = research_result
                 if isinstance(research_result, dict):
                     research_key = research_result.get("task_key")
-                    if research_key:
+                    research_status = str(research_result.get("research_execution", {}).get("status", research_result.get("status", ""))).lower()
+                    research_queries = int(research_result.get("research_execution", {}).get("queries_collected", 0) or 0)
+                    if research_key and research_status in {"completed", "partial"} and research_queries > 0:
                         completed = cycle.state.metadata.setdefault("completed_task_keys", [])
                         if research_key not in completed:
                             completed.append(research_key)

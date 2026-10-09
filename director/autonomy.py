@@ -254,6 +254,9 @@ class DirectorAutonomy:
         cycle.state.metadata["completed_task_keys"] = []
         cycle.state.metadata.pop("research_task_exhausted", None)
         cycle.state.metadata.pop("analyze_available_evidence", None)
+        # A new wake must never display the previous wake's assessment as current.
+        for key in ("wake_snapshot", "project_assessment", "work_plan", "selected_work_plan_task"):
+            cycle.state.metadata.pop(key, None)
 
         try:
             return await self._run_cycle(cycle)

@@ -3941,6 +3941,12 @@ async def director_debug(
         "context": serialize(
             director.context,
         ),
+        "project_assessment": serialize(
+            director.state.metadata.get("project_assessment", {})
+        ),
+        "current_work_plan": serialize(
+            director.state.metadata.get("work_plan", {})
+        ),
         "runtime": {
             "memory": runtime.memory.enabled,
             "ai": runtime.ai.enabled,

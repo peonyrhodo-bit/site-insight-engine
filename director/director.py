@@ -2202,6 +2202,8 @@ class Director:
                 "freshness": freshness,
                 "coverage": coverage,
                 "hypothesis_status": hypothesis_status,
+                "hypothesis": self.context.metadata.get("current_hypothesis", {}),
+                "recent_research": self.context.research_history[-8:],
                 "quota": quota,
                 "missing_data": list(dict.fromkeys(missing)),
             },

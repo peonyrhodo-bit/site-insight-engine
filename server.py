@@ -2097,8 +2097,8 @@ class DataAdapter:
                                 (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
                                 default=None,
                             ),
-                            "youtube_quota_units_today": sum(
-                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("quota_units", 0) or 0), 0)
+                            "youtube_other_units_today": sum(
+                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)
                                 for query in self.youtube_registry.queries()
                                 if str(getattr(query, "created_at", "") or "")[:10] == datetime.now(timezone.utc).date().isoformat()
                             ),

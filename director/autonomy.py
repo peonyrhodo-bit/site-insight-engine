@@ -528,7 +528,8 @@ class DirectorAutonomy:
                 assessment_state = cycle.state.metadata.get("project_assessment", {})
                 quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
                 remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
-                if remaining_units < 101:
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
+                if remaining_units < 1 or remaining_search_calls < 1:
                     self._set_phase(
                         cycle,
                         DirectorPhase.WAIT,
@@ -602,8 +603,10 @@ class DirectorAutonomy:
                 assessment_state = cycle.state.metadata.get("project_assessment", {})
                 quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
                 remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
                 if (
-                    remaining_units >= 101
+                    remaining_units >= 1
+                    and remaining_search_calls >= 1
                     and research_steps < self.config.max_research_steps
                     and not cycle.state.metadata.get("research_task_exhausted")
                     and self.research_handler is not None
@@ -660,8 +663,10 @@ class DirectorAutonomy:
                 assessment_state = cycle.state.metadata.get("project_assessment", {})
                 quota_state = assessment_state.get("quota", {}) if isinstance(assessment_state, dict) else {}
                 remaining_units = int(quota_state.get("remaining_units_today", 0) or 0)
+                remaining_search_calls = int(quota_state.get("search_calls_remaining", 0) or 0)
                 if (
-                    remaining_units >= 101
+                    remaining_units >= 1
+                    and remaining_search_calls >= 1
                     and research_steps < self.config.max_research_steps
                     and not cycle.state.metadata.get("research_task_exhausted")
                     and self.research_handler is not None

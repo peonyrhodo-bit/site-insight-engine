@@ -2243,7 +2243,7 @@ class Director:
                 {
                     "id": "discover_broadly",
                     "task": "Искать новые направления широко — по разным темам, языкам, регионам и форматам, а не только проверять прежние гипотезы.",
-                    "status": "required" if coverage.get("stored_search_queries", 0) == 0 or freshness_status != "fresh" else "next",
+                    "status": "required" if coverage.get("stored_search_queries", 0) < 12 else "next",
                     "reason": "Сопоставить новые поисковые результаты с текущей базой.",
                 },
                 {

@@ -117,6 +117,34 @@ class DirectorContext:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def to_analysis_dict(self) -> dict[str, Any]:
+        """Return a read-only context view without deep-copying large evidence sets.
+
+        Analytics and AI only inspect this context. dataclasses.asdict() recursively
+        copies every video/snapshot and can temporarily multiply memory use enough
+        to exceed small worker limits. Keep the same field shape but reuse existing
+        collections; consumers of this view must not mutate them.
+        """
+        return {
+            "project_id": self.project_id,
+            "objective": self.objective,
+            "channels": self.channels,
+            "strategies": self.strategies,
+            "observations": self.observations,
+            "analytics": self.analytics,
+            "topics": self.topics,
+            "opportunities": self.opportunities,
+            "research_history": self.research_history,
+            "decisions": self.decisions,
+            "recommendations": self.recommendations,
+            "feedback": self.feedback,
+            "constraints": self.constraints,
+            "resources": self.resources,
+            "available_actions": self.available_actions,
+            "missing_data": self.missing_data,
+            "metadata": self.metadata,
+        }
+
 
 @dataclass
 class DirectorResult:
@@ -616,7 +644,7 @@ class Director:
 
             if analyzer:
                 external = analyzer(
-                    context=self.context.to_dict()
+                    context=self.context.to_analysis_dict()
                 )
 
                 if hasattr(external, "__await__"):
@@ -1081,7 +1109,7 @@ class Director:
                     "decision": decision.to_dict(),
                     "analysis": analysis,
                     "director_context": (
-                        self.context.to_dict()
+                        self.context.to_analysis_dict()
                     ),
                 }
             )

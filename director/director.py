@@ -2235,6 +2235,7 @@ class Director:
                 },
             ],
         }
+        work_plan["wake_snapshot"] = state.metadata.get("wake_snapshot", {})
         state.metadata["project_assessment"] = work_plan["basis"]
         state.metadata["work_plan"] = work_plan
         logger.info("DIRECTOR PROJECT ASSESSMENT: %s", json.dumps(work_plan["basis"], ensure_ascii=False, default=str))

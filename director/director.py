@@ -2238,6 +2238,8 @@ class Director:
                 },
             ],
         }
+        work_plan["execution_order"] = [task["id"] for task in work_plan["tasks"] if task.get("status") == "required"]
+        work_plan["blockers"] = [{"task_id": task["id"], "reason": task.get("reason", "")} for task in work_plan["tasks"] if task.get("status") == "blocked"]
         work_plan["wake_snapshot"] = state.metadata.get("wake_snapshot", {})
         state.metadata["project_assessment"] = work_plan["basis"]
         state.metadata["work_plan"] = work_plan

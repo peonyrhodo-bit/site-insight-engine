@@ -2952,6 +2952,14 @@ async def director_autonomous_run(
     project_id: str = DEFAULT_PROJECT_ID,
     objective: str | None = None,
 ) -> dict[str, Any]:
+    # Keep manual autonomous execution consistent with /director/wakeup.
+    # A disabled autonomous mode must not consume API quota or mutate memory.
+    if not AUTONOMOUS_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Автономный режим отключён.",
+        )
+
     try:
         return await _execute_autonomous_cycle(
             project_id=project_id,

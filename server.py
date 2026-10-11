@@ -2858,93 +2858,125 @@ async def _execute_autonomous_cycle(
     project_id: str,
     objective: str | None = None,
 ) -> dict[str, Any]:
-    """Run one autonomous Director cycle and persist its complete result."""
-    director = runtime.get_director(
-        project_id=project_id,
-        mode=DirectorMode.AUTONOMOUS,
-    )
-
-    if objective:
-        director.context.objective = objective
-
-    result = await call_maybe_async(
-        director.run_autonomous_cycle,
-        objective=objective,
-    )
-
-    serialized = serialize(result)
-
-    # Persist the autonomous run first so all outputs share one run_id.
-    run_id = await runtime.memory.save_run(
+    """Run one autonomous Director cycle with a durable lifecycle record."""
+    started_at = utc_now()
+    run_id = await runtime.memory.create_run(
         project_id=project_id,
         run={
             "type": "autonomous_cycle",
-            "created_at": utc_now(),
-            "result": serialized,
+            "status": "requested",
+            "started_at": started_at,
+            "finished_at": None,
+            "current_step": "registered",
+            "error_message": None,
+            "created_at": started_at,
+            "updated_at": started_at,
+            "result": None,
         },
     )
-
-    decision = getattr(
-        director.last_result,
-        "decision",
-        None,
-    )
-
-    decision_db_id = None
-
-    if decision is not None:
-        decision_db_id = await runtime.memory.save_decision(
+    cycle_completed = False
+    current_step = "initializing"
+    try:
+        await runtime.memory.update_run(
+            run_id, project_id=project_id,
+            fields={"status": "running", "current_step": current_step},
+        )
+        director = runtime.get_director(
             project_id=project_id,
-            decision=decision,
-            run_id=run_id,
+            mode=DirectorMode.AUTONOMOUS,
+        )
+        if objective:
+            director.context.objective = objective
+
+        current_step = "director_cycle"
+        await runtime.memory.update_run(
+            run_id, project_id=project_id,
+            fields={"status": "running", "current_step": current_step},
+        )
+        result = await call_maybe_async(
+            director.run_autonomous_cycle,
+            objective=objective,
+        )
+        cycle_completed = True
+        serialized = serialize(result)
+        if not isinstance(serialized, dict):
+            serialized = {"value": serialized}
+        serialized["run_id"] = run_id
+
+        current_step = "persisting_result"
+        await runtime.memory.update_run(
+            run_id, project_id=project_id,
+            fields={"status": "partial", "current_step": current_step, "result": serialized},
         )
 
-    recommendation = getattr(
-        director.last_result,
-        "recommendation",
-        None,
-    )
+        decision = getattr(director.last_result, "decision", None)
+        decision_db_id = None
+        if decision is not None:
+            decision_db_id = await runtime.memory.save_decision(
+                project_id=project_id, decision=decision, run_id=run_id,
+            )
 
-    recommendation_db_id = None
-
-    if recommendation is not None:
-        recommendation_db_id = (
-            await runtime.memory.save_recommendation(
+        recommendation = getattr(director.last_result, "recommendation", None)
+        recommendation_db_id = None
+        if recommendation is not None:
+            recommendation_db_id = await runtime.memory.save_recommendation(
                 project_id=project_id,
                 recommendation=recommendation,
                 decision_db_id=decision_db_id,
                 run_id=run_id,
             )
+
+        result_db_id = await runtime.memory.save_result(
+            project_id=project_id,
+            result={
+                "type": "autonomous_cycle",
+                "summary": str(serialized.get("message") or ""),
+                "result": serialized,
+            },
+            run_id=run_id,
+            decision_db_id=decision_db_id,
+            recommendation_db_id=recommendation_db_id,
+        )
+        await runtime.memory.save_event(
+            project_id=project_id,
+            event_type="director_autonomous_run",
+            data={
+                "run_id": run_id,
+                "decision_id": decision_db_id,
+                "recommendation_id": recommendation_db_id,
+                "result_id": result_db_id,
+            },
         )
 
-    result_db_id = await runtime.memory.save_result(
-        project_id=project_id,
-        result={
-            "type": "autonomous_cycle",
-            "summary": (
-                serialized.get("message", "")
-                if isinstance(serialized, dict)
-                else ""
-            ),
-            "result": serialized,
-        },
-        run_id=run_id,
-        decision_db_id=decision_db_id,
-        recommendation_db_id=recommendation_db_id,
-    )
+        final_status = str(serialized.get("status") or "succeeded").strip().lower()
+        if final_status not in {"succeeded", "partial", "blocked", "skipped"}:
+            final_status = "succeeded"
+        await runtime.memory.update_run(
+            run_id, project_id=project_id,
+            fields={
+                "status": final_status,
+                "finished_at": utc_now(),
+                "current_step": "completed" if final_status == "succeeded" else final_status,
+                "error_message": None,
+                "result": serialized,
+            },
+        )
+        return serialized
 
-    await runtime.memory.save_event(
-        project_id=project_id,
-        event_type="director_autonomous_run",
-        data={
-            "run_id": run_id,
-            "decision_id": decision_db_id,
-            "recommendation_id": recommendation_db_id,
-            "result_id": result_db_id,
-        },
-    )
-
-    return serialized
+    except Exception as exc:
+        try:
+            await runtime.memory.update_run(
+                run_id, project_id=project_id,
+                fields={
+                    "status": "partial" if cycle_completed else "failed",
+                    "finished_at": utc_now(),
+                    "current_step": current_step,
+                    "error_message": f"{type(exc).__name__}: {exc}"[:2000],
+                },
+            )
+        except Exception:
+            logger.exception("Could not persist Director run failure: run_id=%s", run_id)
+        raise
 
 
 @app.post("/director/autonomous/run")

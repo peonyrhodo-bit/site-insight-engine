@@ -3003,7 +3003,7 @@ async def _execute_autonomous_cycle(
         )
 
         final_status = str(serialized.get("status") or "succeeded").strip().lower()
-        if final_status not in {"succeeded", "partial", "blocked", "skipped"}:
+        if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:
             final_status = "succeeded"
         await runtime.memory.update_run(
             run_id, project_id=project_id,

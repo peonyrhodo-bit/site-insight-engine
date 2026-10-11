@@ -235,4 +235,4 @@ class InMemoryMemoryBackend:
         return {"queries": [], "videos": [], "snapshots": []}
 
     def save_youtube_data(self, *, project_id: str, videos: list[dict[str, Any]] | None = None, snapshots: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        return {"project_id": str(project_id), "videos_saved": 0, "snapshots_saved": 0}
+        return {"videos": 0, "snapshots": 0, "snapshot_ids": []}

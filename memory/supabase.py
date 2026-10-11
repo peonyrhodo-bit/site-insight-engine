@@ -779,7 +779,7 @@ class SupabaseMemoryBackend:
         for field in ("project_id", "status", "started_at", "finished_at", "current_step", "error_message", "updated_at"):
             if field in data:
                 payload[field] = data[field]
-        response = self.client.table(self.TABLE_RUNS).update(payload).eq("id", run_id).execute()
+        response = self.client.table(self.TABLE_RUNS).update(payload).eq("id", run_id).select("id").execute()
         return bool(self._safe_list(response))
 
     def get_recent_runs(

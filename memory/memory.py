@@ -81,6 +81,9 @@ class MemoryBackend(Protocol):
     ) -> int | None:
         ...
 
+    def update_run(self, *, run_id: int, data: dict[str, Any]) -> bool:
+        ...
+
     def get_recent_runs(self, *, limit: int = 10) -> list[dict[str, Any]]:
         ...
 
@@ -422,6 +425,13 @@ class Memory:
             region_code=region_code,
             data=self._dict(data),
         )
+
+    def update_run(self, *, run_id: int, data: dict[str, Any]) -> bool:
+        if not isinstance(run_id, int) or run_id <= 0:
+            raise ValueError("run_id must be a positive integer")
+        if not isinstance(data, dict):
+            raise TypeError("run data must be a dict")
+        return self.backend.update_run(run_id=run_id, data=dict(data))
 
     def get_recent_runs(
         self,

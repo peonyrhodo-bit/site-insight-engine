@@ -961,9 +961,12 @@ class ServerMemory:
                     parsed = parsed.replace(tzinfo=timezone.utc)
             except (TypeError, ValueError):
                 continue
+            old_run_id = old_run.get("id")
+            if old_run_id is None:
+                continue
             if (now - parsed).total_seconds() > 1800:
                 await self.update_run(
-                    int(old_run.get("id")),
+                    int(old_run_id),
                     project_id=project_id,
                     fields={
                         "status": "failed",
@@ -3004,7 +3007,8 @@ async def _execute_autonomous_cycle(
 
         final_status = str(serialized.get("status") or "succeeded").strip().lower()
         if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:
-            final_status = "succeeded"
+            # An unknown Director result state is not proof of success.
+            final_status = "partial"
         await runtime.memory.update_run(
             run_id, project_id=project_id,
             fields={

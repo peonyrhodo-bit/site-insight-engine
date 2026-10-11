@@ -943,6 +943,35 @@ class ServerMemory:
     async def create_run(self, project_id: str, run: dict[str, Any]) -> int:
         if not self.memory:
             raise RuntimeError("Director run storage is unavailable")
+        # Recover stale active records before inserting; this also releases the
+        # database's partial unique index after a process crash.
+        now = datetime.now(timezone.utc)
+        for old_run in self.memory.get_recent_runs(limit=100):
+            if not isinstance(old_run, dict):
+                continue
+            old_data = old_run.get("data_json") if isinstance(old_run.get("data_json"), dict) else {}
+            old_project = old_run.get("project_id") or old_data.get("project_id")
+            old_status = old_run.get("status") or old_data.get("status")
+            stamp = old_run.get("updated_at") or old_data.get("updated_at") or old_data.get("started_at")
+            if str(old_project) != str(project_id) or old_status not in {"requested", "running"} or not stamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if (now - parsed).total_seconds() > 1800:
+                await self.update_run(
+                    int(old_run.get("id")),
+                    project_id=project_id,
+                    fields={
+                        "status": "failed",
+                        "finished_at": utc_now(),
+                        "current_step": "stale_timeout",
+                        "error_message": "Run marked failed after 30 minutes without an update.",
+                    },
+                )
         payload = dict(run)
         payload["project_id"] = project_id
         result = self.memory.save_run(language=payload.get("language"), region_code=payload.get("region_code"), data=payload)

@@ -750,11 +750,15 @@ class SupabaseMemoryBackend:
         region_code: str | None = None,
         data: dict[str, Any] | None = None,
     ) -> int | None:
+        run_data = self._safe_dict(data)
         payload = {
             "language": language,
             "region_code": region_code,
-            "data_json": self._safe_dict(data),
+            "data_json": run_data,
         }
+        for field in ("project_id", "status", "started_at", "finished_at", "current_step", "error_message", "updated_at"):
+            if field in run_data:
+                payload[field] = run_data[field]
 
         response = (
             self.client
@@ -764,6 +768,19 @@ class SupabaseMemoryBackend:
         )
 
         return self._first_id(response)
+
+    def update_run(self, *, run_id: int, data: dict[str, Any]) -> bool:
+        current = self.client.table(self.TABLE_RUNS).select("data_json").eq("id", run_id).limit(1).execute()
+        rows = self._safe_list(current)
+        if not rows:
+            return False
+        merged = {**self._safe_dict(rows[0].get("data_json")), **self._safe_dict(data)}
+        payload: dict[str, Any] = {"data_json": merged}
+        for field in ("project_id", "status", "started_at", "finished_at", "current_step", "error_message", "updated_at"):
+            if field in data:
+                payload[field] = data[field]
+        response = self.client.table(self.TABLE_RUNS).update(payload).eq("id", run_id).execute()
+        return bool(self._safe_list(response))
 
     def get_recent_runs(
         self,

@@ -248,14 +248,31 @@ def save_run(
     region_code: str | None = None,
     data: dict[str, Any] | None = None,
 ) -> int | None:
-    return self._insert(
-        self._runs,
-        {
-            "language": _clean(language),
-            "region_code": _clean(region_code),
-            "data_json": _safe_dict(data),
-        },
-    )
+    run_data = _safe_dict(data)
+    payload = {
+        "language": _clean(language),
+        "region_code": _clean(region_code),
+        "data_json": run_data,
+    }
+    for field in ("project_id", "status", "started_at", "finished_at", "current_step", "error_message", "updated_at"):
+        if field in run_data:
+            payload[field] = run_data[field]
+    return self._insert(self._runs, payload)
+
+def update_run(
+    self,
+    *,
+    run_id: int,
+    data: dict[str, Any],
+) -> bool:
+    for row in self._runs:
+        if row.get("id") == run_id:
+            row["data_json"] = {**_safe_dict(row.get("data_json")), **_safe_dict(data)}
+            for field in ("project_id", "status", "started_at", "finished_at", "current_step", "error_message", "updated_at"):
+                if field in data:
+                    row[field] = data[field]
+            return True
+    return False
 
 def get_recent_runs(
     self,

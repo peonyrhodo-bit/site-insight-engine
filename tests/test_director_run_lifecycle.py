@@ -40,15 +40,16 @@ class FakeMemory:
 
 
 class FakeDirector:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, status="succeeded"):
         self.context = SimpleNamespace(objective=None)
         self.last_result = SimpleNamespace(decision=None, recommendation=None)
         self.fail = fail
+        self.status = status
 
     async def run_autonomous_cycle(self, objective=None):
         if self.fail:
             raise ValueError("cycle failed")
-        return {"status": "succeeded", "message": "ok"}
+        return {"status": self.status, "message": "ok"}
 
 
 @pytest.mark.asyncio
@@ -109,3 +110,39 @@ async def test_repeated_runs_receive_distinct_ids(monkeypatch):
     assert first["run_id"] != second["run_id"]
     assert memory.rows[first["run_id"]]["status"] == "succeeded"
     assert memory.rows[second["run_id"]]["status"] == "succeeded"
+
+
+
+@pytest.mark.asyncio
+async def test_director_initialization_error_is_recorded(monkeypatch):
+    memory = FakeMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+
+    def fail_to_initialize(**kwargs):
+        raise RuntimeError("director initialization failed")
+
+    monkeypatch.setattr(server.runtime, "get_director", fail_to_initialize)
+
+    with pytest.raises(RuntimeError, match="director initialization failed"):
+        await server._execute_autonomous_cycle(project_id="test-project")
+
+    row = memory.rows[1]
+    assert row["status"] == "failed"
+    assert row["current_step"] == "initializing"
+    assert "director initialization failed" in row["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_director_status_is_not_marked_succeeded(monkeypatch):
+    memory = FakeMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime,
+        "get_director",
+        lambda **kwargs: FakeDirector(status="waiting"),
+    )
+
+    result = await server._execute_autonomous_cycle(project_id="test-project")
+
+    assert result["status"] == "waiting"
+    assert memory.rows[result["run_id"]]["status"] == "partial"

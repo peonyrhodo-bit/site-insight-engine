@@ -940,6 +940,31 @@ class ServerMemory:
             logger.exception("Memory save_run failed")
             return None
 
+    async def create_run(self, project_id: str, run: dict[str, Any]) -> int:
+        if not self.memory:
+            raise RuntimeError("Director run storage is unavailable")
+        payload = dict(run)
+        payload["project_id"] = project_id
+        result = self.memory.save_run(language=payload.get("language"), region_code=payload.get("region_code"), data=payload)
+        if hasattr(result, "__await__"):
+            result = await result
+        if result is None:
+            raise RuntimeError("Director run insert returned no id")
+        return int(result)
+
+    async def update_run(self, run_id: int, *, project_id: str, fields: dict[str, Any]) -> bool:
+        if not self.memory:
+            raise RuntimeError("Director run storage is unavailable")
+        payload = dict(fields)
+        payload["project_id"] = project_id
+        payload["updated_at"] = utc_now()
+        result = self.memory.update_run(run_id=run_id, data=payload)
+        if hasattr(result, "__await__"):
+            result = await result
+        if result is not True:
+            raise RuntimeError(f"Director run {run_id} update affected no row")
+        return True
+
     async def save_decision(
         self,
         project_id: str,

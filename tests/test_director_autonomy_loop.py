@@ -67,7 +67,16 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
         async def research(state, payload):
             research_calls.append(1)
             if len(research_calls) == 1:
-                return {"status": "completed", "task_key": "research:same"}
+                # A completed attempt must contain usable evidence; otherwise
+                # the loop correctly treats it as exhausted and won't retry.
+                return {
+                    "status": "completed",
+                    "task_key": "research:same",
+                    "research_execution": {
+                        "status": "completed",
+                        "queries_collected": 1,
+                    },
+                }
             return {
                 "status": "skipped",
                 "duplicate_task": True,
@@ -104,8 +113,23 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cycle.status, CycleStatus.SLEEPING)
 
     async def test_task_ledger_is_reset_for_each_wake(self):
+        metadata_at_first_assessment = []
+
+        async def assess(state, payload):
+            metadata_at_first_assessment.append(dict(state.metadata))
+            return {"evidence_sufficient": True}
+
+        async def analyze(state, payload):
+            return {"opportunities": []}
+
+        async def decide(state, payload):
+            return {"decision_id": "wait-1", "decision_type": "wait", "metadata": {}}
+
         autonomy = DirectorAutonomy(
             config=AutonomyConfig(max_steps_per_cycle=4),
+            assess=assess,
+            analyze=analyze,
+            decide=decide,
         )
         state = DirectorState(metadata={
             "completed_task_keys": ["opportunity:old"],
@@ -114,8 +138,8 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
 
         cycle = await autonomy.run(initial_state=state)
 
-        self.assertEqual(cycle.state.metadata["completed_task_keys"], [])
-        self.assertNotIn("research_task_exhausted", cycle.state.metadata)
+        self.assertEqual(metadata_at_first_assessment[0]["completed_task_keys"], [])
+        self.assertNotIn("research_task_exhausted", metadata_at_first_assessment[0])
 
 
 if __name__ == "__main__":

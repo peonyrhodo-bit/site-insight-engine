@@ -25,6 +25,11 @@ class ReadOnlyRegistry:
         pass
 
 
+class OpportunityRegistry:
+    def counts(self):
+        return {}
+
+
 class StorageSpy:
     def __init__(self):
         self.save_calls = 0
@@ -71,7 +76,7 @@ async def test_get_project_state_loads_persisted_data_only_once_per_project():
     adapter.youtube_registry = ReadOnlyRegistry()
     adapter.research_manager = None
     adapter.relations = None
-    adapter.opportunity_registry = None
+    adapter.opportunity_registry = OpportunityRegistry()
 
     await adapter.get_project_state("test-project")
     await adapter.get_project_state("test-project")

@@ -400,7 +400,10 @@ def plan_from_requirements(
     # Only operations that actually need YouTube text search become
     # ResearchQuery objects. Snapshot/persistence/linking operations are
     # concrete data tasks and must not be sent to YouTube as fake queries.
-    search_operations = {"search_videos", "collect_channels", "collect_niche_evidence"}
+    # This executor currently has a real handler only for video search.
+    # Channel/niche operations remain explicit tasks and must not be disguised
+    # as search_videos calls until their matching MCP handlers are wired.
+    search_operations = {"search_videos"}
 
     def build_search_text(requirement: ResearchRequirement) -> str:
         if topic_values:

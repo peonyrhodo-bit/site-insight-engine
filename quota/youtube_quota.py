@@ -188,7 +188,7 @@ class YouTubeQuotaManager:
                     (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
                 VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)
             """, (
-                datetime.now(timezone.utc).isoformat(), operation, method, max(1, int(units)),
+                datetime.now(timezone.utc).isoformat(), operation, method, bucket, max(1, int(units)),
                 json.dumps(self.get_remaining()),
                 json.dumps(metadata or {}, ensure_ascii=False, default=str),
             )).lastrowid

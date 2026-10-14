@@ -140,8 +140,15 @@ class YouTubeResearchExecutor:
                 languages=languages,
             )
 
-        # Every query is an explicit executable unit. This also covers discovery
-        # queries appended later by Director's quota/discovery policy.
+        self.sync_plan_operations(plan)
+
+        plan.metadata.setdefault("operation_contract_version", 1)
+        plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
+        return plan
+
+    @staticmethod
+    def sync_plan_operations(plan: ResearchPlan) -> ResearchPlan:
+        """Ensure each planned query is represented by an auditable operation."""
         represented = {
             (
                 str(op.inputs.get("query") or "").strip().casefold(),
@@ -150,12 +157,12 @@ class YouTubeResearchExecutor:
             for op in plan.operations
             if op.operation == "search_videos"
         }
-        for index, query in enumerate(plan.queries):
+        for query in plan.queries:
             query_text = str(query.query or "").strip().casefold()
             query_language = str(query.language or "").casefold()
             if any(text == query_text and query_language in langs for text, langs in represented):
                 continue
-            plan.operations.append(ResearchOperation(
+            operation = ResearchOperation(
                 operation_id=f"search_videos_{uuid4().hex[:12]}",
                 operation="search_videos",
                 requirement_key=str((query.metadata or {}).get("requirement_key") or "videos"),
@@ -171,9 +178,9 @@ class YouTubeResearchExecutor:
                 expected_result="video search response and persisted query record",
                 completion_criterion="query response is valid; data outcome is recorded even when zero relevant items are returned",
                 quota_requirements={"bucket": "search", "estimated_calls": 1},
-            ))
-            represented.add(key)
-
+            )
+            plan.operations.append(operation)
+            represented.add((query_text, {query_language}))
         plan.metadata.setdefault("operation_contract_version", 1)
         plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
         return plan

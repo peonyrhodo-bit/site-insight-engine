@@ -625,7 +625,7 @@ class YouTubeResearchExecutor:
 
         if not executable_queries:
             if refresh_summary:
-                operation_results = self._finalize_operations(plan, {
+                operation_results = self._finalize_operations_with_quota(plan, {
                     **refresh_summary,
                     "persisted": bool(refresh_summary.get("refresh_existing_video_stats_persisted")),
                     "errors": list(refresh_summary.get("refresh_existing_video_stats_errors") or []),
@@ -1374,8 +1374,24 @@ class YouTubeResearchExecutor:
         execution_summary["errors"] = errors
         return execution_summary
 
-    def _finalize_operations(self, plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
-        quota_status = self.quota_manager.get_status() if self.quota_manager is not None else None
+    def _finalize_operations_with_quota(
+        self, plan: Any, summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        results = self._finalize_operations(plan, summary)
+        if self.quota_manager is not None:
+            status = self.quota_manager.get_status()
+            for operation in list(getattr(plan, "operations", []) or []):
+                result = getattr(operation, "result", None)
+                if isinstance(result, dict):
+                    result["quota_status"] = status
+            for item in results:
+                result = item.get("result")
+                if isinstance(result, dict):
+                    result["quota_status"] = status
+        return results
+
+    @staticmethod
+    def _finalize_operations(plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
         operations = list(getattr(plan, "operations", []) or [])
         if not operations:
             return []
@@ -1566,8 +1582,6 @@ class YouTubeResearchExecutor:
                 error = f"unknown_operation_type: {name}"
 
             operation.status = status
-            if quota_status is not None:
-                result["quota_status"] = quota_status
             operation.result = result
             operation.error = error
             operation.completed_at = _now()

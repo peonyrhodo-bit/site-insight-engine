@@ -602,59 +602,67 @@ class YouTubeResearchExecutor:
         else:
             research.mark_complete()
 
+        persistence_confirmed = False
         if self.storage is not None:
-            # Persist only objects referenced by this research run. Resolve IDs
-            # through the registry indexes rather than scanning process-wide
-            # history, which grows across cycles.
-            research_videos, research_snapshots = _research_objects_for_persistence(
-                registry, research
-            )
-            await _maybe_await(
-                self.storage.save_youtube_data(
-                    project_id=project_id,
-                    videos=[video.to_dict() for video in research_videos],
-                    snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
+            try:
+                # Persist only objects referenced by this research run. Resolve IDs
+                # through the registry indexes rather than scanning process-wide
+                # history, which grows across cycles.
+                research_videos, research_snapshots = _research_objects_for_persistence(
+                    registry, research
                 )
-            )
-
-            await _maybe_await(
-                self.storage.save_research_data(
-                    project_id=project_id,
-                    queries=[query.to_dict() for query in collected_queries],
-                    research_sets=[research.to_dict()],
-                    relations=[
-                        relation.to_dict()
-                        for relation in current_relation_objects
-                    ],
-                )
-            )
-
-            if opportunity_registry is not None and channels:
-                new_channels = []
-                seen_channel_ids = set()
-                for channel in channels:
-                    channel_id = str(getattr(channel, "channel_id", "") or "")
-                    if not channel_id or channel_id in seen_channel_ids:
-                        continue
-                    seen_channel_ids.add(channel_id)
-                    new_channels.append(channel.to_dict())
-
-                if new_channels:
-                    await _maybe_await(
-                        self.storage.save_opportunity_data(
-                            project_id=project_id,
-                            data={
-                                "channels": new_channels,
-                                "channel_snapshots": [],
-                                "niches": [],
-                                "niche_snapshots": [],
-                            },
-                        )
+                await _maybe_await(
+                    self.storage.save_youtube_data(
+                        project_id=project_id,
+                        videos=[video.to_dict() for video in research_videos],
+                        snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
                     )
+                )
+
+                await _maybe_await(
+                    self.storage.save_research_data(
+                        project_id=project_id,
+                        queries=[query.to_dict() for query in collected_queries],
+                        research_sets=[research.to_dict()],
+                        relations=[
+                            relation.to_dict()
+                            for relation in current_relation_objects
+                        ],
+                    )
+                )
+
+                if opportunity_registry is not None and channels:
+                    new_channels = []
+                    seen_channel_ids = set()
+                    for channel in channels:
+                        channel_id = str(getattr(channel, "channel_id", "") or "")
+                        if not channel_id or channel_id in seen_channel_ids:
+                            continue
+                        seen_channel_ids.add(channel_id)
+                        new_channels.append(channel.to_dict())
+
+                    if new_channels:
+                        await _maybe_await(
+                            self.storage.save_opportunity_data(
+                                project_id=project_id,
+                                data={
+                                    "channels": new_channels,
+                                    "channel_snapshots": [],
+                                    "niches": [],
+                                    "niche_snapshots": [],
+                                },
+                            )
+                        )
+
+                persistence_confirmed = True
+            except Exception as exc:
+                research.mark_partial()
+                errors.append(f"persistence: {type(exc).__name__}: {exc}")
+                logger.exception("Failed to persist research result: research_id=%s", plan.research_id)
 
         execution_summary = {
             "status": research.status,
-            "persisted": self.storage is not None,
+            "persisted": persistence_confirmed,
             "research_id": plan.research_id,
             "queries_planned": len(plan.queries),
             "queries_collected": successful_queries,

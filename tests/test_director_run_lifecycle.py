@@ -287,3 +287,40 @@ async def test_unique_constraint_race_is_reported_as_active_cycle():
 
     assert isinstance(error.value.__cause__, RuntimeError)
     assert "unique constraint" in str(error.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_active_run_older_than_recent_100_still_blocks_new_cycle(monkeypatch):
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {
+            "id": i,
+            "project_id": "deep-history",
+            "status": "succeeded",
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+        for i in range(1, 126)
+    ]
+    # This active row is older than the 100 most recent records.
+    rows.append({
+        "id": 176,
+        "project_id": "deep-history",
+        "status": "running",
+        "started_at": stamp,
+        "updated_at": stamp,
+        "current_step": "director_cycle",
+    })
+    backend = FakeRunBackend(rows)
+    memory = FakeRunMemory([row for row in rows if row.get("id") == 176])
+    adapter = object.__new__(server.ServerMemory)
+    adapter.backend = backend
+    adapter.memory = memory
+    monkeypatch.setenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800")
+
+    with pytest.raises(server.DirectorCycleAlreadyRunning, match="176"):
+        await adapter.create_run("deep-history", {"status": "requested"})
+
+    assert backend.inserted == 0

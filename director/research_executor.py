@@ -243,9 +243,6 @@ class YouTubeResearchExecutor:
                 "link_research_data", "relations", "persisted research relations",
                 "available research, query, video and snapshot relations are saved",
             )
-            for operation in search_operations:
-                if query_operation.operation_id not in operation.dependencies:
-                    operation.dependencies.append(query_operation.operation_id)
             snapshot_operation.dependencies = [item.operation_id for item in search_operations]
             link_operation.dependencies = [
                 item.operation_id for item in [query_operation, research_operation, snapshot_operation, *search_operations]
@@ -256,8 +253,38 @@ class YouTubeResearchExecutor:
         return plan
 
     @staticmethod
+    def _mark_operation_started(
+        plan: Any,
+        operation_name: str,
+        *,
+        query: Any = None,
+    ) -> None:
+        """Record the first real side effect for an operation."""
+        query_text = str(getattr(query, "query", "") or "").strip().casefold()
+        query_language = str(getattr(query, "language", "") or "").casefold()
+        for operation in list(getattr(plan, "operations", []) or []):
+            if operation.operation != operation_name:
+                continue
+            if operation.status not in {ResearchOperationStatus.PLANNED, ResearchOperationStatus.RUNNING}:
+                continue
+            if operation_name == "search_videos":
+                inputs = operation.inputs or {}
+                if str(inputs.get("query") or "").strip().casefold() != query_text:
+                    continue
+                languages = {
+                    str(value).casefold()
+                    for value in (inputs.get("languages") or [inputs.get("language") or ""])
+                }
+                if languages and query_language not in languages:
+                    continue
+            operation.status = ResearchOperationStatus.RUNNING
+            if not operation.started_at:
+                operation.started_at = _now()
+
+    @staticmethod
     def _queries_for_operations(plan: ResearchPlan) -> list[Any]:
         """Select only queries represented by operations that still need execution."""
+        by_id = {operation.operation_id: operation for operation in (plan.operations or [])}
         operations = [
             operation for operation in (plan.operations or [])
             if operation.operation == "search_videos"
@@ -267,6 +294,11 @@ class YouTubeResearchExecutor:
                 ResearchOperationStatus.PARTIAL,
                 ResearchOperationStatus.FAILED,
             }
+            and all(
+                dependency in by_id
+                and by_id[dependency].status == ResearchOperationStatus.SUCCEEDED
+                for dependency in (operation.dependencies or [])
+            )
         ]
         selected: list[Any] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -401,14 +433,7 @@ class YouTubeResearchExecutor:
 
         collected_queries: list[YouTubeQuery] = []
         channels: list[YouTubeChannel] = []
-        for operation in list(getattr(plan, "operations", []) or []):
-            if str(getattr(operation, "operation", "")) in {
-                "search_videos", "register_queries", "register_research_set",
-                "collect_video_snapshots", "link_research_data", "collect_channels",
-            }:
-                operation.status = ResearchOperationStatus.RUNNING
-                operation.started_at = _now()
-                operation.error = None
+        self._mark_operation_started(plan, "register_research_set")
         successful_queries = 0
         failed_queries = 0
         errors: list[str] = []
@@ -447,6 +472,7 @@ class YouTubeResearchExecutor:
                         registry.add_query(query)
                         collected_queries.append(query)
                         research.add_query(query)
+                        self._mark_operation_started(plan, "register_queries")
     
                         # A Research -> Query relation exists even when the
                         # query returns zero videos. It describes the research
@@ -456,6 +482,7 @@ class YouTubeResearchExecutor:
     
                         query_video_count = 0
                         try:
+                            self._mark_operation_started(plan, "search_videos", query=planned_query)
                             result = await session.call_tool(
                                 "search_videos",
                                 {
@@ -558,12 +585,14 @@ class YouTubeResearchExecutor:
                                 )
                                 registry.add_snapshot(snapshot)
                                 research.add_snapshot(snapshot)
+                                self._mark_operation_started(plan, "collect_video_snapshots")
     
                                 if relations is not None:
                                     relations.link_query_video(query, video)
                                     relations.link_research_video(research, video)
                                     relations.link_research_snapshot(research, snapshot)
                                     relations.link_video_snapshot(video, snapshot)
+                                    self._mark_operation_started(plan, "link_research_data")
     
                                 snippet = item.get("snippet") or {}
                                 channel_id = snippet.get("channelId") or video.channel_id
@@ -582,6 +611,7 @@ class YouTubeResearchExecutor:
                                     )
                                     opportunity_registry.add_channel(channel)
                                     channels.append(channel)
+                                    self._mark_operation_started(plan, "collect_channels")
     
                             query.status = "completed"
                             query.metadata["result_count"] = query_video_count
@@ -946,7 +976,10 @@ class YouTubeResearchExecutor:
             operation.result = result
             operation.error = error
             operation.completed_at = _now()
-            if getattr(operation, "started_at", None) is None:
+            if (
+                getattr(operation, "started_at", None) is None
+                and operation.status not in {ResearchOperationStatus.BLOCKED, ResearchOperationStatus.SKIPPED}
+            ):
                 operation.started_at = operation.completed_at
 
         # Apply dependency blocking only after all operation outcomes have been

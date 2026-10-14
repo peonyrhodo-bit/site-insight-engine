@@ -251,13 +251,25 @@ class YouTubeQuotaManager:
             raise ValueError("status must be 'succeeded' or 'error'")
         conn = self._get_db()
         try:
+            row = conn.execute(
+                "SELECT metadata_json FROM youtube_quota_events WHERE id = ?",
+                (int(event_id),),
+            ).fetchone()
+            merged_metadata: dict[str, Any] = {}
+            if row is not None:
+                try:
+                    merged_metadata = json.loads(row["metadata_json"] or "{}")
+                except (TypeError, ValueError):
+                    merged_metadata = {}
+            if metadata:
+                merged_metadata.update(metadata)
             conn.execute("""
                 UPDATE youtube_quota_events
                 SET status = ?, reason = ?, finished_at = ?, metadata_json = ?
                 WHERE id = ?
             """, (
                 status, reason, datetime.now(timezone.utc).isoformat(),
-                json.dumps(metadata or {}, ensure_ascii=False, default=str), int(event_id),
+                json.dumps(merged_metadata, ensure_ascii=False, default=str), int(event_id),
             ))
             conn.commit()
         finally:

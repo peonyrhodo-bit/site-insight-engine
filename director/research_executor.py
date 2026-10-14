@@ -173,7 +173,7 @@ class YouTubeResearchExecutor:
         represented = {
             (
                 str(op.inputs.get("query") or "").strip().casefold(),
-                {str(language).casefold() for language in (op.inputs.get("languages") or [op.inputs.get("language") or ""])},
+                frozenset(str(language).casefold() for language in (op.inputs.get("languages") or [op.inputs.get("language") or ""])),
             )
             for op in plan.operations
             if op.operation == "search_videos"
@@ -201,7 +201,7 @@ class YouTubeResearchExecutor:
                 quota_requirements={"bucket": "search", "estimated_calls": 1},
             )
             plan.operations.append(operation)
-            represented.add((query_text, {query_language}))
+            represented.add((query_text, frozenset({query_language})))
 
         # The current executor always creates query records, a research-set
         # record, snapshots for returned videos, and relation records as part
@@ -932,6 +932,10 @@ class YouTubeResearchExecutor:
                         status = ResearchOperationStatus.SUCCEEDED
                     elif query_count > 0 or video_count > 0:
                         status = ResearchOperationStatus.PARTIAL
+                        if video_count == 0:
+                            error = "search_completed_without_relevant_video_results"
+                        elif query_failed:
+                            error = "some_planned_queries_failed"
                     elif errors:
                         status = ResearchOperationStatus.FAILED
                         error = "; ".join(errors[:5])

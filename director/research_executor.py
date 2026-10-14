@@ -924,13 +924,6 @@ class YouTubeResearchExecutor:
                 ResearchOperationStatus.SUCCEEDED,
                 ResearchOperationStatus.SKIPPED,
             }:
-                results.append(operation.to_dict() if hasattr(operation, "to_dict") else {
-                    "operation_id": str(getattr(operation, "operation_id", "")),
-                    "operation": str(getattr(operation, "operation", "")),
-                    "status": str(getattr(getattr(operation, "status", "blocked"), "value", getattr(operation, "status", "blocked"))),
-                    "result": dict(getattr(operation, "result", {}) or {}),
-                    "error": getattr(operation, "error", None),
-                })
                 continue
             operation_id = str(getattr(operation, "operation_id", ""))
             dependencies = list(getattr(operation, "dependencies", []) or [])

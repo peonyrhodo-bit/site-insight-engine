@@ -34,3 +34,23 @@ def test_consumed_queue_does_not_grow_across_many_wakeups():
         assert manager.next() is None
 
     assert manager._queue == []
+
+
+def test_delayed_wakeup_is_not_pending_until_its_available_time(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from scheduler import wakeup as wakeup_module
+
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    monkeypatch.setattr(wakeup_module, "utc_now", lambda: now[0])
+    manager = WakeupManager()
+    delayed = manager.create(
+        project_id="default",
+        reason=WakeupReason.RETRY,
+        delay_seconds=30,
+    )
+
+    assert manager.next() is None
+    now[0] += timedelta(seconds=29)
+    assert manager.next() is None
+    now[0] += timedelta(seconds=1)
+    assert manager.next() is delayed

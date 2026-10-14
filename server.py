@@ -1933,35 +1933,35 @@ class DataAdapter:
 
                     if isinstance(persisted, dict):
                         # Restore directly into the live registry. Building a second
-                    # full registry here temporarily doubles object and metadata
-                    # memory during startup, which can exceed small-instance limits.
-                    self.youtube_registry.clear()
+                        # full registry here temporarily doubles object and metadata
+                        # memory during startup, which can exceed small-instance limits.
+                        self.youtube_registry.clear()
 
-                    for row in persisted.get("queries") or []:
-                        if isinstance(row, dict):
-                            try:
-                                from data.youtube import YouTubeQuery
-                                self.youtube_registry.add_query(YouTubeQuery.from_dict(row))
-                            except Exception:
-                                logger.exception("Failed to restore YouTube query")
+                        for row in persisted.get("queries") or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeQuery
+                                    self.youtube_registry.add_query(YouTubeQuery.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube query")
 
-                    for row in persisted.get("videos") or []:
-                        if isinstance(row, dict):
-                            try:
-                                from data.youtube import YouTubeVideo
-                                self.youtube_registry.add_video(YouTubeVideo.from_dict(row))
-                            except Exception:
-                                logger.exception("Failed to restore YouTube video")
+                        for row in persisted.get("videos") or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeVideo
+                                    self.youtube_registry.add_video(YouTubeVideo.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube video")
 
-                    for row in persisted.get("snapshots") or []:
-                        if isinstance(row, dict):
-                            try:
-                                from data.youtube import YouTubeSnapshot
-                                self.youtube_registry.add_snapshot(YouTubeSnapshot.from_dict(row))
-                            except Exception:
-                                logger.exception("Failed to restore YouTube snapshot")
+                        for row in persisted.get("snapshots") or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeSnapshot
+                                    self.youtube_registry.add_snapshot(YouTubeSnapshot.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube snapshot")
 
-                    del persisted
+                        del persisted
 
                 # Channel/niche DATA has its own persistence contour.
                 opportunity_loader = getattr(

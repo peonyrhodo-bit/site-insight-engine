@@ -1763,7 +1763,7 @@ class DataAdapter:
         query_video_pairs: list[tuple[Any, Any]] = []
         channels: list[Any] = []
 
-        from data.opportunity_entities import YouTubeChannel
+        from data.opportunity_entities import ChannelSnapshot, YouTubeChannel
 
         for row in result_rows:
             if not isinstance(row, dict):
@@ -1804,16 +1804,50 @@ class DataAdapter:
                     if not channel_id or self.opportunity_registry is None:
                         continue
                     snippet = item.get("snippet") or {}
+                    statistics = item.get("statistics") or {}
+
+                    def _channel_count(key: str) -> int | None:
+                        value = statistics.get(key)
+                        if value in (None, ""):
+                            return None
+                        try:
+                            return int(value)
+                        except (TypeError, ValueError):
+                            return None
+
                     channel = YouTubeChannel(
                         channel_id=str(channel_id),
                         title=str(snippet.get("title") or ""),
                         description=snippet.get("description"),
                         published_at=snippet.get("publishedAt"),
+                        subscriber_count=_channel_count("subscriberCount"),
+                        video_count=_channel_count("videoCount"),
+                        view_count=_channel_count("viewCount"),
                         data={**item, "project_id": project_id},
                     )
-                    channels.append(
-                        self.opportunity_registry.add_channel(channel)
-                    )
+                    stored_channel = self.opportunity_registry.add_channel(channel)
+                    channels.append(stored_channel)
+
+                    # Persist a time-stamped observation when the provider returns
+                    # channel statistics. Search-only results often omit statistics;
+                    # do not manufacture zero-valued metrics for those channels.
+                    if statistics:
+                        self.opportunity_registry.add_channel_snapshot(
+                            ChannelSnapshot(
+                                channel_id=stored_channel.channel_id,
+                                captured_at=datetime.now(timezone.utc).isoformat(),
+                                subscriber_count=_channel_count("subscriberCount"),
+                                video_count=_channel_count("videoCount"),
+                                view_count=_channel_count("viewCount"),
+                                data={
+                                    "source": "youtube-mcp",
+                                    "project_id": project_id,
+                                    "research_id": getattr(plan, "research_id", None),
+                                    "query_id": query.query_id,
+                                    "source_item": item,
+                                },
+                            )
+                        )
                     continue
 
                 video_id = (
@@ -1864,18 +1898,22 @@ class DataAdapter:
         if channels:
             opportunity_saver = getattr(self.storage, "save_opportunity_data", None)
             if callable(opportunity_saver) and self.opportunity_registry is not None:
-                storage_result["opportunity"] = opportunity_saver(
+                opportunity_result = opportunity_saver(
                     project_id=project_id,
                     data=self.opportunity_registry.to_dict(),
                 )
+                storage_result["opportunity"] = opportunity_result
 
         saver = getattr(self.storage, "save_youtube_data", None)
         if callable(saver):
-            storage_result = saver(
+            youtube_result = saver(
                 project_id=project_id,
                 videos=[video.to_dict() for video in videos],
                 snapshots=[snapshot.to_dict() for snapshot in snapshots],
             )
+            # Keep both persistence results; replacing the dict here used to
+            # hide opportunity-write diagnostics from the caller.
+            storage_result["youtube"] = youtube_result
 
         returned_snapshot_ids = list(
             storage_result.get("snapshot_ids") or []

@@ -769,6 +769,8 @@ class YouTubeResearchExecutor:
                                         view_count=channel.view_count,
                                         data={"source": "youtube-mcp:get_channel_stats", "research_id": plan.research_id},
                                     )
+                                    if opportunity_registry is None:
+                                        raise RuntimeError("opportunity registry is not available")
                                     opportunity_registry.add_channel_snapshot(channel_snap)
                                     channel_snapshots.append(channel_snap)
                                 except Exception as stats_exc:
@@ -879,7 +881,7 @@ class YouTubeResearchExecutor:
         if current_relation_objects:
             research.mark_data_gathered("relations")
         if any(op.operation == "collect_channel_snapshots" for op in (plan.operations or [])):
-            if opportunity_registry is not None and opportunity_registry.channel_snapshots():
+            if channel_snapshots:
                 research.mark_data_gathered("channel_snapshots")
             else:
                 research.mark_data_missing("channel_snapshots")
@@ -931,7 +933,7 @@ class YouTubeResearchExecutor:
                                     "channels": new_channels,
                                     "channel_snapshots": [
                                         snapshot.to_dict()
-                                        for snapshot in (opportunity_registry.channel_snapshots() if opportunity_registry is not None else [])
+                                        for snapshot in channel_snapshots
                                         if str(snapshot.channel_id) in seen_channel_ids
                                     ],
                                     "niches": [],

@@ -376,6 +376,11 @@ class YouTubeResearchExecutor:
             elif video_id not in latest:
                 latest[video_id] = str(captured) if captured else None
 
+        for video in videos:
+            video_id = str(video.get("video_id") or video.get("youtube_id") or "").strip()
+            if video_id:
+                latest.setdefault(video_id, None)
+
         stale: list[dict[str, Any]] = []
         for video in videos:
             video_id = str(video.get("video_id") or video.get("youtube_id") or "").strip()

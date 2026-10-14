@@ -3100,11 +3100,10 @@ async def _autonomous_worker_loop() -> None:
                     if signal is None:
                         break
 
+                    objective = signal.payload.get("objective")
+                    if not isinstance(objective, str):
+                        objective = None
                     try:
-                        objective = signal.payload.get("objective")
-                        if not isinstance(objective, str):
-                            objective = None
-
                         await _execute_autonomous_cycle(
                             project_id=signal.project_id,
                             objective=objective,
@@ -3115,8 +3114,38 @@ async def _autonomous_worker_loop() -> None:
                             signal.project_id,
                             signal.reason,
                         )
+                        # Do not silently lose a wake-up on a transient failure.
+                        # Retry a bounded number of times with backoff so a broken
+                        # dependency cannot create a tight failure loop.
+                        try:
+                            attempt = int(signal.payload.get("retry_attempt", 0))
+                        except (TypeError, ValueError):
+                            attempt = 0
+                        max_attempts = 3
+                        if attempt < max_attempts:
+                            delay = min(
+                                60,
+                                AUTONOMOUS_POLL_INTERVAL_SECONDS * (2 ** (attempt + 1)),
+                            )
+                            await asyncio.sleep(delay)
+                            retry_payload = dict(signal.payload)
+                            retry_payload["retry_attempt"] = attempt + 1
+                            runtime.wakeup.create(
+                                project_id=signal.project_id,
+                                reason="retry",
+                                priority="high",
+                                payload=retry_payload,
+                                source="autonomous_worker",
+                            )
+                        else:
+                            logger.error(
+                                "Autonomous wakeup exhausted retries: project=%s reason=%s attempts=%s",
+                                signal.project_id,
+                                signal.reason,
+                                attempt,
+                            )
                     finally:
-                        # A failed cycle must not block the whole wakeup queue.
+                        # Retire this signal after success or after queuing a retry.
                         runtime.wakeup.consume(signal.wakeup_id)
 
             await asyncio.sleep(                AUTONOMOUS_POLL_INTERVAL_SECONDS,

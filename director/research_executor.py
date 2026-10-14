@@ -155,15 +155,22 @@ class YouTubeResearchExecutor:
         }
         # Drop search operations for queries removed by quota capping. Dependent
         # operations will be blocked explicitly if they reference a removed ID.
-        plan.operations = [
-            op for op in plan.operations
-            if op.operation != "search_videos"
-            or any(
-                (str(op.inputs.get("query") or "").strip().casefold(), language)
-                in planned_queries
-                for language in (op.inputs.get("languages") or [op.inputs.get("language") or ""])
+        retained_operations: list[ResearchOperation] = []
+        for operation in plan.operations:
+            if operation.operation != "search_videos":
+                retained_operations.append(operation)
+                continue
+            query_text = str(operation.inputs.get("query") or "").strip().casefold()
+            available_languages = sorted(
+                language
+                for text, language in planned_queries
+                if text == query_text
             )
-        ]
+            if not available_languages:
+                continue
+            operation.inputs["languages"] = available_languages
+            retained_operations.append(operation)
+        plan.operations = retained_operations
         represented = {
             (
                 str(op.inputs.get("query") or "").strip().casefold(),
@@ -697,6 +704,8 @@ class YouTubeResearchExecutor:
             "completed_at": _now(),
         }
         operation_results = self._finalize_operations(plan, execution_summary)
+        plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
+        plan.metadata["operation_results"] = operation_results
         execution_summary["operation_results"] = operation_results
         execution_summary["operations_planned"] = len(operation_results)
         execution_summary["operations_succeeded"] = sum(item["status"] == "succeeded" for item in operation_results)

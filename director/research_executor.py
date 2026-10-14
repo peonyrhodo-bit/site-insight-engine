@@ -693,8 +693,26 @@ class YouTubeResearchExecutor:
                 "completed_at": _now(),
             }
             operation_results = self._finalize_operations(plan, blocked_summary)
+            plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
+            plan.metadata["operation_results"] = operation_results
             blocked_summary["operation_results"] = operation_results
             blocked_summary["operations_planned"] = len(operation_results)
+            blocked_summary["operation_ledger_persisted"] = False
+            if self.storage is not None:
+                research.metadata["operation_results"] = operation_results
+                research.metadata["research_plan"] = plan.to_dict()
+                try:
+                    await _maybe_await(self.storage.save_research_data(
+                        project_id=project_id,
+                        queries=[query.to_dict() for query in collected_queries],
+                        research_sets=[research.to_dict()],
+                        relations=[],
+                    ))
+                    blocked_summary["operation_ledger_persisted"] = True
+                except Exception as persist_exc:
+                    errors.append(f"operation_ledger_persistence: {type(persist_exc).__name__}: {persist_exc}")
+                    blocked_summary["errors"] = errors
+                    logger.exception("Failed to persist interrupted operation ledger: research_id=%s", plan.research_id)
             return blocked_summary
 
         # Query execution and evidence acquisition are distinct facts.
@@ -899,6 +917,21 @@ class YouTubeResearchExecutor:
         errors = list(summary.get("errors") or [])
 
         for operation in operations:
+            # A restored successful/skipped operation is immutable on resume.
+            # Re-finalizing it from only the current attempt's summary could
+            # downgrade valid prior work when a later query fails.
+            if getattr(operation, "status", None) in {
+                ResearchOperationStatus.SUCCEEDED,
+                ResearchOperationStatus.SKIPPED,
+            }:
+                results.append(operation.to_dict() if hasattr(operation, "to_dict") else {
+                    "operation_id": str(getattr(operation, "operation_id", "")),
+                    "operation": str(getattr(operation, "operation", "")),
+                    "status": str(getattr(getattr(operation, "status", "blocked"), "value", getattr(operation, "status", "blocked"))),
+                    "result": dict(getattr(operation, "result", {}) or {}),
+                    "error": getattr(operation, "error", None),
+                })
+                continue
             operation_id = str(getattr(operation, "operation_id", ""))
             dependencies = list(getattr(operation, "dependencies", []) or [])
             name = str(getattr(operation, "operation", ""))

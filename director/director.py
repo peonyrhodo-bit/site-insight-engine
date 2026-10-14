@@ -98,6 +98,9 @@ class DirectorContext:
     objective: str | None = None
 
     channels: list[dict[str, Any]] = field(default_factory=list)
+    channel_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    niches: list[dict[str, Any]] = field(default_factory=list)
+    niche_snapshots: list[dict[str, Any]] = field(default_factory=list)
     strategies: list[dict[str, Any]] = field(default_factory=list)
 
     observations: list[dict[str, Any]] = field(default_factory=list)
@@ -134,6 +137,9 @@ class DirectorContext:
             "project_id": self.project_id,
             "objective": self.objective,
             "channels": self.channels,
+            "channel_snapshots": self.channel_snapshots,
+            "niches": self.niches,
+            "niche_snapshots": self.niche_snapshots,
             "strategies": self.strategies,
             "observations": self.observations,
             "analytics": self.analytics,

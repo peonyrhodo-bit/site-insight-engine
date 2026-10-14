@@ -310,21 +310,29 @@ class YouTubeResearchExecutor:
         else:
             executable_queries = list(getattr(plan, "queries", []) or [])
 
-        if not executable_queries and getattr(plan, "queries", None):
-            operation_results = self._finalize_operations(plan, {
-                "status": "skipped",
-                "persisted": False,
-                "queries_planned": 0,
-                "queries_collected": 0,
-                "queries_failed": 0,
-                "videos_collected": 0,
-                "snapshots_collected": 0,
-                "relations_created": 0,
-                "query_results": [],
-                "errors": [],
-            })
+        if not executable_queries:
+            for operation in list(getattr(plan, "operations", []) or []):
+                if getattr(operation, "status", None) in {
+                    ResearchOperationStatus.PLANNED,
+                    ResearchOperationStatus.RUNNING,
+                }:
+                    operation.status = ResearchOperationStatus.BLOCKED
+                    operation.error = "no_executable_search_query_for_current_operation_handler"
+                    operation.completed_at = _now()
+            operation_results = [
+                operation.to_dict() if hasattr(operation, "to_dict") else {
+                    "operation_id": str(getattr(operation, "operation_id", "")),
+                    "operation": str(getattr(operation, "operation", "")),
+                    "status": str(getattr(getattr(operation, "status", "blocked"), "value", getattr(operation, "status", "blocked"))),
+                    "result": dict(getattr(operation, "result", {}) or {}),
+                    "error": getattr(operation, "error", None),
+                }
+                for operation in (getattr(plan, "operations", []) or [])
+            ]
+            plan.metadata["operations"] = operation_results
+            plan.metadata["operation_results"] = operation_results
             return {
-                "status": "skipped",
+                "status": "skipped" if operation_results and all(item["status"] in {"succeeded", "skipped"} for item in operation_results) else "blocked",
                 "reason": "no_pending_search_operations",
                 "research_id": getattr(plan, "research_id", None),
                 "queries_planned": 0,

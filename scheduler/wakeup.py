@@ -15,7 +15,7 @@ Wakeup НЕ является Director.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Iterable, Optional
 from uuid import uuid4
@@ -66,6 +66,7 @@ class WakeupSignal:
     reason: WakeupReason
 
     created_at: datetime = field(default_factory=utc_now)
+    available_at: datetime = field(default_factory=utc_now)
 
     priority: WakeupPriority = WakeupPriority.NORMAL
 
@@ -84,6 +85,11 @@ class WakeupSignal:
         else:
             self.created_at = self.created_at.astimezone(UTC)
 
+        if self.available_at.tzinfo is None:
+            self.available_at = self.available_at.replace(tzinfo=UTC)
+        else:
+            self.available_at = self.available_at.astimezone(UTC)
+
         if self.consumed_at is not None:
             if self.consumed_at.tzinfo is None:
                 self.consumed_at = self.consumed_at.replace(tzinfo=UTC)
@@ -100,6 +106,7 @@ class WakeupSignal:
             "project_id": self.project_id,
             "reason": self.reason.value,
             "created_at": self.created_at.isoformat(),
+            "available_at": self.available_at.isoformat(),
             "priority": self.priority.value,
             "schedule_id": self.schedule_id,
             "payload": dict(self.payload),
@@ -141,6 +148,7 @@ class WakeupManager:
         payload: Optional[dict[str, Any]] = None,
         schedule_id: Optional[str] = None,
         source: str = "scheduler",
+        delay_seconds: float = 0,
     ) -> WakeupSignal:
         """Create and queue a wake-up signal."""
 
@@ -158,6 +166,7 @@ class WakeupManager:
             schedule_id=schedule_id,
             payload=dict(payload or {}),
             source=source,
+            available_at=utc_now() + timedelta(seconds=max(0, delay_seconds)),
         )
 
         if self.enabled:
@@ -197,7 +206,7 @@ class WakeupManager:
         signals = [
             signal
             for signal in self._queue
-            if not signal.consumed
+            if not signal.consumed and signal.available_at <= utc_now()
         ]
 
         if project_id is not None:

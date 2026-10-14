@@ -2236,9 +2236,6 @@ class DataAdapter:
                     "Failed to load data relations"
                 )
 
-        # get_project_state is read-only: it must not persist DATA.
-        # Persistence belongs to explicit ingestion/write paths.
-
         if self.opportunity_registry is not None:
             result["opportunity_inventory"] = self.opportunity_registry.counts()
 

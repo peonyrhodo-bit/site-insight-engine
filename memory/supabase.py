@@ -183,7 +183,7 @@ class SupabaseMemoryBackend:
         self,
         table_name: str,
         *,
-        limit: int,
+        limit: int | None,
         project_id: str | None,
         order_key: str = "created_at",
         default_limit: int = 20,
@@ -196,7 +196,9 @@ class SupabaseMemoryBackend:
         (with id as a tie-breaker) keeps offset pagination deterministic.
         """
         page_size = max(1, int(page_size))
-        requested_limit = self._limit(limit, default_limit)
+        requested_limit = (
+            None if limit is None else self._limit(limit, default_limit)
+        )
         rows: list[dict[str, Any]] = []
         offset = 0
 
@@ -231,7 +233,7 @@ class SupabaseMemoryBackend:
                 if self._project_id_from_row(row) == expected_project
             ]
 
-        return rows[:requested_limit]
+        return rows if requested_limit is None else rows[:requested_limit]
 
     # ------------------------------------------------------------------
     # YOUTUBE DATA
@@ -483,7 +485,7 @@ class SupabaseMemoryBackend:
             try:
                 rows = self._recent_for_project(
                     table,
-                    limit=1000,
+                    limit=None,
                     project_id=project_id,
                     order_key="id",
                     default_limit=1000,
@@ -583,9 +585,9 @@ class SupabaseMemoryBackend:
         """Load persisted research/query/relation DATA for one project."""
         expected_project = str(project_id) if project_id is not None else None
         return {
-            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=100, project_id=expected_project, order_key="id", default_limit=100),
-            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
-            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
+            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=None, project_id=expected_project, order_key="id", default_limit=100),
+            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
+            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
         }
 
     def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:

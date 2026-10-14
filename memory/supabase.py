@@ -239,20 +239,20 @@ class SupabaseMemoryBackend:
     # YOUTUBE DATA
     # ------------------------------------------------------------------
 
-    def _paginated_rows(
+    def _iter_paginated_rows(
         self,
         table_name: str,
         *,
         order_key: str,
-        page_size: int = 1000,
-    ) -> list[dict[str, Any]]:
-        """
-        Load all rows from a DATA table using stable, paginated reads.
+        descending: bool = False,
+        page_size: int = 500,
+    ):
+        """Yield one page at a time instead of retaining an entire table in RAM.
 
-        Supabase Data API responses are limited to a default maximum of
-        1,000 rows, so DATA loading must not rely on one unbounded select.
+        The database remains the source of truth; callers choose a bounded
+        working set while every page is fetched in stable order.
         """
-        rows: list[dict[str, Any]] = []
+        page_size = max(1, min(int(page_size), 1000))
         offset = 0
 
         while True:
@@ -260,19 +260,17 @@ class SupabaseMemoryBackend:
                 self.client
                 .table(table_name)
                 .select("*")
-                .order(order_key, desc=False)
+                .order(order_key, desc=descending)
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
             page = self._safe_list(response)
-            rows.extend(page)
+            yield from page
 
             if len(page) < page_size:
                 break
 
             offset += page_size
-
-        return rows
 
     def load_youtube_data(
         self,
@@ -297,7 +295,7 @@ class SupabaseMemoryBackend:
             else None
         )
 
-        video_rows = self._paginated_rows(
+        video_rows = self._iter_paginated_rows(
             "videos",
             order_key="video_id",
         )
@@ -338,14 +336,26 @@ class SupabaseMemoryBackend:
             videos.append(video.to_dict())
             video_ids.add(str(video.video_id))
 
-        snapshot_rows = self._paginated_rows(
-            "video_snapshots",
-            order_key="id",
-        )
+        # Keep the newest few observations per video in the in-memory working set.
+        # Older observations remain untouched in Supabase and can be queried
+        # for offline/history-specific analysis when needed.
+        try:
+            snapshots_per_video = max(
+                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "3")), 20)
+            )
+        except (TypeError, ValueError):
+            snapshots_per_video = 3
 
         snapshots: list[dict[str, Any]] = []
+        snapshot_counts: dict[str, int] = {}
 
-        for row in snapshot_rows:
+        # Descending IDs mean the newest observations are encountered first.
+        # Stream rows and discard old observations before constructing objects.
+        for row in self._iter_paginated_rows(
+            "video_snapshots",
+            order_key="id",
+            descending=True,
+        ):
             row_project = self._project_id_from_row(row)
 
             if expected_project is not None:
@@ -354,6 +364,14 @@ class SupabaseMemoryBackend:
                         continue
                 elif str(row.get("video_id")) not in video_ids:
                     continue
+
+            video_key = str(row.get("video_id") or "")
+            if not video_key:
+                continue
+            seen_for_video = snapshot_counts.get(video_key, 0)
+            if seen_for_video >= snapshots_per_video:
+                continue
+            snapshot_counts[video_key] = seen_for_video + 1
 
             data = self._safe_dict(row.get("data_json"))
             statistics = self._safe_dict(data.get("statistics"))

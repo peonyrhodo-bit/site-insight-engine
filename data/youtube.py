@@ -821,12 +821,21 @@ class YouTubeDataRegistry:
         self,
         video_id: int | str,
     ) -> YouTubeSnapshot | None:
-        snapshots = self.snapshots_for_video(video_id)
+        """Return the newest snapshot without sorting or allocating a list."""
+        snapshot_ids = self._snapshots_by_video.get(video_id, [])
+        latest: YouTubeSnapshot | None = None
+        latest_key = ""
 
-        if not snapshots:
-            return None
+        for snapshot_id in snapshot_ids:
+            snapshot = self._snapshots.get(snapshot_id)
+            if snapshot is None:
+                continue
+            captured_at = snapshot.captured_at or ""
+            if latest is None or captured_at >= latest_key:
+                latest = snapshot
+                latest_key = captured_at
 
-        return snapshots[-1]
+        return latest
 
     def metric_history(
         self,

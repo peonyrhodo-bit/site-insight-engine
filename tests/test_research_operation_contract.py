@@ -90,6 +90,36 @@ def test_executor_selects_queries_from_pending_operations_only():
     assert [query.query for query in selected] == ["topic two"]
 
 
+def test_query_is_not_dispatched_when_dependency_is_not_succeeded():
+    plan = build_research_plan(
+        objective="dependent search",
+        queries=[build_query(query="topic", language="en", purpose="test")],
+        operations=[
+            ResearchOperation(
+                operation_id="prerequisite",
+                operation="register_queries",
+                requirement_key="queries",
+                inputs={},
+                dependencies=[],
+                expected_result="query record",
+                completion_criterion="query record exists",
+                status=ResearchOperationStatus.PLANNED,
+            ),
+            ResearchOperation(
+                operation_id="search",
+                operation="search_videos",
+                requirement_key="videos",
+                inputs={"query": "topic", "language": "en"},
+                dependencies=["prerequisite"],
+                expected_result="video evidence",
+                completion_criterion="at least one relevant video",
+            ),
+        ],
+    )
+
+    assert YouTubeResearchExecutor._queries_for_operations(plan) == []
+
+
 def test_empty_search_is_partial_not_successful_collection():
     operation = ResearchOperation(
         operation_id="search-1",

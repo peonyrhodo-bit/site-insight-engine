@@ -667,6 +667,17 @@ class YouTubeResearchExecutor:
                 "queries_planned": len(executable_queries),
                 "queries_collected": successful_queries,
                 "queries_failed": failed_queries,
+                "query_results": [
+                    {
+                        "query_id": query.query_id,
+                        "query": query.text,
+                        "language": query.language,
+                        "status": query.status,
+                        "result_count": int((query.metadata or {}).get("result_count", 0) or 0),
+                        "error": (query.metadata or {}).get("execution_error"),
+                    }
+                    for query in collected_queries
+                ],
                 "videos_collected": len(research.video_ids),
                 "snapshots_collected": len(research.snapshot_ids),
                 "relations_created": 0,

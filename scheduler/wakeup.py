@@ -131,8 +131,11 @@ class WakeupManager:
         self,
         *,
         enabled: bool = True,
+        max_queue_size: int = 500,
     ) -> None:
         self.enabled = enabled
+        self.max_queue_size = max(1, int(max_queue_size))
+        self.dropped_signals = 0
         self._queue: list[WakeupSignal] = []
 
     # ------------------------------------------------------------------
@@ -170,6 +173,13 @@ class WakeupManager:
         )
 
         if self.enabled:
+            self.clear_consumed()
+            if len(self._queue) >= self.max_queue_size:
+                # The queue is an in-process notification buffer, not durable
+                # storage. Keep it bounded and favor recent signals; count any
+                # dropped entry so operators can detect sustained overload.
+                self._queue.pop(0)
+                self.dropped_signals += 1
             self._queue.append(signal)
 
         return signal
@@ -407,6 +417,8 @@ class WakeupManager:
         return {
             "enabled": self.enabled,
             "pending": len(pending),
+            "queued": len(self._queue),
+            "dropped_signals": self.dropped_signals,
             "signals": [
                 signal.to_dict()
                 for signal in pending

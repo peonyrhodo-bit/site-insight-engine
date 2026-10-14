@@ -5,7 +5,10 @@ on:
     paths:
       - "server.py"
       - "memory/**"
+      - "director/**"
+      - "data/**"
       - "tests/test_director_run_lifecycle*.py"
+      - "tests/test_research_executor*.py"
       - ".github/workflows/director-run-lifecycle.yml"
   push:
     branches:

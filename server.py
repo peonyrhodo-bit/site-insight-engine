@@ -2236,49 +2236,8 @@ class DataAdapter:
                     "Failed to load data relations"
                 )
 
-        # Persist the complete in-memory research graph after it has been
-        # assembled. Upserts make this idempotent, so repeated state reads
-        # do not create duplicate DATA records.
-        saver = getattr(
-            self.storage,
-            "save_research_data",
-            None,
-        )
-        if callable(saver):
-            try:
-                query_payload = [
-                    query.to_dict()
-                    for query in self.youtube_registry.queries()
-                ] if self.youtube_registry is not None else []
-                research_payload = [
-                    research.to_dict()
-                    for research in self.research_manager.all()
-                ] if self.research_manager is not None else []
-                relation_items = (
-                    self.relations.all_relations()
-                    if self.relations is not None
-                    else []
-                )
-                relation_payload = [
-                    relation.to_dict()
-                    for relation in relation_items
-                ]
-                persistence = saver(
-                    project_id=project_id,
-                    queries=query_payload,
-                    research_sets=research_payload,
-                    relations=relation_payload,
-                )
-                existing_persistence = result.get("persistence")
-                if isinstance(existing_persistence, dict) and isinstance(persistence, dict):
-                    existing_persistence.update(persistence)
-                    result["persistence"] = existing_persistence
-                else:
-                    result["persistence"] = persistence
-            except Exception:
-                logger.exception(
-                    "Failed to persist research DATA"
-                )
+        # get_project_state is read-only: it must not persist DATA.
+        # Persistence belongs to explicit ingestion/write paths.
 
         if self.opportunity_registry is not None:
             result["opportunity_inventory"] = self.opportunity_registry.counts()

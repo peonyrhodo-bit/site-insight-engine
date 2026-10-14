@@ -359,17 +359,26 @@ class YouTubeResearchExecutor:
             research.mark_complete()
 
         if self.storage is not None:
-            # Persist only objects created by this research run. Never flush
-            # the full in-memory opportunity registry: an inspection may
-            # already contain thousands of channels and that would turn one
-            # research cycle into thousands of Supabase upserts.
+            # Persist only objects referenced by this research run. Resolve IDs
+            # through the registry indexes instead of scanning the entire
+            # process-wide registry and rebuilding the same sets for every row.
+            # The registry grows across cycles; a full scan here made each
+            # persistence pass increasingly expensive as history accumulated.
+            research_videos = [
+                video
+                for video_id in dict.fromkeys(research.video_ids)
+                if (video := registry.get_video(video_id)) is not None
+            ]
+            research_snapshots = [
+                snapshot
+                for snapshot_id in dict.fromkeys(research.snapshot_ids)
+                if (snapshot := registry.get_snapshot(snapshot_id)) is not None
+            ]
             await _maybe_await(
                 self.storage.save_youtube_data(
                     project_id=project_id,
-                    videos=[video.to_dict() for video in registry.videos()
-                            if video.video_id in set(research.video_ids)],
-                    snapshots=[snapshot.to_dict() for snapshot in registry.snapshots()
-                               if snapshot.snapshot_id in set(research.snapshot_ids)],
+                    videos=[video.to_dict() for video in research_videos],
+                    snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
                 )
             )
 

@@ -2942,6 +2942,25 @@ async def _run_director(
 # ---------------------------------------------------------------------------
 
 
+async def _director_run_heartbeat(run_id: int, project_id: str) -> None:
+    """Keep long-running cycles fresh so stale recovery never steals a live lease."""
+    timeout = max(60, int(os.getenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800")))
+    interval = max(5, min(60, timeout // 3))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            # ServerMemory adds updated_at and persists it to the indexed column.
+            await runtime.memory.update_run(
+                run_id, project_id=project_id, fields={}
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The heartbeat is best-effort; the cycle itself records any fatal
+            # persistence error. Keep retrying rather than silently dropping it.
+            logger.exception("Director run heartbeat failed: run_id=%s", run_id)
+
+
 async def _execute_autonomous_cycle(
     *,
     project_id: str,
@@ -2983,6 +3002,9 @@ async def _execute_autonomous_cycle_locked(
             "updated_at": started_at,
             "result": None,
         },
+    )
+    heartbeat_task = asyncio.create_task(
+        _director_run_heartbeat(run_id, project_id)
     )
     cycle_completed = False
     current_step = "initializing"
@@ -3088,6 +3110,12 @@ async def _execute_autonomous_cycle_locked(
         except Exception:
             logger.exception("Could not persist Director run failure: run_id=%s", run_id)
         raise
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.post("/director/autonomous/run")

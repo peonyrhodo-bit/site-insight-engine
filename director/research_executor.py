@@ -126,6 +126,9 @@ class YouTubeResearchExecutor:
         if self.quota_manager is None:
             # Runtime injects the manager; None is retained for isolated unit tests.
             return None
+        self.quota_manager.record_planned_call(
+            bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
+        )
         return self.quota_manager.authorize_call(
             bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
         )

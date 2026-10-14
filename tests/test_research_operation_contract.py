@@ -186,3 +186,99 @@ def test_operation_is_blocked_when_dependency_did_not_succeed():
     assert results[0]["status"] == ResearchOperationStatus.PARTIAL.value
     assert results[1]["status"] == ResearchOperationStatus.BLOCKED.value
     assert "search-1" in results[1]["error"]
+
+
+
+def test_plan_round_trip_preserves_operation_ids_statuses_and_retry_state():
+    plan = build_research_plan(
+        objective="recover after worker restart",
+        queries=[
+            build_query(query="completed topic", language="en", purpose="first"),
+            build_query(query="retry topic", language="ru", purpose="second"),
+        ],
+    )
+    YouTubeResearchExecutor.sync_plan_operations(plan)
+    operations = [op for op in plan.operations if op.operation == "search_videos"]
+    operations[0].status = ResearchOperationStatus.SUCCEEDED
+    operations[0].result = {
+        "queries": [
+            {"query": "completed topic", "language": "en", "status": "completed", "result_count": 2}
+        ],
+        "videos_collected": 2,
+    }
+    operations[0].started_at = "2026-10-14T10:00:00+00:00"
+    operations[0].completed_at = "2026-10-14T10:00:01+00:00"
+    operations[1].status = ResearchOperationStatus.PARTIAL
+    operations[1].result = {
+        "queries": [
+            {"query": "retry topic", "language": "ru", "status": "failed", "result_count": 0}
+        ]
+    }
+    operations[1].error = "temporary transport failure"
+
+    restored = type(plan).from_dict(plan.to_dict())
+
+    restored_searches = [op for op in restored.operations if op.operation == "search_videos"]
+    assert [op.operation_id for op in restored_searches] == [op.operation_id for op in operations]
+    assert restored_searches[0].status == ResearchOperationStatus.SUCCEEDED
+    assert restored_searches[0].result == operations[0].result
+    assert restored_searches[0].started_at == operations[0].started_at
+    assert restored_searches[1].status == ResearchOperationStatus.PARTIAL
+    assert restored_searches[1].error == "temporary transport failure"
+    assert [q.query for q in YouTubeResearchExecutor._queries_for_operations(restored)] == ["retry topic"]
+
+
+def test_channel_and_niche_requirements_are_explicit_not_fake_video_queries():
+    plan = plan_from_requirements(
+        objective="inspect channels and niches",
+        requirements=[
+            {"key": "channels", "description": "Collect channels", "priority": "high", "needed_now": True},
+            {"key": "channel_snapshots", "description": "Collect channel history", "priority": "medium", "needed_now": True},
+            {"key": "niches", "description": "Collect niche evidence", "priority": "medium", "needed_now": True},
+            {"key": "niche_snapshots", "description": "Build niche history", "priority": "low", "needed_now": True},
+        ],
+        preferred_languages=["en"],
+    )
+    assert not plan.queries
+    assert {op.operation for op in plan.operations} == {
+        "collect_channels", "collect_channel_snapshots", "collect_niche_evidence", "build_niche_snapshots"
+    }
+
+
+def test_unimplemented_channel_and_niche_operations_are_never_reported_successful():
+    operations = [
+        ResearchOperation(
+            operation_id="channels", operation="collect_channels", requirement_key="channels",
+            inputs={}, dependencies=[], expected_result="channel records",
+            completion_criterion="channel records are collected",
+        ),
+        ResearchOperation(
+            operation_id="channel-snapshots", operation="collect_channel_snapshots", requirement_key="channel_snapshots",
+            inputs={}, dependencies=[], expected_result="channel history",
+            completion_criterion="channel history is collected",
+        ),
+        ResearchOperation(
+            operation_id="niches", operation="collect_niche_evidence", requirement_key="niches",
+            inputs={}, dependencies=[], expected_result="niche evidence",
+            completion_criterion="niche evidence is collected",
+        ),
+        ResearchOperation(
+            operation_id="niche-snapshots", operation="build_niche_snapshots", requirement_key="niche_snapshots",
+            inputs={}, dependencies=[], expected_result="niche history",
+            completion_criterion="niche history is built",
+        ),
+    ]
+    plan = SimpleNamespace(operations=operations)
+    results = YouTubeResearchExecutor._finalize_operations(
+        plan,
+        {
+            "queries_collected": 0, "queries_failed": 0, "videos_collected": 0,
+            "snapshots_collected": 0, "persisted": True, "relations_created": 0, "errors": [],
+        },
+    )
+    by_name = {item["operation"]: item for item in results}
+    assert by_name["collect_channels"]["status"] == "blocked"
+    assert by_name["collect_channel_snapshots"]["status"] == "blocked"
+    assert by_name["collect_niche_evidence"]["status"] == "blocked"
+    assert by_name["build_niche_snapshots"]["status"] == "blocked"
+    assert all(item["error"] for item in results)

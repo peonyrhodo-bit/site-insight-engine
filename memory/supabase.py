@@ -660,10 +660,10 @@ class SupabaseMemoryBackend:
         """Load channel/niche identities and historical snapshots for a project."""
         expected_project = str(project_id) if project_id is not None else None
         return {
-            "channels": self._recent_for_project(self.TABLE_CHANNELS, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
-            "channel_snapshots": self._recent_for_project(self.TABLE_CHANNEL_SNAPSHOTS, limit=10000, project_id=expected_project, order_key="captured_at", default_limit=10000),
-            "niches": self._recent_for_project(self.TABLE_NICHES, limit=10000, project_id=expected_project, order_key="id", default_limit=10000),
-            "niche_snapshots": self._recent_for_project(self.TABLE_NICHE_SNAPSHOTS, limit=10000, project_id=expected_project, order_key="captured_at", default_limit=10000),
+            "channels": self._recent_for_project(self.TABLE_CHANNELS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
+            "channel_snapshots": self._recent_for_project(self.TABLE_CHANNEL_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
+            "niches": self._recent_for_project(self.TABLE_NICHES, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
+            "niche_snapshots": self._recent_for_project(self.TABLE_NICHE_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
         }
 
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:

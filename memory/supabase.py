@@ -201,6 +201,7 @@ class SupabaseMemoryBackend:
         )
         rows: list[dict[str, Any]] = []
         offset = 0
+        expected_project = str(project_id) if project_id is not None else None
 
         while True:
             query = (
@@ -218,22 +219,21 @@ class SupabaseMemoryBackend:
                 .execute()
             )
             page = self._safe_list(response)
-            rows.extend(page)
+            for row in page:
+                if expected_project is not None and self._project_id_from_row(row) != expected_project:
+                    continue
+                rows.append(row)
+                # Results are ordered newest-first, so stop as soon as the
+                # requested project-specific working set has been collected.
+                if requested_limit is not None and len(rows) >= requested_limit:
+                    return rows
 
             if len(page) < page_size:
                 break
 
             offset += page_size
 
-        if project_id is not None:
-            expected_project = str(project_id)
-            rows = [
-                row
-                for row in rows
-                if self._project_id_from_row(row) == expected_project
-            ]
-
-        return rows if requested_limit is None else rows[:requested_limit]
+        return rows
 
     # ------------------------------------------------------------------
     # YOUTUBE DATA

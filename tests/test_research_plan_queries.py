@@ -40,3 +40,20 @@ def test_concrete_gap_description_can_still_become_a_query():
     assert len(plan.queries) == 2  # default research languages: English and Russian
     assert {query.language for query in plan.queries} == {"en", "ru"}
     assert all(query.query == "YouTube channels about beginner home gardening" for query in plan.queries)
+
+
+
+def test_diagnostic_gap_without_topic_never_becomes_a_query_in_supported_languages():
+    diagnostics = [
+        "Reliable comparison period is unavailable.",
+        "Competitive intensity classification is not available.",
+        "Insufficient data to determine audience overlap.",
+        "Недостаточно данных для определения динамики.",
+    ]
+    plan = research_from_gaps(
+        diagnostics,
+        objective="Validate missing-data handling",
+    )
+
+    assert len(plan.gaps) == len(diagnostics)
+    assert plan.queries == []

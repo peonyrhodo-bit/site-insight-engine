@@ -650,8 +650,6 @@ class YouTubeResearchExecutor:
         # satisfy requirements for videos or video snapshots.
         if collected_queries:
             research.mark_data_gathered("queries")
-        research.mark_data_gathered("research_set")
-
         if research.video_ids:
             research.mark_data_gathered("videos")
         else:
@@ -681,15 +679,6 @@ class YouTubeResearchExecutor:
 
         if current_relation_objects:
             research.mark_data_gathered("relations")
-
-        missing_expected = research.missing_expected_data()
-        if missing_expected:
-            research.mark_data_missing(*missing_expected)
-
-        if failed_queries or missing_expected:
-            research.mark_partial()
-        else:
-            research.mark_complete()
 
         persistence_confirmed = False
         if self.storage is not None:
@@ -748,6 +737,18 @@ class YouTubeResearchExecutor:
                 research.mark_partial()
                 errors.append(f"persistence: {type(exc).__name__}: {exc}")
                 logger.exception("Failed to persist research result: research_id=%s", plan.research_id)
+
+        if persistence_confirmed:
+            research.mark_data_gathered("research_set")
+        else:
+            research.mark_data_missing("research_set")
+        missing_expected = research.missing_expected_data()
+        if missing_expected:
+            research.mark_data_missing(*missing_expected)
+        if failed_queries or missing_expected or not persistence_confirmed:
+            research.mark_partial()
+        else:
+            research.mark_complete()
 
         execution_summary = {
             "status": research.status,

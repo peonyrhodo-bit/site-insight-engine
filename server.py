@@ -1915,8 +1915,11 @@ class DataAdapter:
             # hide opportunity-write diagnostics from the caller.
             storage_result["youtube"] = youtube_result
 
+        youtube_persistence = storage_result.get("youtube", {})
         returned_snapshot_ids = list(
-            storage_result.get("snapshot_ids") or []
+            youtube_persistence.get("snapshot_ids") or []
+            if isinstance(youtube_persistence, dict)
+            else []
         )
 
         # Replace temporary snapshot IDs with the actual Supabase IDs.

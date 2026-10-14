@@ -255,9 +255,83 @@ class YouTubeResearchExecutor:
         plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
         return plan
 
+    @staticmethod
+    def _queries_for_operations(plan: ResearchPlan) -> list[Any]:
+        """Select only queries represented by operations that still need execution."""
+        operations = [
+            operation for operation in (plan.operations or [])
+            if operation.operation == "search_videos"
+            and operation.status in {
+                ResearchOperationStatus.PLANNED,
+                ResearchOperationStatus.RUNNING,
+                ResearchOperationStatus.PARTIAL,
+                ResearchOperationStatus.FAILED,
+            }
+        ]
+        selected: list[Any] = []
+        seen: set[tuple[str, str, str | None]] = set()
+        for operation in operations:
+            inputs = operation.inputs or {}
+            query_text = str(inputs.get("query") or "").strip().casefold()
+            languages = {
+                str(value).casefold()
+                for value in (inputs.get("languages") or [inputs.get("language") or ""])
+            }
+            prior_queries = (operation.result or {}).get("queries", [])
+            already_succeeded = {
+                (str(item.get("query") or "").strip().casefold(), str(item.get("language") or "").casefold())
+                for item in prior_queries
+                if isinstance(item, dict) and item.get("status") == "completed"
+            }
+            for query in plan.queries:
+                key = (
+                    str(query.query or "").strip().casefold(),
+                    str(query.language or "").casefold(),
+                )
+                if query_text and key[0] != query_text:
+                    continue
+                if languages and key[1] not in languages:
+                    continue
+                if key in already_succeeded:
+                    continue
+                unique_key = (key[0], key[1], getattr(query, "region_code", None))
+                if unique_key in seen:
+                    continue
+                seen.add(unique_key)
+                selected.append(query)
+        return selected
+
     async def execute(self, plan: Any, *, project_id: str | None = None) -> dict[str, Any]:
         if plan is None:
             return {"status": "blocked", "reason": "research_plan_missing"}
+        if isinstance(plan, ResearchPlan):
+            self.sync_plan_operations(plan)
+            executable_queries = self._queries_for_operations(plan)
+        else:
+            executable_queries = list(getattr(plan, "queries", []) or [])
+
+        if not executable_queries and getattr(plan, "queries", None):
+            operation_results = self._finalize_operations(plan, {
+                "status": "skipped",
+                "persisted": False,
+                "queries_planned": 0,
+                "queries_collected": 0,
+                "queries_failed": 0,
+                "videos_collected": 0,
+                "snapshots_collected": 0,
+                "relations_created": 0,
+                "query_results": [],
+                "errors": [],
+            })
+            return {
+                "status": "skipped",
+                "reason": "no_pending_search_operations",
+                "research_id": getattr(plan, "research_id", None),
+                "queries_planned": 0,
+                "queries_collected": 0,
+                "operation_results": operation_results,
+                "operations_planned": len(operation_results),
+            }
 
         mcp_url = (
             os.getenv("YOUTUBE_MCP_URL")
@@ -336,7 +410,7 @@ class YouTubeResearchExecutor:
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
     
-                    for index, planned_query in enumerate(plan.queries):
+                    for index, planned_query in enumerate(executable_queries):
                         text = str(getattr(planned_query, "query", "") or "").strip()
                         if not text:
                             continue
@@ -541,7 +615,7 @@ class YouTubeResearchExecutor:
                 "status": "blocked",
                 "persisted": False,
                 "research_id": plan.research_id,
-                "queries_planned": len(plan.queries),
+                "queries_planned": len(executable_queries),
                 "queries_collected": successful_queries,
                 "queries_failed": failed_queries,
                 "videos_collected": len(research.video_ids),

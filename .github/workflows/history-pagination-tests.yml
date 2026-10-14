@@ -17,6 +17,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt pytest
       - name: Run pagination regression tests
-        run: pytest -q tests/test_supabase_history_pagination.py
+        run: PYTHONPATH=. pytest -q tests/test_supabase_history_pagination.py
       - name: Run full unittest suite
-        run: pytest -q
+        run: PYTHONPATH=. pytest -q

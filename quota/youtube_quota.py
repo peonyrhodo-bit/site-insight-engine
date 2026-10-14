@@ -169,6 +169,34 @@ class YouTubeQuotaManager:
         finally:
             conn.close()
 
+    def record_planned_call(
+        self,
+        *,
+        bucket: str,
+        operation: str,
+        method: str,
+        units: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Record an intended call without consuming quota."""
+        if bucket not in {"search", "other"}:
+            raise ValueError("bucket must be 'search' or 'other'")
+        conn = self._get_db()
+        try:
+            event_id = conn.execute("""
+                INSERT INTO youtube_quota_events
+                    (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
+                VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)
+            """, (
+                datetime.now(timezone.utc).isoformat(), operation, method, max(1, int(units)),
+                json.dumps(self.get_remaining()),
+                json.dumps(metadata or {}, ensure_ascii=False, default=str),
+            )).lastrowid
+            conn.commit()
+            return int(event_id)
+        finally:
+            conn.close()
+
     def authorize_call(
         self,
         *,

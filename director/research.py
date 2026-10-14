@@ -113,6 +113,75 @@ class ResearchPlan:
                 operation["status"] = operation["status"].value
         return value
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ResearchPlan":
+        """Restore a persisted plan/operation ledger for safe retry after restart."""
+        if not isinstance(value, dict):
+            raise TypeError("research plan payload must be a mapping")
+
+        operations: list[ResearchOperation] = []
+        for raw in value.get("operations", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            operation_data = dict(raw)
+            status = operation_data.get("status", ResearchOperationStatus.PLANNED)
+            operation_data["status"] = (
+                status if isinstance(status, ResearchOperationStatus)
+                else ResearchOperationStatus(str(status))
+            )
+            operation_data["inputs"] = dict(operation_data.get("inputs") or {})
+            operation_data["dependencies"] = list(operation_data.get("dependencies") or [])
+            operation_data["quota_requirements"] = dict(operation_data.get("quota_requirements") or {})
+            operation_data["result"] = dict(operation_data.get("result") or {})
+            operations.append(ResearchOperation(**{
+                key: operation_data[key]
+                for key in (
+                    "operation_id", "operation", "requirement_key", "inputs",
+                    "dependencies", "expected_result", "completion_criterion",
+                    "quota_requirements", "status", "result", "error",
+                    "started_at", "completed_at",
+                )
+                if key in operation_data
+            }))
+
+        queries: list[ResearchQuery] = []
+        for raw in value.get("queries", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            query_data = dict(raw)
+            priority = query_data.get("priority", ResearchPriority.MEDIUM)
+            query_data["priority"] = priority if isinstance(priority, ResearchPriority) else ResearchPriority(str(priority))
+            queries.append(ResearchQuery(**{
+                key: query_data[key]
+                for key in ("query", "language", "region_code", "purpose", "priority", "max_results", "metadata")
+                if key in query_data
+            }))
+
+        gaps: list[ResearchGap] = []
+        for raw in value.get("gaps", []) or []:
+            if isinstance(raw, dict):
+                gaps.append(ResearchGap(**{
+                    key: raw[key] for key in ("description", "importance", "suggested_method", "topic")
+                    if key in raw
+                }))
+
+        raw_status = value.get("status", ResearchStatus.PLANNED)
+        status = raw_status if isinstance(raw_status, ResearchStatus) else ResearchStatus(str(raw_status))
+        return cls(
+            research_id=str(value.get("research_id") or ""),
+            objective=str(value.get("objective") or ""),
+            status=status,
+            priorities=list(value.get("priorities") or []),
+            languages=list(value.get("languages") or []),
+            directions=list(value.get("directions") or []),
+            queries=queries,
+            gaps=gaps,
+            reason=str(value.get("reason") or ""),
+            created_at=str(value.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            metadata=dict(value.get("metadata") or {}),
+            operations=operations,
+        )
+
 
 def _get(source: Any, key: str, default: Any = None) -> Any:
     if source is None:

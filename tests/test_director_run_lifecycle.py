@@ -146,3 +146,181 @@ async def test_unknown_director_status_is_not_marked_succeeded(monkeypatch):
 
     assert result["status"] == "waiting"
     assert memory.rows[result["run_id"]]["status"] == "partial"
+
+
+class BlockingDirector(FakeDirector):
+    def __init__(self):
+        super().__init__()
+        self.started = __import__("asyncio").Event()
+        self.release = __import__("asyncio").Event()
+
+    async def run_autonomous_cycle(self, objective=None):
+        self.started.set()
+        await self.release.wait()
+        return {"status": "succeeded", "message": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cycle_for_same_project_is_rejected_without_duplicate_run(monkeypatch):
+    import asyncio
+
+    memory = FakeMemory()
+    director = BlockingDirector()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+    server._DIRECTOR_CYCLE_LOCKS.pop("locked-project", None)
+
+    first = asyncio.create_task(
+        server._execute_autonomous_cycle(project_id="locked-project")
+    )
+    await director.started.wait()
+
+    with pytest.raises(server.DirectorCycleAlreadyRunning):
+        await server._execute_autonomous_cycle(project_id="locked-project")
+
+    assert len(memory.rows) == 1
+    director.release.set()
+    result = await first
+    assert memory.rows[result["run_id"]]["status"] == "succeeded"
+
+
+class FakeRunBackend:
+    TABLE_RUNS = "director_runs"
+
+    def __init__(self, rows=None, insert_error=None):
+        self.rows = list(rows or [])
+        self.insert_error = insert_error
+        self.inserted = 0
+
+    def _recent_for_project(self, table_name, *, limit, project_id, order_key):
+        assert table_name == self.TABLE_RUNS
+        return [
+            row for row in self.rows
+            if str(row.get("project_id")) == str(project_id)
+        ]
+
+    def save_run(self, *, language=None, region_code=None, data=None):
+        if self.insert_error:
+            raise self.insert_error
+        self.inserted += 1
+        return 900 + self.inserted
+
+
+class FakeRunMemory:
+    def __init__(self, rows):
+        self.rows = {row["id"]: dict(row) for row in rows}
+        self.updates = []
+
+    def update_run(self, *, run_id, data):
+        self.rows[run_id].update(data)
+        self.updates.append((run_id, dict(data)))
+        return True
+
+
+@pytest.mark.asyncio
+async def test_stale_run_is_marked_failed_with_diagnostic_reason(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    old_stamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    row = {
+        "id": 176,
+        "project_id": "stale-project",
+        "status": "running",
+        "started_at": old_stamp,
+        "updated_at": old_stamp,
+        "current_step": "director_cycle",
+    }
+    backend = FakeRunBackend([row])
+    memory = FakeRunMemory([row])
+    adapter = object.__new__(server.ServerMemory)
+    adapter.backend = backend
+    adapter.memory = memory
+    monkeypatch.setenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "60")
+
+    run_id = await adapter.create_run("stale-project", {"status": "requested"})
+
+    assert run_id == 901
+    assert memory.rows[176]["status"] == "failed"
+    assert memory.rows[176]["current_step"] == "stale_timeout"
+    assert "timed out" in memory.rows[176]["error_message"]
+    assert "last update" in memory.rows[176]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_active_run_blocks_new_run(monkeypatch):
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    row = {
+        "id": 176,
+        "project_id": "active-project",
+        "status": "running",
+        "started_at": stamp,
+        "updated_at": stamp,
+        "current_step": "director_cycle",
+    }
+    backend = FakeRunBackend([row])
+    memory = FakeRunMemory([row])
+    adapter = object.__new__(server.ServerMemory)
+    adapter.backend = backend
+    adapter.memory = memory
+    monkeypatch.setenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800")
+
+    with pytest.raises(server.DirectorCycleAlreadyRunning, match="176"):
+        await adapter.create_run("active-project", {"status": "requested"})
+
+    assert backend.inserted == 0
+    assert memory.rows[176]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_unique_constraint_race_is_reported_as_active_cycle():
+    backend = FakeRunBackend(insert_error=RuntimeError(
+        "duplicate key value violates unique constraint director_runs_one_active_project"
+    ))
+    adapter = object.__new__(server.ServerMemory)
+    adapter.backend = backend
+    adapter.memory = FakeRunMemory([])
+
+    with pytest.raises(server.DirectorCycleAlreadyRunning) as error:
+        await adapter.create_run("race-project", {"status": "requested"})
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert "unique constraint" in str(error.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_active_run_older_than_recent_100_still_blocks_new_cycle(monkeypatch):
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {
+            "id": i,
+            "project_id": "deep-history",
+            "status": "succeeded",
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+        for i in range(1, 126)
+    ]
+    # This active row is older than the 100 most recent records.
+    rows.append({
+        "id": 176,
+        "project_id": "deep-history",
+        "status": "running",
+        "started_at": stamp,
+        "updated_at": stamp,
+        "current_step": "director_cycle",
+    })
+    backend = FakeRunBackend(rows)
+    memory = FakeRunMemory([row for row in rows if row.get("id") == 176])
+    adapter = object.__new__(server.ServerMemory)
+    adapter.backend = backend
+    adapter.memory = memory
+    monkeypatch.setenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800")
+
+    with pytest.raises(server.DirectorCycleAlreadyRunning, match="176"):
+        await adapter.create_run("deep-history", {"status": "requested"})
+
+    assert backend.inserted == 0

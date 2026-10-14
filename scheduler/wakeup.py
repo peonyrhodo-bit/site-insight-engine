@@ -131,8 +131,11 @@ class WakeupManager:
         self,
         *,
         enabled: bool = True,
+        max_queue_size: int = 500,
     ) -> None:
         self.enabled = enabled
+        self.max_queue_size = max(1, int(max_queue_size))
+        self.dropped_signals = 0
         self._queue: list[WakeupSignal] = []
 
     # ------------------------------------------------------------------
@@ -170,6 +173,27 @@ class WakeupManager:
         )
 
         if self.enabled:
+            self.clear_consumed()
+            if len(self._queue) >= self.max_queue_size:
+                # Prefer retaining higher-priority work. For equal priorities,
+                # evict the oldest signal. This is still an in-process buffer,
+                # not durable storage, so expose drops in diagnostics.
+                priority_rank = {
+                    WakeupPriority.LOW: 1,
+                    WakeupPriority.NORMAL: 2,
+                    WakeupPriority.HIGH: 3,
+                    WakeupPriority.CRITICAL: 4,
+                }
+                lowest_rank = min(priority_rank[item.priority] for item in self._queue)
+                lowest_index = next(
+                    index for index, item in enumerate(self._queue)
+                    if priority_rank[item.priority] == lowest_rank
+                )
+                if priority_rank[signal.priority] < lowest_rank:
+                    self.dropped_signals += 1
+                    return signal
+                self._queue.pop(lowest_index)
+                self.dropped_signals += 1
             self._queue.append(signal)
 
         return signal
@@ -407,6 +431,8 @@ class WakeupManager:
         return {
             "enabled": self.enabled,
             "pending": len(pending),
+            "queued": len(self._queue),
+            "dropped_signals": self.dropped_signals,
             "signals": [
                 signal.to_dict()
                 for signal in pending

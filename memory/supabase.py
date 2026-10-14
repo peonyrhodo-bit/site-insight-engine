@@ -201,6 +201,7 @@ class SupabaseMemoryBackend:
         )
         rows: list[dict[str, Any]] = []
         offset = 0
+        expected_project = str(project_id) if project_id is not None else None
 
         while True:
             query = (
@@ -218,54 +219,14 @@ class SupabaseMemoryBackend:
                 .execute()
             )
             page = self._safe_list(response)
-            rows.extend(page)
-
-            if len(page) < page_size:
-                break
-
-            offset += page_size
-
-        if project_id is not None:
-            expected_project = str(project_id)
-            rows = [
-                row
-                for row in rows
-                if self._project_id_from_row(row) == expected_project
-            ]
-
-        return rows if requested_limit is None else rows[:requested_limit]
-
-    # ------------------------------------------------------------------
-    # YOUTUBE DATA
-    # ------------------------------------------------------------------
-
-    def _paginated_rows(
-        self,
-        table_name: str,
-        *,
-        order_key: str,
-        page_size: int = 1000,
-    ) -> list[dict[str, Any]]:
-        """
-        Load all rows from a DATA table using stable, paginated reads.
-
-        Supabase Data API responses are limited to a default maximum of
-        1,000 rows, so DATA loading must not rely on one unbounded select.
-        """
-        rows: list[dict[str, Any]] = []
-        offset = 0
-
-        while True:
-            response = (
-                self.client
-                .table(table_name)
-                .select("*")
-                .order(order_key, desc=False)
-                .range(offset, offset + page_size - 1)
-                .execute()
-            )
-            page = self._safe_list(response)
-            rows.extend(page)
+            for row in page:
+                if expected_project is not None and self._project_id_from_row(row) != expected_project:
+                    continue
+                rows.append(row)
+                # Results are ordered newest-first, so stop as soon as the
+                # requested project-specific working set has been collected.
+                if requested_limit is not None and len(rows) >= requested_limit:
+                    return rows
 
             if len(page) < page_size:
                 break
@@ -273,6 +234,43 @@ class SupabaseMemoryBackend:
             offset += page_size
 
         return rows
+
+    # ------------------------------------------------------------------
+    # YOUTUBE DATA
+    # ------------------------------------------------------------------
+
+    def _iter_paginated_rows(
+        self,
+        table_name: str,
+        *,
+        order_key: str,
+        descending: bool = False,
+        page_size: int = 500,
+    ):
+        """Yield one page at a time instead of retaining an entire table in RAM.
+
+        The database remains the source of truth; callers choose a bounded
+        working set while every page is fetched in stable order.
+        """
+        page_size = max(1, min(int(page_size), 1000))
+        offset = 0
+
+        while True:
+            response = (
+                self.client
+                .table(table_name)
+                .select("*")
+                .order(order_key, desc=descending)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = self._safe_list(response)
+            yield from page
+
+            if len(page) < page_size:
+                break
+
+            offset += page_size
 
     def load_youtube_data(
         self,
@@ -297,7 +295,7 @@ class SupabaseMemoryBackend:
             else None
         )
 
-        video_rows = self._paginated_rows(
+        video_rows = self._iter_paginated_rows(
             "videos",
             order_key="video_id",
         )
@@ -338,14 +336,26 @@ class SupabaseMemoryBackend:
             videos.append(video.to_dict())
             video_ids.add(str(video.video_id))
 
-        snapshot_rows = self._paginated_rows(
-            "video_snapshots",
-            order_key="id",
-        )
+        # Keep the newest few observations per video in the in-memory working set.
+        # Older observations remain untouched in Supabase and can be queried
+        # for offline/history-specific analysis when needed.
+        try:
+            snapshots_per_video = max(
+                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "2")), 20)
+            )
+        except (TypeError, ValueError):
+            snapshots_per_video = 2
 
         snapshots: list[dict[str, Any]] = []
+        snapshot_counts: dict[str, int] = {}
 
-        for row in snapshot_rows:
+        # Descending IDs mean the newest observations are encountered first.
+        # Stream rows and discard old observations before constructing objects.
+        for row in self._iter_paginated_rows(
+            "video_snapshots",
+            order_key="id",
+            descending=True,
+        ):
             row_project = self._project_id_from_row(row)
 
             if expected_project is not None:
@@ -354,6 +364,14 @@ class SupabaseMemoryBackend:
                         continue
                 elif str(row.get("video_id")) not in video_ids:
                     continue
+
+            video_key = str(row.get("video_id") or "")
+            if not video_key:
+                continue
+            seen_for_video = snapshot_counts.get(video_key, 0)
+            if seen_for_video >= snapshots_per_video:
+                continue
+            snapshot_counts[video_key] = seen_for_video + 1
 
             data = self._safe_dict(row.get("data_json"))
             statistics = self._safe_dict(data.get("statistics"))
@@ -584,10 +602,12 @@ class SupabaseMemoryBackend:
     def load_research_data(self, *, project_id: str | None = None) -> dict[str, Any]:
         """Load persisted research/query/relation DATA for one project."""
         expected_project = str(project_id) if project_id is not None else None
+        # Keep the process-local graph bounded. The complete history remains
+        # in Supabase; Director startup only needs a recent working index.
         return {
-            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=None, project_id=expected_project, order_key="id", default_limit=100),
-            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
+            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=2000, project_id=expected_project, order_key="id", default_limit=2000),
+            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=1000, project_id=expected_project, order_key="id", default_limit=1000),
+            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=5000, project_id=expected_project, order_key="id", default_limit=5000),
         }
 
     def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:

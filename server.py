@@ -273,6 +273,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class DirectorCycleAlreadyRunning(RuntimeError):
+    """Raised when a project already has an active autonomous Director cycle."""
+
+
+_DIRECTOR_CYCLE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 # ---------------------------------------------------------------------------
 # Generic serialization
 # ---------------------------------------------------------------------------
@@ -941,30 +948,71 @@ class ServerMemory:
             return None
 
     async def create_run(self, project_id: str, run: dict[str, Any]) -> int:
-        if not self.memory:
+        if not self.memory or not self.backend:
             raise RuntimeError("Director run storage is unavailable")
-        # Recover stale active records before inserting; this also releases the
-        # database's partial unique index after a process crash.
+
+        # Read all runs for this project, not just the newest 100 globally:
+        # an older active row may still own the partial unique index.
         now = datetime.now(timezone.utc)
-        for old_run in self.memory.get_recent_runs(limit=100):
+        stale_timeout = max(
+            60, int(os.getenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800"))
+        )
+        try:
+            if hasattr(self.backend, "_recent_for_project"):
+                old_runs = self.backend._recent_for_project(
+                    self.backend.TABLE_RUNS,
+                    limit=None,
+                    project_id=project_id,
+                    order_key="created_at",
+                )
+            else:
+                old_runs = self.backend.get_recent_runs(
+                    limit=100000, project_id=project_id
+                )
+        except TypeError:
+            old_runs = self.backend.get_recent_runs(limit=100000)
+        except Exception:
+            logger.exception("Could not inspect active Director runs for project=%s", project_id)
+            raise
+
+        active_runs: list[dict[str, Any]] = []
+        for old_run in old_runs:
             if not isinstance(old_run, dict):
                 continue
             old_data = old_run.get("data_json") if isinstance(old_run.get("data_json"), dict) else {}
             old_project = old_run.get("project_id") or old_data.get("project_id")
-            old_status = old_run.get("status") or old_data.get("status")
-            stamp = old_run.get("updated_at") or old_data.get("updated_at") or old_data.get("started_at")
-            if str(old_project) != str(project_id) or old_status not in {"requested", "running"} or not stamp:
+            old_status = str(old_run.get("status") or old_data.get("status") or "").lower()
+            if str(old_project) != str(project_id) or old_status not in {"requested", "running"}:
+                continue
+
+            stamp = (
+                old_run.get("updated_at")
+                or old_data.get("updated_at")
+                or old_run.get("started_at")
+                or old_data.get("started_at")
+                or old_run.get("created_at")
+                or old_data.get("created_at")
+            )
+            if not stamp:
+                # Missing heartbeat is not proof of a stale process. Keep the
+                # active guard and require operator review rather than overlap.
+                active_runs.append(old_run)
                 continue
             try:
                 parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
             except (TypeError, ValueError):
+                active_runs.append(old_run)
                 continue
+
+            age_seconds = (now - parsed).total_seconds()
             old_run_id = old_run.get("id")
-            if old_run_id is None:
-                continue
-            if (now - parsed).total_seconds() > 1800:
+            if age_seconds > stale_timeout and old_run_id is not None:
+                reason = (
+                    f"Stale run timed out after {stale_timeout}s without heartbeat; "
+                    f"last update was {parsed.isoformat()} (age={int(age_seconds)}s)."
+                )
                 await self.update_run(
                     int(old_run_id),
                     project_id=project_id,
@@ -972,14 +1020,41 @@ class ServerMemory:
                         "status": "failed",
                         "finished_at": utc_now(),
                         "current_step": "stale_timeout",
-                        "error_message": "Run marked failed after 30 minutes without an update.",
+                        "error_message": reason,
                     },
                 )
+            else:
+                active_runs.append(old_run)
+
+        if active_runs:
+            active = active_runs[0]
+            active_id = active.get("id", "unknown")
+            active_step = active.get("current_step") or "unknown"
+            raise DirectorCycleAlreadyRunning(
+                f"Project {project_id!r} already has active Director run "
+                f"{active_id} (status={active.get('status', 'running')}, step={active_step})."
+            )
+
         payload = dict(run)
         payload["project_id"] = project_id
-        result = self.memory.save_run(language=payload.get("language"), region_code=payload.get("region_code"), data=payload)
-        if hasattr(result, "__await__"):
-            result = await result
+        try:
+            result = self.backend.save_run(
+                language=payload.get("language"),
+                region_code=payload.get("region_code"),
+                data=payload,
+            )
+            if hasattr(result, "__await__"):
+                result = await result
+        except Exception as exc:
+            # The database partial unique index is the cross-process guard.
+            # Translate its race winner into a conflict, never blind-retry it.
+            message = str(exc).lower()
+            if "unique" in message or "duplicate key" in message or "23505" in message:
+                raise DirectorCycleAlreadyRunning(
+                    f"Project {project_id!r} already has an active Director run; "
+                    "the database uniqueness guard rejected this start."
+                ) from exc
+            raise
         if result is None:
             raise RuntimeError("Director run insert returned no id")
         return int(result)
@@ -1932,22 +2007,35 @@ class DataAdapter:
                     )
 
                     if isinstance(persisted, dict):
-                        loaded_registry = (
-                            YouTubeDataRegistry.from_dict(
-                                persisted
-                            )
-                        )
-
+                        # Restore directly into the live registry to avoid
+                        # temporarily holding two complete copies in memory.
                         self.youtube_registry.clear()
 
-                        for query in loaded_registry.queries():
-                            self.youtube_registry.add_query(query)
+                        for row in persisted.pop("queries", []) or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeQuery
+                                    self.youtube_registry.add_query(YouTubeQuery.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube query")
 
-                        for video in loaded_registry.videos():
-                            self.youtube_registry.add_video(video)
+                        for row in persisted.pop("videos", []) or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeVideo
+                                    self.youtube_registry.add_video(YouTubeVideo.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube video")
 
-                        for snapshot in loaded_registry.snapshots():
-                            self.youtube_registry.add_snapshot(snapshot)
+                        for row in persisted.pop("snapshots", []) or []:
+                            if isinstance(row, dict):
+                                try:
+                                    from data.youtube import YouTubeSnapshot
+                                    self.youtube_registry.add_snapshot(YouTubeSnapshot.from_dict(row))
+                                except Exception:
+                                    logger.exception("Failed to restore YouTube snapshot")
+
+                        del persisted
 
                 # Channel/niche DATA has its own persistence contour.
                 opportunity_loader = getattr(
@@ -2867,7 +2955,47 @@ async def _run_director(
 # ---------------------------------------------------------------------------
 
 
+async def _director_run_heartbeat(run_id: int, project_id: str) -> None:
+    """Keep long-running cycles fresh so stale recovery never steals a live lease."""
+    timeout = max(60, int(os.getenv("DIRECTOR_RUN_STALE_TIMEOUT_SECONDS", "1800")))
+    interval = max(5, min(60, timeout // 3))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            # ServerMemory adds updated_at and persists it to the indexed column.
+            await runtime.memory.update_run(
+                run_id, project_id=project_id, fields={}
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The heartbeat is best-effort; the cycle itself records any fatal
+            # persistence error. Keep retrying rather than silently dropping it.
+            logger.exception("Director run heartbeat failed: run_id=%s", run_id)
+
+
 async def _execute_autonomous_cycle(
+    *,
+    project_id: str,
+    objective: str | None = None,
+) -> dict[str, Any]:
+    """Prevent overlapping cycles in this process; the DB index guards other workers."""
+    lock = _DIRECTOR_CYCLE_LOCKS.setdefault(str(project_id), asyncio.Lock())
+    if lock.locked():
+        raise DirectorCycleAlreadyRunning(
+            f"Project {project_id!r} already has an autonomous Director cycle in progress."
+        )
+    await lock.acquire()
+    try:
+        return await _execute_autonomous_cycle_locked(
+            project_id=project_id,
+            objective=objective,
+        )
+    finally:
+        lock.release()
+
+
+async def _execute_autonomous_cycle_locked(
     *,
     project_id: str,
     objective: str | None = None,
@@ -2887,6 +3015,9 @@ async def _execute_autonomous_cycle(
             "updated_at": started_at,
             "result": None,
         },
+    )
+    heartbeat_task = asyncio.create_task(
+        _director_run_heartbeat(run_id, project_id)
     )
     cycle_completed = False
     current_step = "initializing"
@@ -2992,6 +3123,12 @@ async def _execute_autonomous_cycle(
         except Exception:
             logger.exception("Could not persist Director run failure: run_id=%s", run_id)
         raise
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.post("/director/autonomous/run")
@@ -3005,6 +3142,8 @@ async def director_autonomous_run(
             objective=objective,
         )
 
+    except DirectorCycleAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(
             "Autonomous Director cycle failed"
@@ -3065,6 +3204,16 @@ async def _autonomous_worker_loop() -> None:
                             project_id=signal.project_id,
                             objective=objective,
                         )
+                    except DirectorCycleAlreadyRunning as exc:
+                        # A duplicate wake/retry is expected while a cycle owns
+                        # the project lock. Do not enqueue another retry.
+                        logger.info(
+                            "Skipping duplicate autonomous wakeup: project=%s reason=%s detail=%s",
+                            signal.project_id,
+                            signal.reason,
+                            exc,
+                        )
+                        continue
                     except Exception:
                         logger.exception(
                             "Autonomous wakeup failed: project=%s reason=%s",

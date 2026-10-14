@@ -2326,6 +2326,11 @@ class DataAdapter:
                 )
 
         if self.opportunity_registry is not None:
+            # Return the opportunity entities as well as their counts. Previously
+            # these records were restored into the registry and counted, but never
+            # attached to the project state consumed by DirectorContext.
+            opportunity_data = self.opportunity_registry.to_dict()
+            result.update(opportunity_data)
             result["opportunity_inventory"] = self.opportunity_registry.counts()
 
         return result

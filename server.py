@@ -1590,6 +1590,7 @@ class DataAdapter:
         self.research_manager = None
         self.relations = None
         self.opportunity_registry = None
+        self._loaded_project_id: str | None = None
 
         try:
             if YouTubeDataRegistry is not None:
@@ -1925,7 +1926,7 @@ class DataAdapter:
                     None,
                 )
 
-                if callable(loader):
+                if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted = loader(
                         project_id=project_id,
                     )
@@ -1954,7 +1955,7 @@ class DataAdapter:
                     "load_opportunity_data",
                     None,
                 )
-                if callable(opportunity_loader) and self.opportunity_registry is not None:
+                if callable(opportunity_loader) and self.opportunity_registry is not None and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted_opportunity = opportunity_loader(project_id=project_id)
                     if isinstance(persisted_opportunity, dict):
                         from data.opportunity_registry import OpportunityDataRegistry
@@ -1969,7 +1970,7 @@ class DataAdapter:
                     None,
                 )
 
-                if callable(research_loader):
+                if callable(research_loader) and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted_research = research_loader(
                         project_id=project_id,
                     )
@@ -2016,6 +2017,8 @@ class DataAdapter:
                                         logger.exception(
                                             "Failed to restore data relation"
                                         )
+
+                self._loaded_project_id = project_id
 
                 if hasattr(
                     self.youtube_registry,

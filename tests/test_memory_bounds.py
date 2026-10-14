@@ -8,6 +8,55 @@ from scheduler.wakeup import WakeupManager, WakeupReason
 
 
 class InMemoryBoundsTests(unittest.TestCase):
+
+    def test_supabase_loader_streams_pages_and_bounds_snapshots_per_video(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from memory.supabase import SupabaseMemoryBackend
+
+        rows = [
+            {"id": 5, "video_id": "v1", "created_at": "2026-01-05", "data_json": {"project_id": "p", "statistics": {"views": 5}}},
+            {"id": 4, "video_id": "v1", "created_at": "2026-01-04", "data_json": {"project_id": "p", "statistics": {"views": 4}}},
+            {"id": 3, "video_id": "v1", "created_at": "2026-01-03", "data_json": {"project_id": "p", "statistics": {"views": 3}}},
+            {"id": 2, "video_id": "v1", "created_at": "2026-01-02", "data_json": {"project_id": "p", "statistics": {"views": 2}}},
+            {"id": 1, "video_id": "v1", "created_at": "2026-01-01", "data_json": {"project_id": "p", "statistics": {"views": 1}}},
+        ]
+
+        class Query:
+            def __init__(self, table):
+                self.table_name = table
+                self.desc = False
+                self.start = 0
+                self.end = 499
+            def select(self, _): return self
+            def order(self, _key, desc=False):
+                self.desc = desc
+                return self
+            def range(self, start, end):
+                self.start, self.end = start, end
+                return self
+            def execute(self):
+                table_rows = rows if self.table_name == "video_snapshots" else [
+                    {"video_id": "v1", "first_seen": None, "last_seen": None,
+                     "data_json": {"project_id": "p", "snippet": {"title": "Video"}}}
+                ]
+                ordered = sorted(table_rows, key=lambda row: row.get("id", 0), reverse=self.desc)
+                return SimpleNamespace(data=ordered[self.start:self.end + 1])
+
+        client = MagicMock()
+        client.table.side_effect = lambda name: Query(name)
+        backend = SupabaseMemoryBackend(client=client)
+
+        with patch.dict("os.environ", {"DIRECTOR_SNAPSHOTS_PER_VIDEO": "2"}):
+            payload = backend.load_youtube_data(project_id="p")
+
+        self.assertEqual(len(payload["videos"]), 1)
+        self.assertEqual(len(payload["snapshots"]), 2)
+        self.assertEqual(
+            [item["metrics"]["views"] for item in payload["snapshots"]],
+            [5, 4],
+        )
+
     def test_memory_backend_evicts_oldest_rows_at_limit(self):
         memory = InMemoryMemoryBackend(max_rows_per_table=2)
         memory.save_event(event_type="one")

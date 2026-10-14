@@ -196,6 +196,54 @@ class YouTubeResearchExecutor:
             )
             plan.operations.append(operation)
             represented.add((query_text, {query_language}))
+
+        # The current executor always creates query records, a research-set
+        # record, snapshots for returned videos, and relation records as part
+        # of its collection transaction. Keep those side effects explicit in
+        # the plan even when the Director supplied only search-oriented gaps.
+        def ensure_operation(name: str, requirement_key: str, expected: str, criterion: str) -> ResearchOperation:
+            existing = next((item for item in plan.operations if item.operation == name), None)
+            if existing is not None:
+                return existing
+            item = ResearchOperation(
+                operation_id=f"{name}_{uuid4().hex[:12]}",
+                operation=name,
+                requirement_key=requirement_key,
+                inputs={"research_id": plan.research_id},
+                dependencies=[],
+                expected_result=expected,
+                completion_criterion=criterion,
+                quota_requirements={"bucket": "none"},
+            )
+            plan.operations.append(item)
+            return item
+
+        search_operations = [item for item in plan.operations if item.operation == "search_videos"]
+        if search_operations:
+            query_operation = ensure_operation(
+                "register_queries", "queries", "persisted query records",
+                "every attempted query has a persisted record and outcome",
+            )
+            research_operation = ensure_operation(
+                "register_research_set", "research_sets", "persisted research-set record",
+                "research-set record is saved and can be retrieved",
+            )
+            snapshot_operation = ensure_operation(
+                "collect_video_snapshots", "video_snapshots", "video metric snapshots",
+                "snapshots are saved for returned videos; zero-result searches remain explicitly partial",
+            )
+            link_operation = ensure_operation(
+                "link_research_data", "relations", "persisted research relations",
+                "available research, query, video and snapshot relations are saved",
+            )
+            for operation in search_operations:
+                if query_operation.operation_id not in operation.dependencies:
+                    operation.dependencies.append(query_operation.operation_id)
+            snapshot_operation.dependencies = [item.operation_id for item in search_operations]
+            link_operation.dependencies = [
+                item.operation_id for item in [query_operation, research_operation, snapshot_operation, *search_operations]
+            ]
+
         plan.metadata.setdefault("operation_contract_version", 1)
         plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
         return plan
@@ -674,15 +722,16 @@ class YouTubeResearchExecutor:
                     error = "no_video_snapshots_collected"
                 result = {"snapshots_collected": snapshot_count, "persisted": persisted}
             elif name == "register_queries":
-                if query_count > 0 and persisted:
+                attempted_queries = query_count + query_failed
+                if attempted_queries > 0 and persisted:
                     status = ResearchOperationStatus.SUCCEEDED
-                elif query_count > 0:
+                elif attempted_queries > 0:
                     status = ResearchOperationStatus.PARTIAL
-                    error = "query_results_not_confirmed_persisted"
+                    error = "query_records_not_confirmed_persisted"
                 else:
                     status = ResearchOperationStatus.BLOCKED
-                    error = "no_successful_query_records"
-                result = {"queries_succeeded": query_count, "persisted": persisted}
+                    error = "no_query_records_created"
+                result = {"queries_succeeded": query_count, "queries_failed": query_failed, "persisted": persisted}
             elif name == "register_research_set":
                 if summary.get("research_id") and persisted:
                     status = ResearchOperationStatus.SUCCEEDED

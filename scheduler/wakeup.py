@@ -175,10 +175,24 @@ class WakeupManager:
         if self.enabled:
             self.clear_consumed()
             if len(self._queue) >= self.max_queue_size:
-                # The queue is an in-process notification buffer, not durable
-                # storage. Keep it bounded and favor recent signals; count any
-                # dropped entry so operators can detect sustained overload.
-                self._queue.pop(0)
+                # Prefer retaining higher-priority work. For equal priorities,
+                # evict the oldest signal. This is still an in-process buffer,
+                # not durable storage, so expose drops in diagnostics.
+                priority_rank = {
+                    WakeupPriority.LOW: 1,
+                    WakeupPriority.NORMAL: 2,
+                    WakeupPriority.HIGH: 3,
+                    WakeupPriority.CRITICAL: 4,
+                }
+                lowest_rank = min(priority_rank[item.priority] for item in self._queue)
+                lowest_index = next(
+                    index for index, item in enumerate(self._queue)
+                    if priority_rank[item.priority] == lowest_rank
+                )
+                if priority_rank[signal.priority] < lowest_rank:
+                    self.dropped_signals += 1
+                    return signal
+                self._queue.pop(lowest_index)
                 self.dropped_signals += 1
             self._queue.append(signal)
 

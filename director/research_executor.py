@@ -251,6 +251,22 @@ class YouTubeResearchExecutor:
                                 "YOUTUBE QUOTA USAGE: research_id=%s query_id=%s search=%r quota=%s",
                                 plan.research_id, query.query_id, text, query.metadata["quota"],
                             )
+                            # Persist each observed quota report immediately. If a later
+                            # query crashes or the worker restarts, earlier call counts
+                            # must not disappear with the in-memory registry.
+                            if self.storage is not None:
+                                try:
+                                    await _maybe_await(self.storage.save_research_data(
+                                        project_id=project_id,
+                                        queries=[query.to_dict()],
+                                        research_sets=[],
+                                        relations=[],
+                                    ))
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to persist quota usage immediately: research_id=%s query_id=%s",
+                                        plan.research_id, query.query_id,
+                                    )
                             if payload.get("error"):
                                 raise ValueError(
                                     f"youtube_mcp_api_error: {payload.get('error')}"
@@ -325,6 +341,19 @@ class YouTubeResearchExecutor:
                             query.status = "failed"
                             failed_queries += 1
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
+                            if self.storage is not None:
+                                try:
+                                    await _maybe_await(self.storage.save_research_data(
+                                        project_id=project_id,
+                                        queries=[query.to_dict()],
+                                        research_sets=[],
+                                        relations=[],
+                                    ))
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to persist failed query/quota metadata: research_id=%s query_id=%s",
+                                        plan.research_id, query.query_id,
+                                    )
     
         except Exception as exc:
             details = _mcp_error_details(exc)

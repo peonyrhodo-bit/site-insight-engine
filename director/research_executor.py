@@ -1069,6 +1069,11 @@ class YouTubeResearchExecutor:
         # Apply dependency blocking only after all operation outcomes have been
         # determined, so dependencies later in the plan are evaluated correctly.
         for operation in operations:
+            if getattr(operation, "status", None) in {
+                ResearchOperationStatus.SUCCEEDED,
+                ResearchOperationStatus.SKIPPED,
+            }:
+                continue
             dependencies = list(getattr(operation, "dependencies", []) or [])
             failed_dependencies = [
                 dependency for dependency in dependencies

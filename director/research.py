@@ -213,16 +213,48 @@ def research_from_gaps(
 
         research_gaps.append(research_gap)
 
-        direction = topic or str(description)
-        if direction not in directions:
+        # A missing-data diagnostic is not itself a searchable topic.
+        # Keep it as a gap for the Director, but do not send status/error
+        # text (for example, "comparison period is unavailable") to YouTube.
+        direction = str(topic or "").strip()
+        description_text = " ".join(str(description).split())
+        normalized_description = description_text.casefold()
+        diagnostic_markers = (
+            " unavailable",
+            " not available",
+            "insufficient data",
+            "not enough data",
+            "missing data",
+            "cannot determine",
+            "unable to determine",
+            "недоступ",
+            "недостаточно данных",
+            "не хватает данных",
+            "данные отсутств",
+            "невозможно определить",
+        )
+        is_diagnostic = any(
+            marker in f" {normalized_description}"
+            for marker in diagnostic_markers
+        )
+
+        # Only a concrete topic can turn a diagnostic gap into a query.
+        # Otherwise preserve the gap without fabricating a search phrase.
+        if not direction and not is_diagnostic:
+            direction = description_text
+
+        if direction and direction not in directions:
             directions.append(direction)
+
+        if not direction:
+            continue
 
         for language in normalized_languages:
             queries.append(
                 build_query(
-                    query=str(direction),
+                    query=direction,
                     language=language,
-                    purpose=str(description),
+                    purpose=description_text,
                     priority=(
                         ResearchPriority.HIGH
                         if research_gap.importance >= 0.7

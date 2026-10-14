@@ -21,7 +21,7 @@ from data.youtube import (
     video_from_mapping,
 )
 from data.research_sets import ResearchSet
-from data.opportunity_entities import YouTubeChannel
+from data.opportunity_entities import ChannelSnapshot, YouTubeChannel
 from director.research import (
     ResearchOperation,
     ResearchOperationStatus,
@@ -435,6 +435,11 @@ class YouTubeResearchExecutor:
                 "queries",
                 "research_set",
                 "relations",
+                *(
+                    ["channel_snapshots"]
+                    if any(op.operation == "collect_channel_snapshots" for op in (plan.operations or []))
+                    else []
+                ),
             ],
         )
 
@@ -452,6 +457,7 @@ class YouTubeResearchExecutor:
             async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
+                    available_tools = {tool.name for tool in (await session.list_tools()).tools}
     
                     for index, planned_query in enumerate(executable_queries):
                         text = str(getattr(planned_query, "query", "") or "").strip()
@@ -649,6 +655,129 @@ class YouTubeResearchExecutor:
                                         plan.research_id, query.query_id,
                                     )
     
+                    # Refresh video statistics through videos.list in bounded batches.
+                    # This is one API call per <=50 videos and does not use search.list quota.
+                    video_stats_calls = 0
+                    video_stats_errors: list[str] = []
+                    video_ids = list(dict.fromkeys(str(value) for value in research.video_ids if value))
+                    if video_ids and "get_video_stats" in available_tools:
+                        for offset in range(0, len(video_ids), 50):
+                            batch_ids = video_ids[offset:offset + 50]
+                            try:
+                                stats_result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
+                                stats_payload = _tool_payload(stats_result)
+                                if stats_payload.get("error"):
+                                    raise ValueError(str(stats_payload["error"]))
+                                items = stats_payload.get("items")
+                                if not isinstance(items, list):
+                                    raise ValueError("get_video_stats returned no items list")
+                                video_stats_calls += 1
+                                for item in items:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    raw_id = item.get("id") or item.get("video_id") or item.get("youtube_id")
+                                    if not raw_id:
+                                        continue
+                                    video = registry.get_video(str(raw_id))
+                                    if video is None:
+                                        continue
+                                    # Preserve the richer search metadata while refreshing observed metrics.
+                                    refreshed = video_from_mapping(item, video_id=str(raw_id), source="youtube-mcp:get_video_stats")
+                                    for field_name in ("title", "description", "channel_id", "channel_title", "published_at", "view_count", "like_count", "comment_count", "duration_seconds", "tags", "category_id"):
+                                        value = getattr(refreshed, field_name, None)
+                                        if value not in (None, "", []):
+                                            try:
+                                                setattr(video, field_name, value)
+                                            except (AttributeError, TypeError):
+                                                pass
+                                    snapshot = snapshot_from_mapping(
+                                        item,
+                                        snapshot_id=f"{plan.research_id}_stats_{uuid4().hex[:12]}",
+                                        video_id=video.video_id,
+                                        research_id=plan.research_id,
+                                        query_ids=list(research.query_ids),
+                                        source="youtube-mcp:get_video_stats",
+                                    )
+                                    registry.add_snapshot(snapshot)
+                                    research.add_snapshot(snapshot)
+                                    if relations is not None:
+                                        relations.link_research_snapshot(research, snapshot)
+                                        relations.link_video_snapshot(video, snapshot)
+                            except Exception as stats_exc:
+                                video_stats_errors.append(f"get_video_stats batch {offset // 50 + 1}: {type(stats_exc).__name__}: {stats_exc}")
+                    elif video_ids:
+                        video_stats_errors.append("MCP tool not available: get_video_stats")
+
+                    # Capture a point-in-time channel metrics snapshot for each channel
+                    # discovered from the video results. Do not make channel searches
+                    # implicitly: search_channels is a separate planned operation.
+                    channel_snapshots: list[ChannelSnapshot] = []
+                    channel_stats_errors: list[str] = []
+                    channel_stats_calls = 0
+                    if "collect_channel_snapshots" in {op.operation for op in (plan.operations or [])}:
+                        unique_channels = list({
+                            str(channel.channel_id): channel
+                            for channel in channels
+                            if getattr(channel, "channel_id", None)
+                        }.values())
+                        if unique_channels and "get_channel_stats" in available_tools:
+                            for channel in unique_channels:
+                                try:
+                                    stats_result = await session.call_tool(
+                                        "get_channel_stats",
+                                        {"channel_id": channel.channel_id},
+                                    )
+                                    stats_payload = _tool_payload(stats_result)
+                                    if stats_payload.get("error"):
+                                        raise ValueError(str(stats_payload["error"]))
+                                    items = stats_payload.get("items")
+                                    if not isinstance(items, list):
+                                        raise ValueError("get_channel_stats returned no items list")
+                                    item = next(
+                                        (candidate for candidate in items if isinstance(candidate, dict)
+                                         and str(candidate.get("id") or "") == channel.channel_id),
+                                        None,
+                                    )
+                                    if item is None:
+                                        raise ValueError("get_channel_stats returned no matching channel")
+                                    channel_stats_calls += 1
+                                    snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+                                    statistics = item.get("statistics") if isinstance(item.get("statistics"), dict) else {}
+                                    def metric_int(value: Any) -> int | None:
+                                        try:
+                                            return int(value) if value is not None else None
+                                        except (TypeError, ValueError):
+                                            return None
+                                    channel.title = str(snippet.get("title") or channel.title or "")
+                                    channel.description = snippet.get("description") or channel.description
+                                    channel.custom_url = snippet.get("customUrl") or channel.custom_url
+                                    channel.country = snippet.get("country") or channel.country
+                                    channel.published_at = snippet.get("publishedAt") or channel.published_at
+                                    channel.subscriber_count = metric_int(statistics.get("subscriberCount"))
+                                    channel.video_count = metric_int(statistics.get("videoCount"))
+                                    channel.view_count = metric_int(statistics.get("viewCount"))
+                                    channel.data.update({
+                                        "statistics_source": "youtube-mcp:get_channel_stats",
+                                        "statistics_captured_at": _now(),
+                                        "hidden_subscriber_count": bool(statistics.get("hiddenSubscriberCount", False)),
+                                    })
+                                    channel_snap = ChannelSnapshot(
+                                        channel_id=channel.channel_id,
+                                        captured_at=_now(),
+                                        subscriber_count=channel.subscriber_count,
+                                        video_count=channel.video_count,
+                                        view_count=channel.view_count,
+                                        data={"source": "youtube-mcp:get_channel_stats", "research_id": plan.research_id},
+                                    )
+                                    opportunity_registry.add_channel_snapshot(channel_snap)
+                                    channel_snapshots.append(channel_snap)
+                                except Exception as stats_exc:
+                                    channel_stats_errors.append(f"{channel.channel_id}: {type(stats_exc).__name__}: {stats_exc}")
+                        elif unique_channels:
+                            channel_stats_errors.append("MCP tool not available: get_channel_stats")
+                    errors.extend(video_stats_errors)
+                    errors.extend(f"channel_stats: {error}" for error in channel_stats_errors)
+
         except Exception as exc:
             details = _mcp_error_details(exc)
             logger.error(
@@ -749,6 +878,11 @@ class YouTubeResearchExecutor:
 
         if current_relation_objects:
             research.mark_data_gathered("relations")
+        if any(op.operation == "collect_channel_snapshots" for op in (plan.operations or [])):
+            if opportunity_registry is not None and opportunity_registry.channel_snapshots():
+                research.mark_data_gathered("channel_snapshots")
+            else:
+                research.mark_data_missing("channel_snapshots")
 
         persistence_confirmed = False
         if self.storage is not None:
@@ -795,7 +929,11 @@ class YouTubeResearchExecutor:
                                 project_id=project_id,
                                 data={
                                     "channels": new_channels,
-                                    "channel_snapshots": [],
+                                    "channel_snapshots": [
+                                        snapshot.to_dict()
+                                        for snapshot in (opportunity_registry.channel_snapshots() if opportunity_registry is not None else [])
+                                        if str(snapshot.channel_id) in seen_channel_ids
+                                    ],
                                     "niches": [],
                                     "niche_snapshots": [],
                                 },
@@ -860,6 +998,11 @@ class YouTubeResearchExecutor:
                 "search_calls": sum(int((query.metadata.get("quota") or {}).get("search_calls", 0) or 0) for query in collected_queries),
                 "other_units": sum(int((query.metadata.get("quota") or {}).get("other_units", 0) or 0) for query in collected_queries),
             },
+            "video_stats_calls": video_stats_calls,
+            "video_stats_errors": video_stats_errors,
+            "channel_stats_calls": channel_stats_calls,
+            "channel_stats_errors": channel_stats_errors,
+            "channel_snapshots_collected": len(channel_snapshots),
             "source": "youtube-mcp",
             "mcp_url": mcp_url,
             "completed_at": _now(),
@@ -1042,7 +1185,23 @@ class YouTubeResearchExecutor:
                     status = ResearchOperationStatus.BLOCKED
                     error = "dedicated_channel_collection_not_implemented"
                 result = {"videos_collected": video_count, "persisted": persisted}
-            elif name in {"collect_channel_snapshots", "collect_niche_evidence", "build_niche_snapshots"}:
+            elif name == "collect_channel_snapshots":
+                collected = int(summary.get("channel_snapshots_collected", 0) or 0)
+                if collected > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif collected > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "channel_snapshots_collected_but_persistence_not_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "; ".join(summary.get("channel_stats_errors") or []) or "no_channel_snapshots_collected"
+                result = {
+                    "channel_snapshots_collected": collected,
+                    "channel_stats_calls": int(summary.get("channel_stats_calls", 0) or 0),
+                    "errors": list(summary.get("channel_stats_errors") or []),
+                    "persisted": persisted,
+                }
+            elif name in {"collect_niche_evidence", "build_niche_snapshots"}:
                 status = ResearchOperationStatus.BLOCKED
                 error = f"operation_handler_not_implemented: {name}"
             else:

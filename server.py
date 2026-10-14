@@ -1937,7 +1937,7 @@ class DataAdapter:
                         # memory during startup, which can exceed small-instance limits.
                         self.youtube_registry.clear()
 
-                        for row in persisted.get("queries") or []:
+                        for row in persisted.pop("queries", []) or []:
                             if isinstance(row, dict):
                                 try:
                                     from data.youtube import YouTubeQuery
@@ -1945,7 +1945,7 @@ class DataAdapter:
                                 except Exception:
                                     logger.exception("Failed to restore YouTube query")
 
-                        for row in persisted.get("videos") or []:
+                        for row in persisted.pop("videos", []) or []:
                             if isinstance(row, dict):
                                 try:
                                     from data.youtube import YouTubeVideo
@@ -1953,7 +1953,7 @@ class DataAdapter:
                                 except Exception:
                                     logger.exception("Failed to restore YouTube video")
 
-                        for row in persisted.get("snapshots") or []:
+                        for row in persisted.pop("snapshots", []) or []:
                             if isinstance(row, dict):
                                 try:
                                     from data.youtube import YouTubeSnapshot

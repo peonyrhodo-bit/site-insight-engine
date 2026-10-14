@@ -143,14 +143,17 @@ class YouTubeResearchExecutor:
         # Every query is an explicit executable unit. This also covers discovery
         # queries appended later by Director's quota/discovery policy.
         represented = {
-            (str(op.inputs.get("query") or "").strip().casefold(),
-             tuple(op.inputs.get("languages") or []))
+            (
+                str(op.inputs.get("query") or "").strip().casefold(),
+                {str(language).casefold() for language in (op.inputs.get("languages") or [])},
+            )
             for op in plan.operations
             if op.operation == "search_videos"
         }
         for index, query in enumerate(plan.queries):
-            key = (str(query.query or "").strip().casefold(), (str(query.language or ""),))
-            if key in represented:
+            query_text = str(query.query or "").strip().casefold()
+            query_language = str(query.language or "").casefold()
+            if any(text == query_text and query_language in langs for text, langs in represented):
                 continue
             plan.operations.append(ResearchOperation(
                 operation_id=f"search_videos_{uuid4().hex[:12]}",
@@ -609,19 +612,12 @@ class YouTubeResearchExecutor:
         for operation in operations:
             operation_id = str(getattr(operation, "operation_id", ""))
             dependencies = list(getattr(operation, "dependencies", []) or [])
-            failed_dependencies = [
-                dependency for dependency in dependencies
-                if dependency in by_id and getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
-                not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.PARTIAL, "succeeded", "partial"}
-            ]
             name = str(getattr(operation, "operation", ""))
             status = ResearchOperationStatus.BLOCKED
             result: dict[str, Any] = {}
             error = None
 
-            if failed_dependencies:
-                error = "blocked_by_dependencies: " + ", ".join(failed_dependencies)
-            elif name == "search_videos":
+            if name == "search_videos":
                 if query_count > 0 and query_failed == 0 and video_count > 0:
                     status = ResearchOperationStatus.SUCCEEDED
                 elif query_count > 0 or video_count > 0:
@@ -692,7 +688,28 @@ class YouTubeResearchExecutor:
             operation.completed_at = _now()
             if getattr(operation, "started_at", None) is None:
                 operation.started_at = operation.completed_at
+
+        # Apply dependency blocking only after all operation outcomes have been
+        # determined, so dependencies later in the plan are evaluated correctly.
+        for operation in operations:
+            dependencies = list(getattr(operation, "dependencies", []) or [])
+            failed_dependencies = [
+                dependency for dependency in dependencies
+                if dependency in by_id and getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
+                not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.PARTIAL, "succeeded", "partial"}
+            ]
+            if failed_dependencies:
+                operation.status = ResearchOperationStatus.BLOCKED
+                operation.error = "blocked_by_dependencies: " + ", ".join(failed_dependencies)
+                operation.result = dict(getattr(operation, "result", {}) or {})
+                operation.result["blocked_dependencies"] = failed_dependencies
+
+        for operation in operations:
             results.append(operation.to_dict() if hasattr(operation, "to_dict") else {
-                "operation_id": operation_id, "operation": name, "status": str(status.value), "result": result, "error": error,
+                "operation_id": str(getattr(operation, "operation_id", "")),
+                "operation": str(getattr(operation, "operation", "")),
+                "status": str(getattr(getattr(operation, "status", "blocked"), "value", getattr(operation, "status", "blocked"))),
+                "result": dict(getattr(operation, "result", {}) or {}),
+                "error": getattr(operation, "error", None),
             })
         return results

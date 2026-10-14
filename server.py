@@ -2222,7 +2222,9 @@ class DataAdapter:
                     "Failed to load research sets"
                 )
 
-        # get_project_state is read-only: it must not persist DATA.\n        # Persistence belongs to explicit ingestion/write paths.\n\n        if self.relations is not None:
+        # This method is read-only; persistence belongs to explicit write paths.
+
+        if self.relations is not None:
             try:
                 if hasattr(
                     self.relations,

@@ -20,6 +20,7 @@ explicit, queryable and reusable by Analytics and Director.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
@@ -341,6 +342,7 @@ class DataRelations:
         *,
         youtube_registry: YouTubeDataRegistry | None = None,
         research_manager: ResearchSetManager | None = None,
+        max_relations: int = 5000,
     ) -> None:
         self.youtube_registry = (
             youtube_registry
@@ -354,7 +356,10 @@ class DataRelations:
             )
         )
 
-        self._relations: dict[
+        # Relationship data is a process-local index, not the durable source
+        # of truth. Bound it so long-lived workers cannot grow without limit.
+        self.max_relations = max(1, int(max_relations))
+        self._relations: OrderedDict[
             tuple[
                 str,
                 int | str,
@@ -363,7 +368,7 @@ class DataRelations:
                 int | str,
             ],
             DataRelation,
-        ] = {}
+        ] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Generic relation management
@@ -381,9 +386,11 @@ class DataRelations:
                 "relation must be DataRelation"
             )
 
-        self._relations[
-            relation.key()
-        ] = relation
+        key = relation.key()
+        self._relations[key] = relation
+        self._relations.move_to_end(key)
+        while len(self._relations) > self.max_relations:
+            self._relations.popitem(last=False)
 
         return relation
 

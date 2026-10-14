@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from typing import Any
 
 
@@ -26,7 +27,19 @@ def _clean(value: Any, default: Any = None) -> Any:
 class InMemoryMemoryBackend:
     """Process-local storage backend used in development and tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_rows_per_table: int | None = None) -> None:
+        """Initialize bounded process-local storage.
+
+        This backend is intentionally ephemeral. A row limit prevents free/dev
+        deployments from retaining an unbounded history in process memory;
+        use the Supabase backend when durable history is required.
+        """
+        if max_rows_per_table is None:
+            try:
+                max_rows_per_table = int(os.getenv("INMEMORY_MAX_ROWS_PER_TABLE", "250"))
+            except (TypeError, ValueError):
+                max_rows_per_table = 250
+        self.max_rows_per_table = max(1, min(int(max_rows_per_table), 10000))
         self._next_id = 1
         self._runs: list[dict[str, Any]] = []
         self._decisions: list[dict[str, Any]] = []
@@ -56,6 +69,11 @@ class InMemoryMemoryBackend:
         row = {"id": row_id, "created_at": _utc_now()}
         row.update(payload)
         rows.append(row)
+        overflow = len(rows) - self.max_rows_per_table
+        if overflow > 0:
+            # Lists are ordered oldest-first. Trim in place so any references
+            # to the table list remain valid.
+            del rows[:overflow]
         return row_id
 
     @staticmethod

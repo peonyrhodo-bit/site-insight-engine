@@ -252,6 +252,14 @@ class YouTubeResearchExecutor:
 
         collected_queries: list[YouTubeQuery] = []
         channels: list[YouTubeChannel] = []
+        for operation in list(getattr(plan, "operations", []) or []):
+            if str(getattr(operation, "operation", "")) in {
+                "search_videos", "register_queries", "register_research_set",
+                "collect_video_snapshots", "link_research_data", "collect_channels",
+            }:
+                operation.status = ResearchOperationStatus.RUNNING
+                operation.started_at = _now()
+                operation.error = None
         successful_queries = 0
         failed_queries = 0
         errors: list[str] = []
@@ -722,7 +730,7 @@ class YouTubeResearchExecutor:
             failed_dependencies = [
                 dependency for dependency in dependencies
                 if dependency not in by_id or getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
-                not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.PARTIAL, "succeeded", "partial"}
+                not in {ResearchOperationStatus.SUCCEEDED, "succeeded"}
             ]
             if failed_dependencies:
                 operation.status = ResearchOperationStatus.BLOCKED

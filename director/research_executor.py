@@ -706,14 +706,23 @@ class YouTubeResearchExecutor:
 
         # Persist the final operation ledger with the research set, after results
         # are known. A successful transport response alone is not completion.
+        execution_summary["operation_ledger_persisted"] = False
         if self.storage is not None:
             research.metadata["operation_results"] = operation_results
-            await _maybe_await(self.storage.save_research_data(
-                project_id=project_id,
-                queries=[],
-                research_sets=[research.to_dict()],
-                relations=[],
-            ))
+            try:
+                await _maybe_await(self.storage.save_research_data(
+                    project_id=project_id,
+                    queries=[],
+                    research_sets=[research.to_dict()],
+                    relations=[],
+                ))
+                execution_summary["operation_ledger_persisted"] = True
+            except Exception as exc:
+                errors.append(f"operation_ledger_persistence: {type(exc).__name__}: {exc}")
+                execution_summary["errors"] = errors
+                logger.exception("Failed to persist operation ledger: research_id=%s", plan.research_id)
+        execution_summary["research"] = research.to_dict()
+        execution_summary["errors"] = errors
         return execution_summary
 
     @staticmethod

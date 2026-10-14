@@ -483,7 +483,8 @@ def plan_from_requirements(
     # Dependencies are explicit and only reference operations present in this plan.
     by_type = {item.operation: item for item in operation_tasks}
     dependency_types = {
-        "search_videos": ["register_queries"],
+        # Query records are created as part of the search operation's preflight;
+        # registration is therefore an output/audit task, not a prerequisite.
         "collect_video_snapshots": ["search_videos"],
         "collect_channels": ["search_videos"],
         "collect_channel_snapshots": ["collect_channels"],

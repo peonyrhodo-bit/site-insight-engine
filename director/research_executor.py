@@ -251,6 +251,10 @@ class YouTubeResearchExecutor:
                                 "YOUTUBE QUOTA USAGE: research_id=%s query_id=%s search=%r quota=%s",
                                 plan.research_id, query.query_id, text, query.metadata["quota"],
                             )
+                            if payload.get("error"):
+                                raise ValueError(
+                                    f"youtube_mcp_api_error: {payload.get('error')}"
+                                )
                             if "items" not in payload or not isinstance(payload.get("items"), list):
                                 raise ValueError(
                                     "youtube_mcp_invalid_response: expected 'items' list"

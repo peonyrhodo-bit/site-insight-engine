@@ -262,11 +262,23 @@ class YouTubeResearchExecutor:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
         except Exception as exc:
-            return {
+            blocked_summary = {
                 "status": "blocked",
-                "reason": "mcp_client_unavailable",
-                "error": str(exc),
+                "persisted": False,
+                "research_id": getattr(plan, "research_id", None),
+                "queries_planned": len(getattr(plan, "queries", []) or []),
+                "queries_collected": 0,
+                "queries_failed": 0,
+                "videos_collected": 0,
+                "snapshots_collected": 0,
+                "relations_created": 0,
+                "errors": [f"mcp_client_unavailable: {type(exc).__name__}: {exc}"],
             }
+            operation_results = self._finalize_operations(plan, blocked_summary)
+            blocked_summary["operation_results"] = operation_results
+            blocked_summary["operations_planned"] = len(operation_results)
+            blocked_summary["reason"] = "mcp_client_unavailable"
+            return blocked_summary
 
         project_id = project_id or getattr(self.data, "project_id", None) or "default"
         registry = self.data.youtube_registry

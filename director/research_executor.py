@@ -85,6 +85,24 @@ def _tool_payload(result: Any) -> dict[str, Any]:
     return {}
 
 
+def _research_objects_for_persistence(
+    registry: Any,
+    research: Any,
+) -> tuple[list[Any], list[Any]]:
+    """Resolve only this research's objects through indexed registry lookups."""
+    videos = [
+        video
+        for video_id in dict.fromkeys(research.video_ids)
+        if (video := registry.get_video(video_id)) is not None
+    ]
+    snapshots = [
+        snapshot
+        for snapshot_id in dict.fromkeys(research.snapshot_ids)
+        if (snapshot := registry.get_snapshot(snapshot_id)) is not None
+    ]
+    return videos, snapshots
+
+
 class YouTubeResearchExecutor:
     """Research execution layer: Director decides, this layer collects."""
 
@@ -360,20 +378,11 @@ class YouTubeResearchExecutor:
 
         if self.storage is not None:
             # Persist only objects referenced by this research run. Resolve IDs
-            # through the registry indexes instead of scanning the entire
-            # process-wide registry and rebuilding the same sets for every row.
-            # The registry grows across cycles; a full scan here made each
-            # persistence pass increasingly expensive as history accumulated.
-            research_videos = [
-                video
-                for video_id in dict.fromkeys(research.video_ids)
-                if (video := registry.get_video(video_id)) is not None
-            ]
-            research_snapshots = [
-                snapshot
-                for snapshot_id in dict.fromkeys(research.snapshot_ids)
-                if (snapshot := registry.get_snapshot(snapshot_id)) is not None
-            ]
+            # through the registry indexes rather than scanning process-wide
+            # history, which grows across cycles.
+            research_videos, research_snapshots = _research_objects_for_persistence(
+                registry, research
+            )
             await _maybe_await(
                 self.storage.save_youtube_data(
                     project_id=project_id,

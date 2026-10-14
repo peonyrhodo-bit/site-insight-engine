@@ -556,16 +556,21 @@ class YouTubeResearchExecutor:
             blocked_summary["operations_planned"] = len(operation_results)
             return blocked_summary
 
-        # A successful MCP response is a gathered data point even when
-        # it contains zero items. Empty search results are a valid research
-        # outcome and must not be confused with data that was never collected.
+        # Query execution and evidence acquisition are distinct facts.
+        # An empty successful search records the query outcome, but does not
+        # satisfy requirements for videos or video snapshots.
         if collected_queries:
             research.mark_data_gathered("queries")
         research.mark_data_gathered("research_set")
 
-        successful_response_count = successful_queries
-        if successful_response_count:
-            research.mark_data_gathered("videos", "video_snapshots")
+        if research.video_ids:
+            research.mark_data_gathered("videos")
+        else:
+            research.mark_data_missing("videos")
+        if research.snapshot_ids:
+            research.mark_data_gathered("video_snapshots")
+        else:
+            research.mark_data_missing("video_snapshots")
 
         current_relation_objects = []
         if relations is not None:

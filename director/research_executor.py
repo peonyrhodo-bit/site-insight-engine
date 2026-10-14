@@ -149,10 +149,25 @@ class YouTubeResearchExecutor:
     @staticmethod
     def sync_plan_operations(plan: ResearchPlan) -> ResearchPlan:
         """Ensure each planned query is represented by an auditable operation."""
+        planned_queries = {
+            (str(query.query or "").strip().casefold(), str(query.language or "").casefold())
+            for query in plan.queries
+        }
+        # Drop search operations for queries removed by quota capping. Dependent
+        # operations will be blocked explicitly if they reference a removed ID.
+        plan.operations = [
+            op for op in plan.operations
+            if op.operation != "search_videos"
+            or any(
+                (str(op.inputs.get("query") or "").strip().casefold(), language)
+                in planned_queries
+                for language in (op.inputs.get("languages") or [op.inputs.get("language") or ""])
+            )
+        ]
         represented = {
             (
                 str(op.inputs.get("query") or "").strip().casefold(),
-                {str(language).casefold() for language in (op.inputs.get("languages") or [])},
+                {str(language).casefold() for language in (op.inputs.get("languages") or [op.inputs.get("language") or ""])},
             )
             for op in plan.operations
             if op.operation == "search_videos"
@@ -441,7 +456,7 @@ class YouTubeResearchExecutor:
             )
             research.status = "blocked"
             errors.append(f"mcp_transport: {type(exc).__name__}: {exc}")
-            return {
+            blocked_summary = {
                 "status": "blocked",
                 "persisted": False,
                 "research_id": plan.research_id,
@@ -462,6 +477,10 @@ class YouTubeResearchExecutor:
                 "mcp_url": mcp_url,
                 "completed_at": _now(),
             }
+            operation_results = self._finalize_operations(plan, blocked_summary)
+            blocked_summary["operation_results"] = operation_results
+            blocked_summary["operations_planned"] = len(operation_results)
+            return blocked_summary
 
         # A successful MCP response is a gathered data point even when
         # it contains zero items. Empty search results are a valid research
@@ -702,7 +721,7 @@ class YouTubeResearchExecutor:
             dependencies = list(getattr(operation, "dependencies", []) or [])
             failed_dependencies = [
                 dependency for dependency in dependencies
-                if dependency in by_id and getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
+                if dependency not in by_id or getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
                 not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.PARTIAL, "succeeded", "partial"}
             ]
             if failed_dependencies:

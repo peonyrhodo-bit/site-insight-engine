@@ -1374,8 +1374,8 @@ class YouTubeResearchExecutor:
         execution_summary["errors"] = errors
         return execution_summary
 
-    @staticmethod
-    def _finalize_operations(plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    def _finalize_operations(self, plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
+        quota_status = self.quota_manager.get_status() if self.quota_manager is not None else None
         operations = list(getattr(plan, "operations", []) or [])
         if not operations:
             return []
@@ -1566,6 +1566,8 @@ class YouTubeResearchExecutor:
                 error = f"unknown_operation_type: {name}"
 
             operation.status = status
+            if quota_status is not None:
+                result["quota_status"] = quota_status
             operation.result = result
             operation.error = error
             operation.completed_at = _now()

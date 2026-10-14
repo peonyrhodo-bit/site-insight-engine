@@ -56,9 +56,15 @@ def test_sync_plan_operations_tracks_queries_added_after_planning():
 
     YouTubeResearchExecutor.sync_plan_operations(plan)
 
-    assert len(plan.operations) == 1
-    assert plan.operations[0].operation == "search_videos"
-    assert plan.operations[0].inputs["query"] == "new YouTube topics"
+    search_operations = [op for op in plan.operations if op.operation == "search_videos"]
+    assert len(search_operations) == 1
+    assert search_operations[0].inputs["query"] == "new YouTube topics"
+    assert {
+        "register_queries",
+        "register_research_set",
+        "collect_video_snapshots",
+        "link_research_data",
+    }.issubset({op.operation for op in plan.operations})
     assert plan.metadata["operation_contract_version"] == 1
 
 

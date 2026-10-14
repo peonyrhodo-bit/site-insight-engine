@@ -12,6 +12,7 @@ on:
       - "tests/test_autonomous_worker_retry*.py"
       - "tests/test_director_run_lifecycle*.py"
       - "tests/test_research_executor*.py"
+      - "tests/test_project_state_read_only.py"
       - ".github/workflows/director-run-lifecycle.yml"
   push:
     branches:

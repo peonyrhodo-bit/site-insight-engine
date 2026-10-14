@@ -26,7 +26,6 @@ from director.research import (
     ResearchOperation,
     ResearchOperationStatus,
     ResearchPlan,
-    build_research_plan,
     plan_from_requirements,
     research_from_gaps,
 )
@@ -884,7 +883,6 @@ class YouTubeResearchExecutor:
         persisted = bool(summary.get("persisted"))
         query_results = list(summary.get("query_results") or [])
         relation_count = int(summary.get("relations_created", 0) or 0)
-        channel_count = len(summary.get("research", {}).get("metadata", {}).get("channel_ids", []) or [])
         errors = list(summary.get("errors") or [])
 
         for operation in operations:

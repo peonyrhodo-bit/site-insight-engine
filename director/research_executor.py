@@ -861,6 +861,10 @@ class YouTubeResearchExecutor:
         execution_summary["operation_ledger_persisted"] = False
         if self.storage is not None:
             research.metadata["operation_results"] = operation_results
+            # Persist the complete plan as well as its final ledger so a later
+            # worker can reconstruct the exact operation IDs/statuses and retry
+            # only incomplete work without regenerating the plan.
+            research.metadata["research_plan"] = plan.to_dict()
             try:
                 await _maybe_await(self.storage.save_research_data(
                     project_id=project_id,

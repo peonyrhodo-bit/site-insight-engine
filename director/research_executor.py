@@ -188,7 +188,13 @@ class YouTubeResearchExecutor:
                                 "research_id": plan.research_id,
                                 "purpose": getattr(planned_query, "purpose", ""),
                                 "priority": str(getattr(planned_query, "priority", "medium")),
-                                "quota": {"search_calls": 1, "other_units": 1, "estimated": True},
+                                "quota": {
+                                    "search_calls": None,
+                                    "search_list_calls": None,
+                                    "videos_list_calls": None,
+                                    "other_units": None,
+                                    "accounting_status": "pending",
+                                },
                             },
                         )
                         registry.add_query(query)
@@ -213,23 +219,37 @@ class YouTubeResearchExecutor:
                                 },
                             )
                             payload = _tool_payload(result)
-                            quota_report = payload.get("_quota", {}) if isinstance(payload, dict) else {}
-                            try:
-                                other_units = int(quota_report.get("other_units", 1 if payload.get("items") else 0))
-                            except (TypeError, ValueError):
-                                other_units = 1 if payload.get("items") else 0
+                            quota_report = payload.get("_quota") if isinstance(payload, dict) else None
+                            quota_report = quota_report if isinstance(quota_report, dict) else {}
+                            def reported_nonnegative_int(key: str) -> int | None:
+                                value = quota_report.get(key)
+                                if value is None:
+                                    return None
+                                try:
+                                    return max(int(value), 0)
+                                except (TypeError, ValueError):
+                                    return None
+
+                            search_calls = reported_nonnegative_int("search_calls")
+                            search_list_calls = reported_nonnegative_int("search_list_calls")
+                            videos_list_calls = reported_nonnegative_int("videos_list_calls")
+                            other_units = reported_nonnegative_int("other_units")
+                            accounting_status = (
+                                "observed_method_calls"
+                                if search_list_calls is not None and videos_list_calls is not None
+                                else "partial_or_unavailable"
+                            )
                             query.metadata["quota"] = {
-                                "search_calls": int(quota_report.get("search_calls", 1) or 1),
-                                "other_units": max(other_units, 0),
-                                "search_list_calls": int(quota_report.get("search_list_calls", 1) or 0),
-                                "videos_list_calls": int(quota_report.get("videos_list_calls", 1) or 0),
-                                "estimated": "_quota" not in payload,
+                                "search_calls": search_calls,
+                                "other_units": other_units,
+                                "search_list_calls": search_list_calls,
+                                "videos_list_calls": videos_list_calls,
+                                "accounting_status": accounting_status,
+                                "estimated": accounting_status != "observed_method_calls",
                             }
                             logger.info(
-                                "YOUTUBE QUOTA USAGE: research_id=%s query_id=%s search=%r search_calls=%s other_units=%s report=%s",
-                                plan.research_id, query.query_id, text,
-                                query.metadata["quota"]["search_calls"],
-                                query.metadata["quota"]["other_units"], query.metadata["quota"],
+                                "YOUTUBE QUOTA USAGE: research_id=%s query_id=%s search=%r quota=%s",
+                                plan.research_id, query.query_id, text, query.metadata["quota"],
                             )
                             if "items" not in payload or not isinstance(payload.get("items"), list):
                                 raise ValueError(

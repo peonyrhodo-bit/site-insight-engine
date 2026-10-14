@@ -9,6 +9,7 @@ on:
       - "data/**"
       - "scheduler/**"
       - "tests/test_wakeup*.py"
+      - "tests/test_autonomous_worker_retry*.py"
       - "tests/test_director_run_lifecycle*.py"
       - "tests/test_research_executor*.py"
       - ".github/workflows/director-run-lifecycle.yml"

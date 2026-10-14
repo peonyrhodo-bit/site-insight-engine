@@ -218,6 +218,10 @@ class WakeupManager:
         *,
         project_id: Optional[str] = None,
     ) -> Optional[WakeupSignal]:
+        # The queue is in-memory and may live for the entire server process.
+        # Drop completed entries as the worker advances, otherwise every
+        # processed wake-up remains retained indefinitely.
+        self.clear_consumed()
         signals = self.pending(project_id=project_id)
 
         return signals[0] if signals else None

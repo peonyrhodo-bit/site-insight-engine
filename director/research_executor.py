@@ -584,6 +584,7 @@ class YouTubeResearchExecutor:
                                 video = registry.add_video(video)
                                 research.add_video(video)
                                 query_video_count += 1
+                                query.metadata.setdefault("video_ids", []).append(video.video_id)
     
                                 snapshot = snapshot_from_mapping(
                                     item,
@@ -816,13 +817,20 @@ class YouTubeResearchExecutor:
                     "language": query.language,
                     "status": query.status,
                     "result_count": int((query.metadata or {}).get("result_count", 0) or 0),
+                    "video_ids": list((query.metadata or {}).get("video_ids") or []),
                     "error": (query.metadata or {}).get("execution_error"),
                 }
                 for query in collected_queries
             ],
             "videos_collected": len(research.video_ids),
+            "video_ids": list(research.video_ids),
             "snapshots_collected": len(research.snapshot_ids),
+            "snapshot_ids": list(research.snapshot_ids),
             "relations_created": len(current_relation_objects),
+            "relation_ids": [
+                getattr(relation, "relation_id", getattr(relation, "id", None))
+                for relation in current_relation_objects
+            ],
             "gathered_data": list(research.gathered_data),
             "missing_data": list(research.missing_data),
             "expected_data": list(research.expected_data),
@@ -952,7 +960,12 @@ class YouTubeResearchExecutor:
                 else:
                     status = ResearchOperationStatus.BLOCKED
                     error = "no_video_snapshots_collected"
-                result = {"snapshots_collected": snapshot_count, "persisted": persisted}
+                result = {
+                    "snapshots_collected": snapshot_count,
+                    "snapshot_ids": list(summary.get("snapshot_ids") or []),
+                    "video_ids": list(summary.get("video_ids") or []),
+                    "persisted": persisted,
+                }
             elif name == "register_queries":
                 attempted_queries = query_count + query_failed
                 if attempted_queries > 0 and persisted:
@@ -963,7 +976,12 @@ class YouTubeResearchExecutor:
                 else:
                     status = ResearchOperationStatus.BLOCKED
                     error = "no_query_records_created"
-                result = {"queries_succeeded": query_count, "queries_failed": query_failed, "persisted": persisted}
+                result = {
+                    "queries_succeeded": query_count,
+                    "queries_failed": query_failed,
+                    "query_ids": [item.get("query_id") for item in query_results if item.get("query_id")],
+                    "persisted": persisted,
+                }
             elif name == "register_research_set":
                 if summary.get("research_id") and persisted:
                     status = ResearchOperationStatus.SUCCEEDED
@@ -980,7 +998,11 @@ class YouTubeResearchExecutor:
                 else:
                     status = ResearchOperationStatus.BLOCKED
                     error = "relation_persistence_not_confirmed"
-                result = {"relations_created": relation_count, "persisted": persisted}
+                result = {
+                    "relations_created": relation_count,
+                    "relation_ids": list(summary.get("relation_ids") or []),
+                    "persisted": persisted,
+                }
             elif name == "collect_channels":
                 # The current collection path derives channel identities from found videos.
                 if video_count > 0 and persisted:

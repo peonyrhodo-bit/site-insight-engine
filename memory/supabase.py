@@ -341,10 +341,10 @@ class SupabaseMemoryBackend:
         # for offline/history-specific analysis when needed.
         try:
             snapshots_per_video = max(
-                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "3")), 20)
+                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "2")), 20)
             )
         except (TypeError, ValueError):
-            snapshots_per_video = 3
+            snapshots_per_video = 2
 
         snapshots: list[dict[str, Any]] = []
         snapshot_counts: dict[str, int] = {}
@@ -602,10 +602,12 @@ class SupabaseMemoryBackend:
     def load_research_data(self, *, project_id: str | None = None) -> dict[str, Any]:
         """Load persisted research/query/relation DATA for one project."""
         expected_project = str(project_id) if project_id is not None else None
+        # Keep the process-local graph bounded. The complete history remains
+        # in Supabase; Director startup only needs a recent working index.
         return {
-            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=None, project_id=expected_project, order_key="id", default_limit=100),
-            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
+            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=2000, project_id=expected_project, order_key="id", default_limit=2000),
+            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=1000, project_id=expected_project, order_key="id", default_limit=1000),
+            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=5000, project_id=expected_project, order_key="id", default_limit=5000),
         }
 
     def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:

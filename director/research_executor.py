@@ -793,7 +793,6 @@ class YouTubeResearchExecutor:
     
                         query_video_count = 0
                         search_quota_token = None
-                        enrich_quota_token = None
                         try:
                             self._mark_operation_started(plan, "search_videos", query=planned_query)
                             # search_videos can issue search.list and videos.list internally.
@@ -801,10 +800,6 @@ class YouTubeResearchExecutor:
                             search_quota_token = self._quota_preflight(
                                 bucket="search", operation="search_videos", method="search.list",
                                 metadata={"query": text},
-                            )
-                            enrich_quota_token = self._quota_preflight(
-                                bucket="other", operation="search_videos", method="videos.list",
-                                metadata={"query": text, "purpose": "possible search enrichment"},
                             )
                             result = await session.call_tool(
                                 "search_videos",
@@ -818,7 +813,6 @@ class YouTubeResearchExecutor:
                             )
                             payload = _tool_payload(result)
                             self._quota_finish(search_quota_token, status="succeeded")
-                            self._quota_finish(enrich_quota_token, status="succeeded")
                             quota_report = payload.get("_quota") if isinstance(payload, dict) else None
                             quota_report = quota_report if isinstance(quota_report, dict) else {}
                             def reported_nonnegative_int(key: str) -> int | None:
@@ -833,6 +827,14 @@ class YouTubeResearchExecutor:
                             search_calls = reported_nonnegative_int("search_calls")
                             search_list_calls = reported_nonnegative_int("search_list_calls")
                             videos_list_calls = reported_nonnegative_int("videos_list_calls")
+                            # The MCP API gateway preflights every actual videos.list
+                            # request. Mirror its observed count into Director's ledger.
+                            if self.quota_manager is not None and videos_list_calls:
+                                self.quota_manager.record_usage(
+                                    operation="search_videos",
+                                    other_units=videos_list_calls,
+                                    metadata={"method": "videos.list", "query": text, "source": "mcp_observed"},
+                                )
                             other_units = reported_nonnegative_int("other_units")
                             accounting_status = (
                                 "observed_method_calls"
@@ -946,7 +948,6 @@ class YouTubeResearchExecutor:
     
                         except Exception as exc:
                             self._quota_finish(search_quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
-                            self._quota_finish(enrich_quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
                             query.status = "failed"
                             query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
                             query.metadata["result_count"] = query_video_count

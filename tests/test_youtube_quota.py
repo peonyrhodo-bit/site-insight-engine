@@ -43,6 +43,10 @@ class YouTubeQuotaManagerTests(unittest.TestCase):
         self.assertEqual(status["other_remaining"], 1)
 
     def test_attempts_are_charged_and_outcomes_are_audited(self):
+        self.manager.record_planned_call(
+            bucket="other", operation="refresh-known", method="videos.list",
+            metadata={"batch_size": 50},
+        )
         token = self.manager.authorize_call(
             bucket="other", operation="refresh-known", method="videos.list",
             metadata={"batch_size": 50},
@@ -52,6 +56,9 @@ class YouTubeQuotaManagerTests(unittest.TestCase):
         self.assertEqual(event["status"], "error")
         self.assertEqual(event["reason"], "timeout")
         self.assertEqual(event["metadata"]["batch_size"], 50)
+        statuses = {item["status"] for item in self.manager.get_events(limit=5)}
+        self.assertIn("planned", statuses)
+        self.assertIn("error", statuses)
         self.assertEqual(self.manager.get_status()["other_units"], 1)
 
     def test_reset_uses_pacific_midnight_including_dst(self):

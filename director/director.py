@@ -279,6 +279,7 @@ class Director:
                 for key in (
                     "project_state", "data_inventory", "capabilities",
                     "signal_interpretation", "current_hypothesis",
+                    "data_requirements", "preferred_languages",
                 )
                 if key in self.metadata
             },
@@ -779,6 +780,11 @@ class Director:
                             "other_units_used_today": quota.get("other_units_used_today", 0),
                         }
                         logger.info("DIRECTOR RESEARCH PLAN: objective=%s queries=%s quota_budget=%s", result.objective, [q.query for q in result.queries], result.metadata["quota_budget"])
+                    synchronizer = getattr(self.research_service, "sync_plan_operations", None)
+                    if callable(synchronizer):
+                        synchronizer(result)
+                    else:
+                        result.metadata["operation_contract_warning"] = "research_service_does_not_support_operation_sync"
                     return result
 
         gaps = list(missing_data) if missing_data is not None else list(self.context.missing_data)

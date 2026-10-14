@@ -52,6 +52,43 @@ class ResearchGap:
         self.importance = max(0.0, min(1.0, float(self.importance)))
 
 
+
+class ResearchOperationStatus(str, Enum):
+    """Lifecycle of one planned research operation."""
+
+    PLANNED = "planned"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    SKIPPED = "skipped"
+
+
+@dataclass
+class ResearchOperation:
+    """Executable, auditable unit of work in a Director research plan."""
+
+    operation_id: str
+    operation: str
+    requirement_key: str
+    inputs: dict[str, Any]
+    dependencies: list[str]
+    expected_result: str
+    completion_criterion: str
+    quota_requirements: dict[str, Any] = field(default_factory=dict)
+    status: ResearchOperationStatus = ResearchOperationStatus.PLANNED
+    result: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["status"] = self.status.value
+        return value
+
+
 @dataclass
 class ResearchPlan:
     research_id: str
@@ -67,9 +104,83 @@ class ResearchPlan:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     metadata: dict[str, Any] = field(default_factory=dict)
+    operations: list[ResearchOperation] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        for operation in value.get("operations", []):
+            if isinstance(operation.get("status"), ResearchOperationStatus):
+                operation["status"] = operation["status"].value
+        return value
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ResearchPlan":
+        """Restore a persisted plan/operation ledger for safe retry after restart."""
+        if not isinstance(value, dict):
+            raise TypeError("research plan payload must be a mapping")
+
+        operations: list[ResearchOperation] = []
+        for raw in value.get("operations", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            operation_data = dict(raw)
+            status = operation_data.get("status", ResearchOperationStatus.PLANNED)
+            operation_data["status"] = (
+                status if isinstance(status, ResearchOperationStatus)
+                else ResearchOperationStatus(str(status))
+            )
+            operation_data["inputs"] = dict(operation_data.get("inputs") or {})
+            operation_data["dependencies"] = list(operation_data.get("dependencies") or [])
+            operation_data["quota_requirements"] = dict(operation_data.get("quota_requirements") or {})
+            operation_data["result"] = dict(operation_data.get("result") or {})
+            operations.append(ResearchOperation(**{
+                key: operation_data[key]
+                for key in (
+                    "operation_id", "operation", "requirement_key", "inputs",
+                    "dependencies", "expected_result", "completion_criterion",
+                    "quota_requirements", "status", "result", "error",
+                    "started_at", "completed_at",
+                )
+                if key in operation_data
+            }))
+
+        queries: list[ResearchQuery] = []
+        for raw in value.get("queries", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            query_data = dict(raw)
+            priority = query_data.get("priority", ResearchPriority.MEDIUM)
+            query_data["priority"] = priority if isinstance(priority, ResearchPriority) else ResearchPriority(str(priority))
+            queries.append(ResearchQuery(**{
+                key: query_data[key]
+                for key in ("query", "language", "region_code", "purpose", "priority", "max_results", "metadata")
+                if key in query_data
+            }))
+
+        gaps: list[ResearchGap] = []
+        for raw in value.get("gaps", []) or []:
+            if isinstance(raw, dict):
+                gaps.append(ResearchGap(**{
+                    key: raw[key] for key in ("description", "importance", "suggested_method", "topic")
+                    if key in raw
+                }))
+
+        raw_status = value.get("status", ResearchStatus.PLANNED)
+        status = raw_status if isinstance(raw_status, ResearchStatus) else ResearchStatus(str(raw_status))
+        return cls(
+            research_id=str(value.get("research_id") or ""),
+            objective=str(value.get("objective") or ""),
+            status=status,
+            priorities=list(value.get("priorities") or []),
+            languages=list(value.get("languages") or []),
+            directions=list(value.get("directions") or []),
+            queries=queries,
+            gaps=gaps,
+            reason=str(value.get("reason") or ""),
+            created_at=str(value.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            metadata=dict(value.get("metadata") or {}),
+            operations=operations,
+        )
 
 
 def _get(source: Any, key: str, default: Any = None) -> Any:
@@ -154,6 +265,7 @@ def build_research_plan(
     reason: str = "",
     priorities: Iterable[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    operations: Iterable[ResearchOperation] | None = None,
 ) -> ResearchPlan:
     return ResearchPlan(
         research_id=f"research_{uuid4().hex[:12]}",
@@ -168,6 +280,7 @@ def build_research_plan(
         gaps=list(gaps or []),
         reason=str(reason or "").strip(),
         metadata=dict(metadata or {}),
+        operations=list(operations or []),
     )
 
 
@@ -351,11 +464,15 @@ def plan_from_requirements(
     directions: list[str] = []
     queries: list[ResearchQuery] = []
     operations: list[dict[str, Any]] = []
+    operation_tasks: list[ResearchOperation] = []
 
     # Only operations that actually need YouTube text search become
     # ResearchQuery objects. Snapshot/persistence/linking operations are
     # concrete data tasks and must not be sent to YouTube as fake queries.
-    search_operations = {"search_videos", "collect_channels", "collect_niche_evidence"}
+    # This executor currently has a real handler only for video search.
+    # Channel/niche operations remain explicit tasks and must not be disguised
+    # as search_videos calls until their matching MCP handlers are wired.
+    search_operations = {"search_videos"}
 
     def build_search_text(requirement: ResearchRequirement) -> str:
         if topic_values:
@@ -373,6 +490,27 @@ def plan_from_requirements(
             **spec,
             "available_count": item.count,
         })
+        query_text_for_operation = build_search_text(item) if operation in search_operations else ""
+        operation_tasks.append(ResearchOperation(
+            operation_id=f"{operation}_{uuid4().hex[:12]}",
+            operation=operation,
+            requirement_key=item.key,
+            inputs={
+                "objective": objective,
+                "query": query_text_for_operation or None,
+                "languages": list(languages) if operation in search_operations else [],
+                "available_count": item.count,
+                "reuse_policy": spec["reuse"],
+            },
+            dependencies=[],
+            expected_result=str(spec["target"]),
+            completion_criterion=str(spec["completion"]),
+            quota_requirements=(
+                {"bucket": "search", "estimate": "one call per planned query"}
+                if operation in search_operations
+                else {"bucket": "not_applicable_or_handler_defined"}
+            ),
+        ))
 
         direction = item.key
         if topic_values and item.key in {"videos", "channels", "niches"}:
@@ -414,6 +552,28 @@ def plan_from_requirements(
         for item in normalized
     ]
 
+    # Dependencies are explicit and only reference operations present in this plan.
+    by_type = {item.operation: item for item in operation_tasks}
+    dependency_types = {
+        # Query records are created as part of the search operation's preflight;
+        # registration is therefore an output/audit task, not a prerequisite.
+        "collect_video_snapshots": ["search_videos"],
+        "collect_channels": ["search_videos"],
+        "collect_channel_snapshots": ["collect_channels"],
+        "collect_niche_evidence": ["search_videos", "collect_channels"],
+        "build_niche_snapshots": ["collect_niche_evidence", "collect_video_snapshots"],
+        "link_research_data": [
+            "register_research_set", "register_queries", "search_videos",
+            "collect_video_snapshots",
+        ],
+    }
+    for operation_task in operation_tasks:
+        operation_task.dependencies = [
+            by_type[dependency].operation_id
+            for dependency in dependency_types.get(operation_task.operation, [])
+            if dependency in by_type
+        ]
+
     return build_research_plan(
         objective=objective,
         directions=directions,
@@ -428,6 +588,7 @@ def plan_from_requirements(
             "determination_complete": True,
             "next_stage": "execute_operations",
         },
+        operations=operation_tasks,
     )
 
 

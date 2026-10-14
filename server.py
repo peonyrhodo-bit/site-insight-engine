@@ -154,6 +154,11 @@ try:
 except Exception:
     YouTubeResearchExecutor = None
 
+try:
+    from quota.youtube_quota import YouTubeQuotaManager
+except Exception:
+    YouTubeQuotaManager = None
+
 
 try:
     from memory.memory import Memory
@@ -2503,13 +2508,20 @@ class Runtime:
         )
         self.ai = AIAdapter()
 
-        # Research executor is the concrete bridge from Director to
-        # YouTube MCP. Keep it on Runtime so every Director receives the
-        # same research execution capability as the DATA layer.
+        # Quota state must be shared by every research operation in this process.
+        # Configure YOUTUBE_QUOTA_DB_PATH to a persistent mounted path in production
+        # so the daily budget survives service restarts and deployments.
+        if YouTubeQuotaManager is None:
+            raise RuntimeError("YouTube quota manager is unavailable; refusing to start without quota control")
+        quota_db_path = os.getenv("YOUTUBE_QUOTA_DB_PATH", "data/youtube_quota.sqlite3")
+        self.quota_manager = YouTubeQuotaManager(db_path=quota_db_path)
+
+        # Research executor is the concrete bridge from Director to YouTube MCP.
         self.research = (
             YouTubeResearchExecutor(
                 data_adapter=self.data,
                 storage=self.memory.backend,
+                quota_manager=self.quota_manager,
             )
             if YouTubeResearchExecutor is not None
             else None

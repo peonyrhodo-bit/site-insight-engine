@@ -795,8 +795,8 @@ class YouTubeResearchExecutor:
                         search_quota_token = None
                         try:
                             self._mark_operation_started(plan, "search_videos", query=planned_query)
-                            # search_videos can issue search.list and videos.list internally.
-                            # Preflight both budgets before entering the compound MCP tool.
+                            # Preflight search.list here. The MCP gateway independently checks every
+                            # actual HTTP request, including optional videos.list enrichment.
                             search_quota_token = self._quota_preflight(
                                 bucket="search", operation="search_videos", method="search.list",
                                 metadata={"query": text},

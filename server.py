@@ -2184,7 +2184,7 @@ class DataAdapter:
                                 if query_counts_toward_today(query)
                             ),
                             "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
-                            "relation_count": len(self.relations.all()) if self.relations is not None and hasattr(self.relations, "all") else 0,
+                            "relation_count": len(self.relations.all_relations()) if self.relations is not None else 0,
                             "channel_count": self.opportunity_registry.counts().get("channels", 0) if self.opportunity_registry is not None else 0,
                             "channel_snapshot_count": self.opportunity_registry.counts().get("channel_snapshots", 0) if self.opportunity_registry is not None else 0,
                             "niche_count": self.opportunity_registry.counts().get("niches", 0) if self.opportunity_registry is not None else 0,
@@ -2229,13 +2229,9 @@ class DataAdapter:
 
         if self.relations is not None:
             try:
-                if hasattr(
-                    self.relations,
-                    "all",
-                ):
-                    result["relations"] = serialize(
-                        self.relations.all()
-                    )
+                result["relations"] = serialize(
+                    self.relations.all_relations()
+                )
             except Exception:
                 logger.exception(
                     "Failed to load data relations"

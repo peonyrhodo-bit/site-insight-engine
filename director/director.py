@@ -279,6 +279,7 @@ class Director:
                 for key in (
                     "project_state", "data_inventory", "capabilities",
                     "signal_interpretation", "current_hypothesis",
+                    "data_requirements", "preferred_languages",
                 )
                 if key in self.metadata
             },

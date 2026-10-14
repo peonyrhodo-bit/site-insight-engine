@@ -68,6 +68,28 @@ def test_sync_plan_operations_tracks_queries_added_after_planning():
     assert plan.metadata["operation_contract_version"] == 1
 
 
+def test_executor_selects_queries_from_pending_operations_only():
+    plan = build_research_plan(
+        objective="discover",
+        queries=[
+            build_query(query="topic one", language="en", purpose="first"),
+            build_query(query="topic two", language="en", purpose="second"),
+        ],
+    )
+    YouTubeResearchExecutor.sync_plan_operations(plan)
+    first = next(op for op in plan.operations if op.operation == "search_videos" and op.inputs["query"] == "topic one")
+    first.status = ResearchOperationStatus.SUCCEEDED
+    first.result = {
+        "queries": [
+            {"query": "topic one", "language": "en", "status": "completed", "result_count": 3}
+        ]
+    }
+
+    selected = YouTubeResearchExecutor._queries_for_operations(plan)
+
+    assert [query.query for query in selected] == ["topic two"]
+
+
 def test_empty_search_is_partial_not_successful_collection():
     operation = ResearchOperation(
         operation_id="search-1",

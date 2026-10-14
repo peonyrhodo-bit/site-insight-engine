@@ -11,7 +11,7 @@ from scheduler.wakeup import WakeupManager, WakeupReason
 
 @pytest.mark.asyncio
 async def test_worker_retries_failed_wakeup_once_before_retiring_it(monkeypatch):
-    scheduler = Scheduler(default_project_id="default")
+    scheduler = Scheduler(enabled=False, default_project_id="default")
     wakeup = WakeupManager()
     now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
     monkeypatch.setattr(wakeup_module, "utc_now", lambda: now[0])

@@ -2,6 +2,7 @@ import pytest
 
 from director.decision import DecisionType, build_decision, decide_from_opportunity
 from director.director import Director
+import server
 from server import _decision_to_memory_payload
 
 
@@ -70,3 +71,45 @@ def test_expected_outcome_is_preserved_in_memory_payload():
     assert payload["rationale"] == "Есть подтверждённые положительные сигналы."
     assert payload["next_action"] == "Провести ограниченный тест."
     assert payload["project_id"] == "test-project"
+
+
+
+@pytest.mark.asyncio
+async def test_expected_outcome_is_saved_with_decision():
+    class FakeMemory:
+        def __init__(self):
+            self.saved = None
+
+        def save_decision(self, *, decision, data, run_id=None):
+            self.saved = {
+                "decision": decision,
+                "data": data,
+                "run_id": run_id,
+            }
+            return 77
+
+    memory = FakeMemory()
+    adapter = object.__new__(server.ServerMemory)
+    adapter.memory = memory
+    decision = build_decision(
+        decision_type=DecisionType.RESEARCH,
+        objective="Исследовать направление",
+        rationale="Не хватает данных.",
+        confidence=0.3,
+        next_action="Провести исследование YouTube.",
+        expected_outcome="Получить проверяемые данные и закрыть пробелы.",
+    )
+
+    saved_id = await adapter.save_decision(
+        project_id="test-project",
+        decision=decision,
+        run_id=12,
+    )
+
+    assert saved_id == 77
+    assert memory.saved["run_id"] == 12
+    assert memory.saved["data"]["expected_outcome"] == (
+        "Получить проверяемые данные и закрыть пробелы."
+    )
+    assert memory.saved["data"]["rationale"] == "Не хватает данных."
+    assert memory.saved["data"]["next_action"] == "Провести исследование YouTube."

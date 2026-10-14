@@ -363,8 +363,19 @@ class YouTubeResearchExecutor:
             ]
             plan.metadata["operations"] = operation_results
             plan.metadata["operation_results"] = operation_results
+            terminal_statuses = {item["status"] for item in operation_results}
+            if not operation_results:
+                overall_status = "blocked"
+            elif "partial" in terminal_statuses:
+                overall_status = "partial"
+            elif "failed" in terminal_statuses:
+                overall_status = "failed"
+            elif "blocked" in terminal_statuses:
+                overall_status = "blocked"
+            else:
+                overall_status = "skipped"
             return {
-                "status": "skipped" if operation_results and all(item["status"] in {"succeeded", "skipped"} for item in operation_results) else "blocked",
+                "status": overall_status,
                 "reason": "no_pending_search_operations",
                 "research_id": getattr(plan, "research_id", None),
                 "queries_planned": 0,

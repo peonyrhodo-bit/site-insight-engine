@@ -1,9 +1,11 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import server
 from scheduler.scheduler import Scheduler
+from scheduler import wakeup as wakeup_module
 from scheduler.wakeup import WakeupManager, WakeupReason
 
 
@@ -11,6 +13,8 @@ from scheduler.wakeup import WakeupManager, WakeupReason
 async def test_worker_retries_failed_wakeup_once_before_retiring_it(monkeypatch):
     scheduler = Scheduler(default_project_id="default")
     wakeup = WakeupManager()
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    monkeypatch.setattr(wakeup_module, "utc_now", lambda: now[0])
     original = wakeup.create(
         project_id="default",
         reason=WakeupReason.MANUAL,
@@ -30,7 +34,8 @@ async def test_worker_retries_failed_wakeup_once_before_retiring_it(monkeypatch)
     monkeypatch.setattr(server, "_execute_autonomous_cycle", execute)
 
     async def controlled_sleep(seconds):
-        # Let the retry backoff pass, then stop the worker after retry succeeds.
+        # Advance a fake clock so delayed retries become eligible without real waits.
+        now[0] += timedelta(seconds=seconds)
         if len(calls) >= 2 and not wakeup.pending():
             raise asyncio.CancelledError
 

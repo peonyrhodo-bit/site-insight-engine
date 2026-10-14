@@ -113,9 +113,31 @@ def _research_objects_for_persistence(
 class YouTubeResearchExecutor:
     """Research execution layer: Director decides, this layer collects."""
 
-    def __init__(self, *, data_adapter: Any, storage: Any = None) -> None:
+    def __init__(self, *, data_adapter: Any, storage: Any = None, quota_manager: Any = None) -> None:
         self.data = data_adapter
         self.storage = storage
+        self.quota_manager = quota_manager
+
+    def _quota_preflight(
+        self, *, bucket: str, operation: str, method: str, units: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Authorize and account for an API attempt before calling the MCP tool."""
+        if self.quota_manager is None:
+            # Runtime injects the manager; None is retained for isolated unit tests.
+            return None
+        return self.quota_manager.authorize_call(
+            bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
+        )
+
+    def _quota_finish(
+        self, token: dict[str, Any] | None, *, status: str, reason: str | None = None,
+    ) -> None:
+        if token is None or self.quota_manager is None:
+            return
+        event_id = token.get("event_id")
+        if event_id is not None:
+            self.quota_manager.finish_call(int(event_id), status=status, reason=reason)
 
     def plan(self, *, objective: str, context: dict[str, Any] | None = None) -> ResearchPlan:
         """Build a research plan from Director's current, explicit data requirements."""
@@ -500,7 +522,12 @@ class YouTubeResearchExecutor:
                     }
                     for offset in range(0, len(stale_ids), 50):
                         batch_ids = stale_ids[offset:offset + 50]
+                        quota_token = None
                         try:
+                            quota_token = self._quota_preflight(
+                                bucket="other", operation="refresh_existing_video_stats",
+                                method="videos.list", metadata={"video_ids": batch_ids},
+                            )
                             result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
                             batch_payload = _tool_payload(result)
                             if batch_payload.get("error"):
@@ -508,6 +535,7 @@ class YouTubeResearchExecutor:
                             items = batch_payload.get("items")
                             if not isinstance(items, list):
                                 raise ValueError("get_video_stats returned no items list")
+                            self._quota_finish(quota_token, status="succeeded")
                             api_batches += 1
                             returned: set[str] = set()
                             for item in items:
@@ -540,6 +568,7 @@ class YouTubeResearchExecutor:
                                 refreshed_snapshots.append(snapshot.to_dict())
                             unavailable.extend(video_id for video_id in batch_ids if video_id not in returned)
                         except Exception as exc:
+                            self._quota_finish(quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
                             errors.append(f"videos.list batch {offset // 50 + 1}: {type(exc).__name__}: {exc}")
         except Exception as exc:
             errors.append(f"mcp_transport: {type(exc).__name__}: {exc}")
@@ -763,8 +792,20 @@ class YouTubeResearchExecutor:
                             relations.link_research_query(research, query)
     
                         query_video_count = 0
+                        search_quota_token = None
+                        enrich_quota_token = None
                         try:
                             self._mark_operation_started(plan, "search_videos", query=planned_query)
+                            # search_videos can issue search.list and videos.list internally.
+                            # Preflight both budgets before entering the compound MCP tool.
+                            search_quota_token = self._quota_preflight(
+                                bucket="search", operation="search_videos", method="search.list",
+                                metadata={"query": text},
+                            )
+                            enrich_quota_token = self._quota_preflight(
+                                bucket="other", operation="search_videos", method="videos.list",
+                                metadata={"query": text, "purpose": "possible search enrichment"},
+                            )
                             result = await session.call_tool(
                                 "search_videos",
                                 {
@@ -776,6 +817,8 @@ class YouTubeResearchExecutor:
                                 },
                             )
                             payload = _tool_payload(result)
+                            self._quota_finish(search_quota_token, status="succeeded")
+                            self._quota_finish(enrich_quota_token, status="succeeded")
                             quota_report = payload.get("_quota") if isinstance(payload, dict) else None
                             quota_report = quota_report if isinstance(quota_report, dict) else {}
                             def reported_nonnegative_int(key: str) -> int | None:
@@ -902,6 +945,8 @@ class YouTubeResearchExecutor:
                             successful_queries += 1
     
                         except Exception as exc:
+                            self._quota_finish(search_quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
+                            self._quota_finish(enrich_quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
                             query.status = "failed"
                             query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
                             query.metadata["result_count"] = query_video_count
@@ -929,7 +974,12 @@ class YouTubeResearchExecutor:
                     if video_ids and "get_video_stats" in available_tools:
                         for offset in range(0, len(video_ids), 50):
                             batch_ids = video_ids[offset:offset + 50]
+                            quota_token = None
                             try:
+                                quota_token = self._quota_preflight(
+                                    bucket="other", operation="collect_video_snapshots",
+                                    method="videos.list", metadata={"video_ids": batch_ids},
+                                )
                                 stats_result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
                                 stats_payload = _tool_payload(stats_result)
                                 if stats_payload.get("error"):
@@ -937,6 +987,7 @@ class YouTubeResearchExecutor:
                                 items = stats_payload.get("items")
                                 if not isinstance(items, list):
                                     raise ValueError("get_video_stats returned no items list")
+                                self._quota_finish(quota_token, status="succeeded")
                                 video_stats_calls += 1
                                 for item in items:
                                     if not isinstance(item, dict):
@@ -970,6 +1021,7 @@ class YouTubeResearchExecutor:
                                         relations.link_research_snapshot(research, snapshot)
                                         relations.link_video_snapshot(video, snapshot)
                             except Exception as stats_exc:
+                                self._quota_finish(quota_token, status="error", reason=f"{type(stats_exc).__name__}: {stats_exc}")
                                 video_stats_errors.append(f"get_video_stats batch {offset // 50 + 1}: {type(stats_exc).__name__}: {stats_exc}")
                     elif video_ids:
                         video_stats_errors.append("MCP tool not available: get_video_stats")
@@ -988,12 +1040,18 @@ class YouTubeResearchExecutor:
                         }.values())
                         if unique_channels and "get_channel_stats" in available_tools:
                             for channel in unique_channels:
+                                quota_token = None
                                 try:
+                                    quota_token = self._quota_preflight(
+                                        bucket="other", operation="collect_channel_snapshots",
+                                        method="channels.list", metadata={"channel_id": channel.channel_id},
+                                    )
                                     stats_result = await session.call_tool(
                                         "get_channel_stats",
                                         {"channel_id": channel.channel_id},
                                     )
                                     stats_payload = _tool_payload(stats_result)
+                                    self._quota_finish(quota_token, status="succeeded")
                                     if stats_payload.get("error"):
                                         raise ValueError(str(stats_payload["error"]))
                                     items = stats_payload.get("items")
@@ -1040,6 +1098,7 @@ class YouTubeResearchExecutor:
                                     opportunity_registry.add_channel_snapshot(channel_snap)
                                     channel_snapshots.append(channel_snap)
                                 except Exception as stats_exc:
+                                    self._quota_finish(quota_token, status="error", reason=f"{type(stats_exc).__name__}: {stats_exc}")
                                     channel_stats_errors.append(f"{channel.channel_id}: {type(stats_exc).__name__}: {stats_exc}")
                         elif unique_channels:
                             channel_stats_errors.append("MCP tool not available: get_channel_stats")

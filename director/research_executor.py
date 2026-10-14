@@ -454,6 +454,7 @@ class YouTubeResearchExecutor:
                         if relations is not None:
                             relations.link_research_query(research, query)
     
+                        query_video_count = 0
                         try:
                             result = await session.call_tool(
                                 "search_videos",
@@ -523,7 +524,6 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
-                            query_video_count = 0
     
                             for item in items:
                                 if not isinstance(item, dict):
@@ -591,7 +591,7 @@ class YouTubeResearchExecutor:
                         except Exception as exc:
                             query.status = "failed"
                             query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
-                            query.metadata["result_count"] = 0
+                            query.metadata["result_count"] = query_video_count
                             failed_queries += 1
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
                             if self.storage is not None:
@@ -859,11 +859,14 @@ class YouTubeResearchExecutor:
                     matched_success = [item for item in matched if item.get("status") == "completed"]
                     matched_failed = [item for item in matched if item.get("status") != "completed"]
                     matched_videos = sum(int(item.get("result_count") or 0) for item in matched)
-                    if matched_success and matched_videos > 0 and not matched_failed:
+                    if matched_videos > 0 and matched_failed:
+                        status = ResearchOperationStatus.PARTIAL
+                        error = "some_planned_queries_failed_after_partial_collection"
+                    elif matched_success and matched_videos > 0:
                         status = ResearchOperationStatus.SUCCEEDED
                     elif matched_success:
                         status = ResearchOperationStatus.PARTIAL
-                        error = "search_completed_without_relevant_video_results" if matched_videos == 0 else "some_planned_queries_failed"
+                        error = "search_completed_without_relevant_video_results"
                     else:
                         status = ResearchOperationStatus.FAILED
                         error = "; ".join(str(item.get("error") or "query_failed") for item in matched[:5])

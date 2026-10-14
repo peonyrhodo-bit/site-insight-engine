@@ -3127,7 +3127,6 @@ async def _autonomous_worker_loop() -> None:
                                 60,
                                 AUTONOMOUS_POLL_INTERVAL_SECONDS * (2 ** (attempt + 1)),
                             )
-                            await asyncio.sleep(delay)
                             retry_payload = dict(signal.payload)
                             retry_payload["retry_attempt"] = attempt + 1
                             runtime.wakeup.create(
@@ -3136,6 +3135,7 @@ async def _autonomous_worker_loop() -> None:
                                 priority="high",
                                 payload=retry_payload,
                                 source="autonomous_worker",
+                                delay_seconds=delay,
                             )
                         else:
                             logger.error(

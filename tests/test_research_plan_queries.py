@@ -24,9 +24,10 @@ def test_diagnostic_gap_uses_explicit_topic_when_available():
         languages=["en"],
     )
 
-    assert len(plan.queries) == 1
-    assert plan.queries[0].query == "YouTube productivity channels competition"
-    assert "unavailable" not in plan.queries[0].query.casefold()
+    assert len(plan.queries) == 2  # default research languages: English and Russian
+    assert {query.language for query in plan.queries} == {"en", "ru"}
+    assert all(query.query == "YouTube productivity channels competition" for query in plan.queries)
+    assert all("unavailable" not in query.query.casefold() for query in plan.queries)
 
 
 def test_concrete_gap_description_can_still_become_a_query():
@@ -36,5 +37,6 @@ def test_concrete_gap_description_can_still_become_a_query():
         languages=["en"],
     )
 
-    assert len(plan.queries) == 1
-    assert plan.queries[0].query == "YouTube channels about beginner home gardening"
+    assert len(plan.queries) == 2  # default research languages: English and Russian
+    assert {query.language for query in plan.queries} == {"en", "ru"}
+    assert all(query.query == "YouTube channels about beginner home gardening" for query in plan.queries)

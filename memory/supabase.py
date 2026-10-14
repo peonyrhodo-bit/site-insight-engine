@@ -138,7 +138,9 @@ class SupabaseMemoryBackend:
         except (TypeError, ValueError):
             value = default
 
-        return max(1, min(value, 100))
+        # Callers choose the intended history window. Do not silently clamp
+        # research/channel/relation reads to 100 rows.
+        return max(1, value)
 
     @classmethod
     def _project_id_from_value(
@@ -185,25 +187,51 @@ class SupabaseMemoryBackend:
         project_id: str | None,
         order_key: str = "created_at",
         default_limit: int = 20,
+        page_size: int = 1000,
     ) -> list[dict[str, Any]]:
-        response = (
-            self.client
-            .table(table_name)
-            .select("*")
-            .order(order_key, desc=True)
-            .execute()
-        )
-        rows = self._safe_list(response)
+        """Load the requested newest rows without relying on the API's default cap.
+
+        Project IDs can live either in a dedicated column or in legacy nested
+        data_json, so filtering is done after each page is read. Stable ordering
+        (with id as a tie-breaker) keeps offset pagination deterministic.
+        """
+        page_size = max(1, int(page_size))
+        requested_limit = self._limit(limit, default_limit)
+        rows: list[dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            query = (
+                self.client
+                .table(table_name)
+                .select("*")
+                .order(order_key, desc=True)
+            )
+            if order_key != "id":
+                query = query.order("id", desc=True)
+
+            response = (
+                query
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = self._safe_list(response)
+            rows.extend(page)
+
+            if len(page) < page_size:
+                break
+
+            offset += page_size
 
         if project_id is not None:
-            project_id = str(project_id)
+            expected_project = str(project_id)
             rows = [
                 row
                 for row in rows
-                if self._project_id_from_row(row) == project_id
+                if self._project_id_from_row(row) == expected_project
             ]
 
-        return rows[: self._limit(limit, default_limit)]
+        return rows[:requested_limit]
 
     # ------------------------------------------------------------------
     # YOUTUBE DATA

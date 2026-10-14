@@ -434,6 +434,7 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
+                            query_video_count = 0
     
                             for item in items:
                                 if not isinstance(item, dict):
@@ -456,6 +457,7 @@ class YouTubeResearchExecutor:
                                 )
                                 video = registry.add_video(video)
                                 research.add_video(video)
+                                query_video_count += 1
     
                                 snapshot = snapshot_from_mapping(
                                     item,
@@ -493,10 +495,14 @@ class YouTubeResearchExecutor:
                                     channels.append(channel)
     
                             query.status = "completed"
+                            query.metadata["result_count"] = query_video_count
+                            query.metadata["execution_error"] = None
                             successful_queries += 1
     
                         except Exception as exc:
                             query.status = "failed"
+                            query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
+                            query.metadata["result_count"] = 0
                             failed_queries += 1
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
                             if self.storage is not None:
@@ -648,6 +654,17 @@ class YouTubeResearchExecutor:
             "queries_planned": len(plan.queries),
             "queries_collected": successful_queries,
             "queries_failed": failed_queries,
+            "query_results": [
+                {
+                    "query_id": query.query_id,
+                    "query": query.text,
+                    "language": query.language,
+                    "status": query.status,
+                    "result_count": int((query.metadata or {}).get("result_count", 0) or 0),
+                    "error": (query.metadata or {}).get("execution_error"),
+                }
+                for query in collected_queries
+            ],
             "videos_collected": len(research.video_ids),
             "snapshots_collected": len(research.snapshot_ids),
             "relations_created": len(current_relation_objects),
@@ -699,6 +716,7 @@ class YouTubeResearchExecutor:
         query_count = int(summary.get("queries_collected", 0) or 0)
         query_failed = int(summary.get("queries_failed", 0) or 0)
         persisted = bool(summary.get("persisted"))
+        query_results = list(summary.get("query_results") or [])
         relation_count = int(summary.get("relations_created", 0) or 0)
         channel_count = len(summary.get("research", {}).get("metadata", {}).get("channel_ids", []) or [])
         errors = list(summary.get("errors") or [])
@@ -712,17 +730,47 @@ class YouTubeResearchExecutor:
             error = None
 
             if name == "search_videos":
-                if query_count > 0 and query_failed == 0 and video_count > 0:
-                    status = ResearchOperationStatus.SUCCEEDED
-                elif query_count > 0 or video_count > 0:
-                    status = ResearchOperationStatus.PARTIAL
-                elif errors:
-                    status = ResearchOperationStatus.FAILED
-                    error = "; ".join(errors[:5])
+                inputs = getattr(operation, "inputs", {}) or {}
+                planned_text = str(inputs.get("query") or "").strip().casefold()
+                planned_languages = {
+                    str(value).casefold()
+                    for value in (inputs.get("languages") or [inputs.get("language") or ""])
+                }
+                matched = [
+                    item for item in query_results
+                    if (not planned_text or str(item.get("query") or "").strip().casefold() == planned_text)
+                    and (not planned_languages or str(item.get("language") or "").casefold() in planned_languages)
+                ]
+                if matched:
+                    matched_success = [item for item in matched if item.get("status") == "completed"]
+                    matched_failed = [item for item in matched if item.get("status") != "completed"]
+                    matched_videos = sum(int(item.get("result_count") or 0) for item in matched)
+                    if matched_success and matched_videos > 0 and not matched_failed:
+                        status = ResearchOperationStatus.SUCCEEDED
+                    elif matched_success:
+                        status = ResearchOperationStatus.PARTIAL
+                        error = "search_completed_without_relevant_video_results" if matched_videos == 0 else "some_planned_queries_failed"
+                    else:
+                        status = ResearchOperationStatus.FAILED
+                        error = "; ".join(str(item.get("error") or "query_failed") for item in matched[:5])
+                    result = {
+                        "queries": matched,
+                        "queries_succeeded": len(matched_success),
+                        "queries_failed": len(matched_failed),
+                        "videos_collected": matched_videos,
+                    }
                 else:
-                    status = ResearchOperationStatus.PARTIAL
-                    error = "search_completed_without_relevant_video_results"
-                result = {"queries_succeeded": query_count, "queries_failed": query_failed, "videos_collected": video_count}
+                    if query_count > 0 and query_failed == 0 and video_count > 0:
+                        status = ResearchOperationStatus.SUCCEEDED
+                    elif query_count > 0 or video_count > 0:
+                        status = ResearchOperationStatus.PARTIAL
+                    elif errors:
+                        status = ResearchOperationStatus.FAILED
+                        error = "; ".join(errors[:5])
+                    else:
+                        status = ResearchOperationStatus.PARTIAL
+                        error = "search_completed_without_relevant_video_results"
+                    result = {"queries_succeeded": query_count, "queries_failed": query_failed, "videos_collected": video_count}
             elif name == "collect_video_snapshots":
                 if snapshot_count > 0 and persisted:
                     status = ResearchOperationStatus.SUCCEEDED

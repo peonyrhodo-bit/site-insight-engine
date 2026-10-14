@@ -22,6 +22,14 @@ from data.youtube import (
 )
 from data.research_sets import ResearchSet
 from data.opportunity_entities import YouTubeChannel
+from director.research import (
+    ResearchOperation,
+    ResearchOperationStatus,
+    ResearchPlan,
+    build_research_plan,
+    plan_from_requirements,
+    research_from_gaps,
+)
 
 
 def _now() -> str:
@@ -109,6 +117,63 @@ class YouTubeResearchExecutor:
     def __init__(self, *, data_adapter: Any, storage: Any = None) -> None:
         self.data = data_adapter
         self.storage = storage
+
+    def plan(self, *, objective: str, context: dict[str, Any] | None = None) -> ResearchPlan:
+        """Build a research plan from Director's current, explicit data requirements."""
+        context = dict(context or {})
+        metadata = context.get("metadata") if isinstance(context.get("metadata"), dict) else {}
+        requirements = metadata.get("data_requirements") or context.get("data_requirements") or []
+        languages = context.get("languages") or metadata.get("preferred_languages") or ("en", "ru")
+
+        if requirements:
+            plan = plan_from_requirements(
+                objective=objective,
+                requirements=requirements,
+                context=context,
+                preferred_languages=languages,
+            )
+        else:
+            gaps = context.get("missing_data") or []
+            plan = research_from_gaps(
+                gaps,
+                objective=objective,
+                languages=languages,
+            )
+
+        # Every query is an explicit executable unit. This also covers discovery
+        # queries appended later by Director's quota/discovery policy.
+        represented = {
+            (str(op.inputs.get("query") or "").strip().casefold(),
+             tuple(op.inputs.get("languages") or []))
+            for op in plan.operations
+            if op.operation == "search_videos"
+        }
+        for index, query in enumerate(plan.queries):
+            key = (str(query.query or "").strip().casefold(), (str(query.language or ""),))
+            if key in represented:
+                continue
+            plan.operations.append(ResearchOperation(
+                operation_id=f"search_videos_{uuid4().hex[:12]}",
+                operation="search_videos",
+                requirement_key=str((query.metadata or {}).get("requirement_key") or "videos"),
+                inputs={
+                    "query": query.query,
+                    "language": query.language,
+                    "region_code": query.region_code,
+                    "max_results": query.max_results,
+                    "purpose": query.purpose,
+                    "reuse_policy": (query.metadata or {}).get("reuse_policy", "reuse_existing_video_ids"),
+                },
+                dependencies=[],
+                expected_result="video search response and persisted query record",
+                completion_criterion="query response is valid; data outcome is recorded even when zero relevant items are returned",
+                quota_requirements={"bucket": "search", "estimated_calls": 1},
+            ))
+            represented.add(key)
+
+        plan.metadata.setdefault("operation_contract_version", 1)
+        plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
+        return plan
 
     async def execute(self, plan: Any, *, project_id: str | None = None) -> dict[str, Any]:
         if plan is None:
@@ -479,7 +544,7 @@ class YouTubeResearchExecutor:
                         )
                     )
 
-        return {
+        execution_summary = {
             "status": research.status,
             "persisted": self.storage is not None,
             "research_id": plan.research_id,
@@ -504,3 +569,130 @@ class YouTubeResearchExecutor:
             "mcp_url": mcp_url,
             "completed_at": _now(),
         }
+        operation_results = self._finalize_operations(plan, execution_summary)
+        execution_summary["operation_results"] = operation_results
+        execution_summary["operations_planned"] = len(operation_results)
+        execution_summary["operations_succeeded"] = sum(item["status"] == "succeeded" for item in operation_results)
+        execution_summary["operations_partial"] = sum(item["status"] == "partial" for item in operation_results)
+        execution_summary["operations_blocked"] = sum(item["status"] == "blocked" for item in operation_results)
+        execution_summary["operations_failed"] = sum(item["status"] == "failed" for item in operation_results)
+
+        # Persist the final operation ledger with the research set, after results
+        # are known. A successful transport response alone is not completion.
+        if self.storage is not None:
+            research.metadata["operation_results"] = operation_results
+            await _maybe_await(self.storage.save_research_data(
+                project_id=project_id,
+                queries=[],
+                research_sets=[research.to_dict()],
+                relations=[],
+            ))
+        return execution_summary
+
+    @staticmethod
+    def _finalize_operations(plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
+        operations = list(getattr(plan, "operations", []) or [])
+        if not operations:
+            return []
+
+        by_id = {str(getattr(item, "operation_id", "")): item for item in operations}
+        results: list[dict[str, Any]] = []
+        video_count = int(summary.get("videos_collected", 0) or 0)
+        snapshot_count = int(summary.get("snapshots_collected", 0) or 0)
+        query_count = int(summary.get("queries_collected", 0) or 0)
+        query_failed = int(summary.get("queries_failed", 0) or 0)
+        persisted = bool(summary.get("persisted"))
+        relation_count = int(summary.get("relations_created", 0) or 0)
+        channel_count = len(summary.get("research", {}).get("metadata", {}).get("channel_ids", []) or [])
+        errors = list(summary.get("errors") or [])
+
+        for operation in operations:
+            operation_id = str(getattr(operation, "operation_id", ""))
+            dependencies = list(getattr(operation, "dependencies", []) or [])
+            failed_dependencies = [
+                dependency for dependency in dependencies
+                if dependency in by_id and getattr(by_id[dependency], "status", ResearchOperationStatus.PLANNED)
+                not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.PARTIAL, "succeeded", "partial"}
+            ]
+            name = str(getattr(operation, "operation", ""))
+            status = ResearchOperationStatus.BLOCKED
+            result: dict[str, Any] = {}
+            error = None
+
+            if failed_dependencies:
+                error = "blocked_by_dependencies: " + ", ".join(failed_dependencies)
+            elif name == "search_videos":
+                if query_count > 0 and query_failed == 0 and video_count > 0:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif query_count > 0 or video_count > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                elif errors:
+                    status = ResearchOperationStatus.FAILED
+                    error = "; ".join(errors[:5])
+                else:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "search_completed_without_relevant_video_results"
+                result = {"queries_succeeded": query_count, "queries_failed": query_failed, "videos_collected": video_count}
+            elif name == "collect_video_snapshots":
+                if snapshot_count > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif snapshot_count > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "snapshots_collected_but_persistence_not_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "no_video_snapshots_collected"
+                result = {"snapshots_collected": snapshot_count, "persisted": persisted}
+            elif name == "register_queries":
+                if query_count > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif query_count > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "query_results_not_confirmed_persisted"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "no_successful_query_records"
+                result = {"queries_succeeded": query_count, "persisted": persisted}
+            elif name == "register_research_set":
+                if summary.get("research_id") and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                else:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "research_set_persistence_not_confirmed"
+                result = {"research_id": summary.get("research_id"), "persisted": persisted}
+            elif name == "link_research_data":
+                if relation_count > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif persisted:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "no_research_relations_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "relation_persistence_not_confirmed"
+                result = {"relations_created": relation_count, "persisted": persisted}
+            elif name == "collect_channels":
+                # The current collection path derives channel identities from found videos.
+                if video_count > 0 and persisted:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "channel_identity_enrichment_only; dedicated channel search is not implemented"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "dedicated_channel_collection_not_implemented"
+                result = {"videos_collected": video_count, "persisted": persisted}
+            elif name in {"collect_channel_snapshots", "collect_niche_evidence", "build_niche_snapshots"}:
+                status = ResearchOperationStatus.BLOCKED
+                error = f"operation_handler_not_implemented: {name}"
+            else:
+                status = ResearchOperationStatus.BLOCKED
+                error = f"unknown_operation_type: {name}"
+
+            operation.status = status
+            operation.result = result
+            operation.error = error
+            operation.completed_at = _now()
+            if getattr(operation, "started_at", None) is None:
+                operation.started_at = operation.completed_at
+            results.append(operation.to_dict() if hasattr(operation, "to_dict") else {
+                "operation_id": operation_id, "operation": name, "status": str(status.value), "result": result, "error": error,
+            })
+        return results

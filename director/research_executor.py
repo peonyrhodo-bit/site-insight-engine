@@ -805,7 +805,8 @@ class YouTubeResearchExecutor:
             "status": research.status,
             "persisted": persistence_confirmed,
             "research_id": plan.research_id,
-            "queries_planned": len(plan.queries),
+            "queries_planned": len(executable_queries),
+            "queries_in_plan": len(plan.queries),
             "queries_collected": successful_queries,
             "queries_failed": failed_queries,
             "query_results": [

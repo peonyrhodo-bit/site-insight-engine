@@ -1,3 +1,5 @@
+import pytest
+
 from server import DataAdapter
 from data.youtube import YouTubeDataRegistry, YouTubeSnapshot
 
@@ -54,6 +56,7 @@ class StorageSpy:
         return {"saved": True}
 
 
+@pytest.mark.asyncio
 async def test_get_project_state_does_not_persist_research_data():
     adapter = DataAdapter.__new__(DataAdapter)
     storage = StorageSpy()
@@ -69,6 +72,7 @@ async def test_get_project_state_does_not_persist_research_data():
     assert storage.save_calls == 0
 
 
+@pytest.mark.asyncio
 async def test_get_project_state_loads_persisted_data_only_once_per_project():
     adapter = DataAdapter.__new__(DataAdapter)
     storage = StorageSpy()

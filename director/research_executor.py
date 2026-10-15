@@ -1424,11 +1424,18 @@ class YouTubeResearchExecutor:
             item["status"] in {"succeeded", "skipped"}
             for item in operation_results
         )
-        if not mandatory_ok or not bool(execution_summary.get("expected_volume_reached")):
-            plan.status = ResearchStatus.PARTIAL
-        else:
+        volume_ok = bool(execution_summary.get("expected_volume_reached"))
+        if mandatory_ok and volume_ok and persistence_confirmed and research.status == "complete":
             plan.status = ResearchStatus.COMPLETED
+            execution_summary["status"] = "completed"
+        elif not video_count and failed_queries and not empty_queries:
+            plan.status = ResearchStatus.BLOCKED
+            execution_summary["status"] = "failed"
+        else:
+            plan.status = ResearchStatus.PARTIAL
+            execution_summary["status"] = "partial"
         execution_summary["plan_status"] = plan.status.value
+        execution_summary["research_set_status"] = research.status
 
         # Persist the final operation ledger with the research set, after results
         # are known. A successful transport response alone is not completion.

@@ -1523,7 +1523,7 @@ class YouTubeResearchExecutor:
                     if (not planned_text or str(item.get("query") or "").strip().casefold() == planned_text)
                     and (not planned_languages or str(item.get("language") or "").casefold() in planned_languages)
                 ]
-                        if matched:
+                if matched:
                     matched_success = [item for item in matched if item.get("status") == "completed"]
                     matched_empty = [item for item in matched if item.get("status") == "empty"]
                     matched_failed = [

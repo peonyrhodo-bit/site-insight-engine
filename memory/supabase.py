@@ -422,6 +422,9 @@ class SupabaseMemoryBackend:
         saved_videos = 0
         saved_snapshots = 0
         snapshot_ids: list[int] = []
+        saved_video_ids: list[str] = []
+        saved_snapshot_video_ids: list[str] = []
+        saved_snapshot_query_ids: list[list[str]] = []
 
         for video in videos or []:
             if not isinstance(video, dict):
@@ -445,6 +448,7 @@ class SupabaseMemoryBackend:
             )
             if self._safe_list(response):
                 saved_videos += 1
+                saved_video_ids.append(video_id)
 
         for snapshot in snapshots or []:
             if not isinstance(snapshot, dict):
@@ -474,11 +478,16 @@ class SupabaseMemoryBackend:
             if row_id is not None:
                 saved_snapshots += 1
                 snapshot_ids.append(row_id)
+                saved_snapshot_video_ids.append(video_id)
+                saved_snapshot_query_ids.append([str(value) for value in (snapshot.get("query_ids") or [])])
 
         return {
             "videos": saved_videos,
             "snapshots": saved_snapshots,
             "snapshot_ids": snapshot_ids,
+            "video_ids": saved_video_ids,
+            "snapshot_video_ids": saved_snapshot_video_ids,
+            "snapshot_query_ids": saved_snapshot_query_ids,
         }
 
 

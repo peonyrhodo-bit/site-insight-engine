@@ -1321,6 +1321,7 @@ class YouTubeResearchExecutor:
 
                 # Research metadata persistence is separate from YouTube object counts.
             except Exception as exc:
+                persistence_confirmed = False
                 research.mark_partial()
                 errors.append(f"persistence: {type(exc).__name__}: {exc}")
                 logger.exception("Failed to persist research result: research_id=%s", plan.research_id)

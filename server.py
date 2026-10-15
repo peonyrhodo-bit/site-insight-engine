@@ -2591,6 +2591,66 @@ class Runtime:
 
 runtime = Runtime()
 
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+
+class DirectorRunRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    objective: str | None = None
+    language: str = "en"
+    region_code: str = DEFAULT_REGION_CODE
+    hours_back: int = Field(
+        default=72,
+        ge=1,
+        le=24 * 30,
+    )
+    max_results: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+    )
+
+
+class DirectorChatRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    message: str
+
+
+class FeedbackRequest(BaseModel):
+    project_id: str = DEFAULT_PROJECT_ID
+    feedback_type: str
+    scope: str = "recommendation"
+    message: str
+    recommendation_id: str | None = None
+    decision_id: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    constraint: str | None = None
+    preference: str | None = None
+
+
+class RecommendationActionRequest(BaseModel):
+    action: str
+    message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
+
+
+app = FastAPI(
+    title="AI Director",
+    version="2.0",
+    description=(
+        "AI Director for YouTube research, analysis and "
+        "strategic recommendations."
+    ),
+)
+
+
 # Private quota API used by youtube-mcp. The MCP gateway is the only place
 # that consumes quota; Director-side preflight checks are non-consuming.
 def _check_quota_secret(request: Request) -> None:
@@ -2652,65 +2712,6 @@ async def finish_youtube_quota(request: Request) -> dict[str, bool]:
         raise HTTPException(status_code=503, detail="Quota authority unavailable") from exc
 
 
-
-# ---------------------------------------------------------------------------
-# Pydantic request models
-# ---------------------------------------------------------------------------
-
-
-class DirectorRunRequest(BaseModel):
-    project_id: str = DEFAULT_PROJECT_ID
-    objective: str | None = None
-    language: str = "en"
-    region_code: str = DEFAULT_REGION_CODE
-    hours_back: int = Field(
-        default=72,
-        ge=1,
-        le=24 * 30,
-    )
-    max_results: int = Field(
-        default=25,
-        ge=1,
-        le=100,
-    )
-
-
-class DirectorChatRequest(BaseModel):
-    project_id: str = DEFAULT_PROJECT_ID
-    message: str
-
-
-class FeedbackRequest(BaseModel):
-    project_id: str = DEFAULT_PROJECT_ID
-    feedback_type: str
-    scope: str = "recommendation"
-    message: str
-    recommendation_id: str | None = None
-    decision_id: str | None = None
-    target: str | None = None
-    reason: str | None = None
-    constraint: str | None = None
-    preference: str | None = None
-
-
-class RecommendationActionRequest(BaseModel):
-    action: str
-    message: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# FastAPI application
-# ---------------------------------------------------------------------------
-
-
-app = FastAPI(
-    title="AI Director",
-    version="2.0",
-    description=(
-        "AI Director for YouTube research, analysis and "
-        "strategic recommendations."
-    ),
-)
 
 
 # ---------------------------------------------------------------------------

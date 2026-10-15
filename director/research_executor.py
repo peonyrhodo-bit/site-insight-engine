@@ -1241,6 +1241,9 @@ class YouTubeResearchExecutor:
         persistence_confirmed = False
         saved_video_count = 0
         saved_snapshot_count = 0
+        saved_video_ids: set[str] = set()
+        saved_snapshot_video_ids: list[str] = []
+        saved_snapshot_query_ids: list[list[str]] = []
         if self.storage is not None:
             try:
                 # Persist only objects referenced by this research run. Resolve IDs
@@ -1260,6 +1263,12 @@ class YouTubeResearchExecutor:
                     raise RuntimeError("storage did not confirm persisted video/snapshot counts")
                 saved_video_count = int(save_result.get("videos", 0) or 0)
                 saved_snapshot_count = int(save_result.get("snapshots", 0) or 0)
+                saved_video_ids = {str(value) for value in (save_result.get("video_ids") or [])}
+                saved_snapshot_video_ids = [str(value) for value in (save_result.get("snapshot_video_ids") or [])]
+                saved_snapshot_query_ids = [
+                    [str(query_id) for query_id in values]
+                    for values in (save_result.get("snapshot_query_ids") or [])
+                ]
                 persistence_confirmed = (
                     saved_video_count == len(research_videos)
                     and saved_snapshot_count == len(research_snapshots)
@@ -1344,19 +1353,30 @@ class YouTubeResearchExecutor:
         else:
             research.mark_complete()
         for query in collected_queries:
-            query.metadata["persistence_status"] = "saved" if persistence_confirmed else "failed"
-            # Global storage returns authoritative counts; do not fabricate per-query
-            # attribution when the adapter cannot map saved objects back to a query.
-            query.metadata["saved_video_count"] = (
-                min(int(query.metadata.get("received_video_count", 0) or 0), saved_video_count)
-                if persistence_confirmed else 0
-            )
-            query.metadata["saved_snapshot_count"] = (
-                min(int(query.metadata.get("received_video_count", 0) or 0), saved_snapshot_count)
-                if persistence_confirmed else 0
+            query_id = str(query.query_id)
+            query_saved_snapshot_indexes = [
+                index for index, query_ids in enumerate(saved_snapshot_query_ids)
+                if query_id in query_ids
+            ]
+            query_saved_snapshot_count = len(query_saved_snapshot_indexes)
+            query_saved_video_ids = {
+                saved_snapshot_video_ids[index]
+                for index in query_saved_snapshot_indexes
+                if index < len(saved_snapshot_video_ids)
+                and saved_snapshot_video_ids[index] in saved_video_ids
+            }
+            query_saved_video_count = len(query_saved_video_ids)
+            received_for_query = int(query.metadata.get("received_video_count", 0) or 0)
+            query.metadata["saved_video_count"] = query_saved_video_count
+            query.metadata["saved_snapshot_count"] = query_saved_snapshot_count
+            query.metadata["persistence_status"] = (
+                "saved" if query_saved_video_count >= received_for_query
+                and query_saved_snapshot_count >= received_for_query
+                else "partial" if query_saved_video_count or query_saved_snapshot_count
+                else "failed"
             )
             query.metadata["expected_volume_reached"] = (
-                int(query.metadata.get("saved_video_count", 0) or 0)
+                query_saved_video_count
                 >= int(query.metadata.get("expected_result_count", 0) or 0)
             )
         # Persist the explicit per-query lifecycle after the object writes so

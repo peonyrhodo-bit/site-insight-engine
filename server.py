@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
@@ -155,9 +156,10 @@ except Exception:
     YouTubeResearchExecutor = None
 
 try:
-    from quota.youtube_quota import YouTubeQuotaManager
+    from quota.youtube_quota import YouTubeQuotaManager, YouTubeQuotaExceeded
 except Exception:
     YouTubeQuotaManager = None
+    YouTubeQuotaExceeded = None
 
 
 try:
@@ -2588,6 +2590,67 @@ class Runtime:
 
 
 runtime = Runtime()
+
+# Private quota API used by youtube-mcp. The MCP gateway is the only place
+# that consumes quota; Director-side preflight checks are non-consuming.
+def _check_quota_secret(request: Request) -> None:
+    configured = os.getenv("YOUTUBE_QUOTA_SHARED_SECRET", "")
+    supplied = request.headers.get("X-Quota-Secret", "")
+    if not configured:
+        raise HTTPException(status_code=503, detail="Quota authority secret is not configured")
+    if not supplied or not secrets.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.post("/internal/youtube-quota/authorize", include_in_schema=False)
+async def authorize_youtube_quota(request: Request) -> dict[str, Any]:
+    _check_quota_secret(request)
+    try:
+        payload = await request.json()
+        bucket = str(payload.get("bucket", ""))
+        operation = str(payload.get("operation", "youtube_get"))
+        method = str(payload.get("method", ""))
+        units = int(payload.get("units", 1))
+        metadata = payload.get("metadata") or {}
+        if bucket not in {"search", "other"} or not method or not isinstance(metadata, dict):
+            raise HTTPException(status_code=400, detail="Invalid quota authorization payload")
+        result = runtime.quota_manager.authorize_call(
+            bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
+        )
+        return result
+    except HTTPException:
+        raise
+    except YouTubeQuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=exc.status) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid quota authorization payload") from exc
+    except Exception as exc:
+        logger.exception("Quota authorization failed closed")
+        raise HTTPException(status_code=503, detail="Quota authority unavailable") from exc
+
+
+@app.post("/internal/youtube-quota/finish", include_in_schema=False)
+async def finish_youtube_quota(request: Request) -> dict[str, bool]:
+    _check_quota_secret(request)
+    try:
+        payload = await request.json()
+        event_id = int(payload["event_id"])
+        status = str(payload["status"])
+        if status not in {"succeeded", "error"}:
+            raise HTTPException(status_code=400, detail="Invalid quota event status")
+        runtime.quota_manager.finish_call(
+            event_id, status=status, reason=payload.get("reason"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+        )
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid quota finish payload") from exc
+    except Exception as exc:
+        logger.exception("Quota event finalization failed")
+        raise HTTPException(status_code=503, detail="Quota authority unavailable") from exc
+
 
 
 # ---------------------------------------------------------------------------

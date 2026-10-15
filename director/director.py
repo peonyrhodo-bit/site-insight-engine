@@ -2145,14 +2145,33 @@ class Director:
         )
         execution_status = str(research_execution.get("status") or "").lower()
         successful_query_count = int(research_execution.get("queries_collected", 0) or 0)
-        # Failed, blocked, and zero-query plans remain retryable.
-        if execution_status in {"completed", "partial"} and successful_query_count > 0:
+        operation_results = list(research_execution.get("operation_results") or [])
+        mandatory_operations_complete = bool(operation_results) and all(
+            str(item.get("status") or "").lower() in {"succeeded", "skipped"}
+            for item in operation_results
+        )
+        expected_volume_reached = bool(research_execution.get("expected_volume_reached"))
+        refresh_completed = (
+            str(research_execution.get("refresh_existing_video_stats_status") or "").lower()
+            == "succeeded"
+        )
+        # A query transport success, an empty result, or a partial collection
+        # must not exhaust this research task. Only the finalized, persisted
+        # operation ledger can mark it complete.
+        if (
+            execution_status == "completed"
+            and mandatory_operations_complete
+            and (expected_volume_reached or refresh_completed)
+            and bool(research_execution.get("persisted"))
+        ):
             if task_key not in completed_tasks:
                 completed_tasks.append(task_key)
         else:
             logger.warning(
-                "DIRECTOR RESEARCH NOT MARKED COMPLETE: task_key=%s status=%s queries_collected=%s reason=%s",
-                task_key, execution_status, successful_query_count,
+                "DIRECTOR RESEARCH NOT MARKED COMPLETE: task_key=%s status=%s queries_collected=%s "
+                "expected_volume_reached=%s mandatory_operations_complete=%s reason=%s",
+                task_key, execution_status, successful_query_count, expected_volume_reached,
+                mandatory_operations_complete,
                 research_execution.get("reason") or research_execution.get("error"),
             )
 

@@ -21,11 +21,12 @@ from data.youtube import (
     video_from_mapping,
 )
 from data.research_sets import ResearchSet
-from data.opportunity_entities import YouTubeChannel
+from data.opportunity_entities import ChannelSnapshot, YouTubeChannel
 from director.research import (
     ResearchOperation,
     ResearchOperationStatus,
     ResearchPlan,
+    ResearchStatus,
     plan_from_requirements,
     research_from_gaps,
 )
@@ -113,9 +114,31 @@ def _research_objects_for_persistence(
 class YouTubeResearchExecutor:
     """Research execution layer: Director decides, this layer collects."""
 
-    def __init__(self, *, data_adapter: Any, storage: Any = None) -> None:
+    def __init__(self, *, data_adapter: Any, storage: Any = None, quota_manager: Any = None) -> None:
         self.data = data_adapter
         self.storage = storage
+        self.quota_manager = quota_manager
+
+    def _quota_preflight(
+        self, *, bucket: str, operation: str, method: str, units: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Check the budget before MCP; the outbound gateway owns final charging."""
+        if self.quota_manager is None:
+            # Runtime injects the manager; None is retained for isolated unit tests.
+            return None
+        return self.quota_manager.preflight_call(
+            bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
+        )
+
+    def _quota_finish(
+        self, token: dict[str, Any] | None, *, status: str, reason: str | None = None,
+    ) -> None:
+        if token is None or self.quota_manager is None:
+            return
+        event_id = token.get("event_id")
+        if event_id is not None:
+            self.quota_manager.finish_call(int(event_id), status=status, reason=reason)
 
     def plan(self, *, objective: str, context: dict[str, Any] | None = None) -> ResearchPlan:
         """Build a research plan from Director's current, explicit data requirements."""
@@ -223,6 +246,14 @@ class YouTubeResearchExecutor:
             )
             plan.operations.append(item)
             return item
+
+        if any(item.operation == "collect_video_snapshots" for item in plan.operations):
+            ensure_operation(
+                "refresh_existing_video_stats",
+                "video_snapshots",
+                "fresh snapshots for known videos with stale or missing statistics",
+                "each known video is independently checked against its latest successful snapshot and stale IDs are refreshed without search.list",
+            )
 
         search_operations = [item for item in plan.operations if item.operation == "search_videos"]
         if search_operations:
@@ -332,6 +363,252 @@ class YouTubeResearchExecutor:
                 selected.append(query)
         return selected
 
+    @staticmethod
+    def _known_videos_needing_refresh(
+        payload: dict[str, Any],
+        *,
+        max_age_seconds: float,
+        now: datetime | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+        """Select stale videos independently using each video's latest snapshot."""
+        current = now or datetime.now(timezone.utc)
+        videos = [
+            item for item in (payload.get("videos") or [])
+            if isinstance(item, dict) and str(item.get("video_id") or item.get("youtube_id") or "").strip()
+        ]
+        latest: dict[str, str | None] = {}
+        for snapshot in payload.get("snapshots") or []:
+            if not isinstance(snapshot, dict):
+                continue
+            video_id = str(snapshot.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            captured = snapshot.get("captured_at")
+            previous = latest.get(video_id)
+            def parsed(value: Any) -> datetime | None:
+                if not value:
+                    return None
+                try:
+                    result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                    return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result
+                except (TypeError, ValueError):
+                    return None
+            captured_dt, previous_dt = parsed(captured), parsed(previous)
+            if captured_dt is not None and (previous_dt is None or captured_dt > previous_dt):
+                latest[video_id] = str(captured)
+            elif video_id not in latest:
+                latest[video_id] = str(captured) if captured else None
+
+        for video in videos:
+            video_id = str(video.get("video_id") or video.get("youtube_id") or "").strip()
+            if video_id:
+                latest.setdefault(video_id, None)
+
+        stale: list[dict[str, Any]] = []
+        for video in videos:
+            video_id = str(video.get("video_id") or video.get("youtube_id") or "").strip()
+            timestamp = latest.get(video_id)
+            try:
+                captured = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")) if timestamp else None
+                if captured is not None and captured.tzinfo is None:
+                    captured = captured.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                captured = None
+            age = (current - captured).total_seconds() if captured is not None else None
+            if age is None or age < 0 or age > max_age_seconds:
+                stale.append(video)
+        return stale, latest
+
+    async def _refresh_existing_video_stats(
+        self,
+        plan: ResearchPlan,
+        *,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Refresh stale known IDs directly through videos.list, without search.list."""
+        operation = next(
+            (item for item in (plan.operations or []) if item.operation == "refresh_existing_video_stats"),
+            None,
+        )
+        if operation is None or operation.status in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.SKIPPED}:
+            return {}
+        if self.storage is None or not hasattr(self.storage, "load_youtube_data") or not hasattr(self.storage, "save_youtube_data"):
+            return {
+                "refresh_existing_video_stats_attempted": True,
+                "refresh_existing_video_stats_status": "blocked",
+                "refresh_existing_video_stats_errors": ["storage does not expose load_youtube_data/save_youtube_data"],
+                "refresh_existing_video_stats_persisted": False,
+            }
+
+        try:
+            max_age_seconds = float(
+                (operation.inputs or {}).get("max_age_seconds")
+                or os.getenv("DIRECTOR_VIDEO_STATS_MAX_AGE_SECONDS", "86400")
+            )
+        except (TypeError, ValueError):
+            max_age_seconds = 86400.0
+        max_age_seconds = max(0.0, max_age_seconds)
+
+        try:
+            payload = await _maybe_await(self.storage.load_youtube_data(project_id=project_id))
+            payload = payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            return {
+                "refresh_existing_video_stats_attempted": True,
+                "refresh_existing_video_stats_status": "failed",
+                "refresh_existing_video_stats_errors": [f"load_known_videos: {type(exc).__name__}: {exc}"],
+                "refresh_existing_video_stats_persisted": False,
+            }
+
+        stale_videos, latest_snapshots = self._known_videos_needing_refresh(
+            payload,
+            max_age_seconds=max_age_seconds,
+        )
+        stale_ids = list(dict.fromkeys(
+            str(video.get("video_id") or video.get("youtube_id") or "").strip()
+            for video in stale_videos
+        ))
+        stale_ids = [value for value in stale_ids if value]
+        if not stale_ids:
+            return {
+                "refresh_existing_video_stats_attempted": True,
+                "refresh_existing_video_stats_status": "succeeded",
+                "refresh_existing_video_stats_persisted": True,
+                "refresh_existing_video_stats_candidates": 0,
+                "refresh_existing_video_stats_refreshed": 0,
+                "refresh_existing_video_stats_unavailable": [],
+                "refresh_existing_video_stats_errors": [],
+                "refresh_existing_video_stats_latest_snapshot_by_video": latest_snapshots,
+            }
+
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+        except Exception as exc:
+            return {
+                "refresh_existing_video_stats_attempted": True,
+                "refresh_existing_video_stats_status": "blocked",
+                "refresh_existing_video_stats_errors": [f"mcp_client_unavailable: {type(exc).__name__}: {exc}"],
+                "refresh_existing_video_stats_candidates": len(stale_ids),
+                "refresh_existing_video_stats_persisted": False,
+            }
+
+        mcp_url = (
+            os.getenv("YOUTUBE_MCP_URL")
+            or os.getenv("MCP_URL")
+            or "http://youtube-mcp:8000/mcp"
+        ).rstrip("/")
+        refreshed_snapshots: list[dict[str, Any]] = []
+        refreshed_videos: list[dict[str, Any]] = []
+        unavailable: list[str] = []
+        errors: list[str] = []
+        api_batches = 0
+
+        try:
+            async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tool_names = {tool.name for tool in (await session.list_tools()).tools}
+                    if "get_video_stats" not in tool_names:
+                        return {
+                            "refresh_existing_video_stats_attempted": True,
+                            "refresh_existing_video_stats_status": "blocked",
+                            "refresh_existing_video_stats_errors": ["MCP tool not available: get_video_stats"],
+                            "refresh_existing_video_stats_candidates": len(stale_ids),
+                            "refresh_existing_video_stats_persisted": False,
+                        }
+                    by_id = {
+                        str(item.get("video_id") or item.get("youtube_id")): item
+                        for item in (payload.get("videos") or []) if isinstance(item, dict)
+                    }
+                    for offset in range(0, len(stale_ids), 50):
+                        batch_ids = stale_ids[offset:offset + 50]
+                        quota_token = None
+                        try:
+                            quota_token = self._quota_preflight(
+                                bucket="other", operation="refresh_existing_video_stats",
+                                method="videos.list", metadata={"video_ids": batch_ids},
+                            )
+                            result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
+                            batch_payload = _tool_payload(result)
+                            if batch_payload.get("error"):
+                                raise ValueError(str(batch_payload["error"]))
+                            items = batch_payload.get("items")
+                            if not isinstance(items, list):
+                                raise ValueError("get_video_stats returned no items list")
+                            self._quota_finish(quota_token, status="succeeded")
+                            api_batches += 1
+                            returned: set[str] = set()
+                            for item in items:
+                                if not isinstance(item, dict):
+                                    continue
+                                raw_id = item.get("id")
+                                if not raw_id:
+                                    continue
+                                video_id = str(raw_id)
+                                if video_id not in batch_ids:
+                                    continue
+                                returned.add(video_id)
+                                video = dict(by_id.get(video_id) or {"video_id": video_id})
+                                metadata = dict(video.get("metadata") or {})
+                                snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+                                statistics = item.get("statistics") if isinstance(item.get("statistics"), dict) else {}
+                                content_details = item.get("contentDetails") if isinstance(item.get("contentDetails"), dict) else {}
+                                metadata.update({"snippet": snippet, "statistics": statistics, "contentDetails": content_details})
+                                video["metadata"] = metadata
+                                video["video_id"] = video_id
+                                refreshed_videos.append(video)
+                                snapshot = snapshot_from_mapping(
+                                    item,
+                                    snapshot_id=f"{plan.research_id}_refresh_{uuid4().hex[:12]}",
+                                    video_id=video_id,
+                                    research_id=plan.research_id,
+                                    query_ids=[],
+                                    source="youtube-mcp:refresh_existing_video_stats",
+                                )
+                                refreshed_snapshots.append(snapshot.to_dict())
+                            unavailable.extend(video_id for video_id in batch_ids if video_id not in returned)
+                        except Exception as exc:
+                            self._quota_finish(quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
+                            errors.append(f"videos.list batch {offset // 50 + 1}: {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            errors.append(f"mcp_transport: {type(exc).__name__}: {exc}")
+
+        persisted = False
+        if refreshed_snapshots:
+            try:
+                save_result = await _maybe_await(self.storage.save_youtube_data(
+                    project_id=project_id,
+                    videos=refreshed_videos,
+                    snapshots=refreshed_snapshots,
+                ))
+                expected_videos = len(refreshed_videos)
+                expected_snapshots = len(refreshed_snapshots)
+                if not isinstance(save_result, dict):
+                    raise RuntimeError("storage did not confirm persisted video/snapshot counts")
+                saved_videos = int(save_result.get("videos", 0) or 0)
+                saved_snapshots = int(save_result.get("snapshots", 0) or 0)
+                persisted = saved_videos == expected_videos and saved_snapshots == expected_snapshots
+            except Exception as exc:
+                errors.append(f"persist_refresh_snapshots: {type(exc).__name__}: {exc}")
+
+        status = "succeeded" if persisted and not errors and not unavailable else (
+            "partial" if persisted or refreshed_snapshots else "failed"
+        )
+        if not refreshed_snapshots and not errors and unavailable:
+            status = "partial"
+        return {
+            "refresh_existing_video_stats_attempted": True,
+            "refresh_existing_video_stats_status": status,
+            "refresh_existing_video_stats_persisted": persisted,
+            "refresh_existing_video_stats_candidates": len(stale_ids),
+            "refresh_existing_video_stats_refreshed": len(refreshed_snapshots) if persisted else 0,
+            "refresh_existing_video_stats_api_batches": api_batches,
+            "refresh_existing_video_stats_unavailable": unavailable,
+            "refresh_existing_video_stats_errors": errors,
+            "refresh_existing_video_stats_latest_snapshot_by_video": latest_snapshots,
+        }
+
     async def execute(self, plan: Any, *, project_id: str | None = None) -> dict[str, Any]:
         if plan is None:
             return {"status": "blocked", "reason": "research_plan_missing"}
@@ -341,7 +618,33 @@ class YouTubeResearchExecutor:
         else:
             executable_queries = list(getattr(plan, "queries", []) or [])
 
+        project_id = project_id or getattr(self.data, "project_id", None) or "default"
+        refresh_summary: dict[str, Any] = {}
+        if isinstance(plan, ResearchPlan) and any(
+            op.operation == "refresh_existing_video_stats"
+            and op.status not in {ResearchOperationStatus.SUCCEEDED, ResearchOperationStatus.SKIPPED}
+            for op in (plan.operations or [])
+        ):
+            refresh_summary = await self._refresh_existing_video_stats(plan, project_id=project_id)
+
         if not executable_queries:
+            if refresh_summary:
+                operation_results = self._finalize_operations_with_quota(plan, {
+                    **refresh_summary,
+                    "persisted": bool(refresh_summary.get("refresh_existing_video_stats_persisted")),
+                    "errors": list(refresh_summary.get("refresh_existing_video_stats_errors") or []),
+                })
+                plan.metadata["operations"] = [operation.to_dict() for operation in plan.operations]
+                plan.metadata["operation_results"] = operation_results
+                return {
+                    **refresh_summary,
+                    "status": refresh_summary.get("refresh_existing_video_stats_status", "blocked"),
+                    "research_id": getattr(plan, "research_id", None),
+                    "queries_planned": 0,
+                    "queries_collected": 0,
+                    "operation_results": operation_results,
+                    "operations_planned": len(operation_results),
+                }
             for operation in list(getattr(plan, "operations", []) or []):
                 if getattr(operation, "status", None) in {
                     ResearchOperationStatus.PLANNED,
@@ -365,7 +668,7 @@ class YouTubeResearchExecutor:
             terminal_statuses = {item["status"] for item in operation_results}
             if not operation_results:
                 overall_status = "blocked"
-            elif "partial" in terminal_statuses:
+            elif "partial" in terminal_statuses or "empty" in terminal_statuses:
                 overall_status = "partial"
             elif "failed" in terminal_statuses:
                 overall_status = "failed"
@@ -411,7 +714,6 @@ class YouTubeResearchExecutor:
             blocked_summary["reason"] = "mcp_client_unavailable"
             return blocked_summary
 
-        project_id = project_id or getattr(self.data, "project_id", None) or "default"
         registry = self.data.youtube_registry
         research_manager = self.data.research_manager
         relations = self.data.relations
@@ -435,6 +737,11 @@ class YouTubeResearchExecutor:
                 "queries",
                 "research_set",
                 "relations",
+                *(
+                    ["channel_snapshots"]
+                    if any(op.operation == "collect_channel_snapshots" for op in (plan.operations or []))
+                    else []
+                ),
             ],
         )
 
@@ -446,12 +753,14 @@ class YouTubeResearchExecutor:
         self._mark_operation_started(plan, "register_research_set")
         successful_queries = 0
         failed_queries = 0
+        empty_queries = 0
         errors: list[str] = []
 
         try:
             async with streamable_http_client(mcp_url) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
+                    available_tools = {tool.name for tool in (await session.list_tools()).tools}
     
                     for index, planned_query in enumerate(executable_queries):
                         text = str(getattr(planned_query, "query", "") or "").strip()
@@ -470,6 +779,10 @@ class YouTubeResearchExecutor:
                                 "research_id": plan.research_id,
                                 "purpose": getattr(planned_query, "purpose", ""),
                                 "priority": str(getattr(planned_query, "priority", "medium")),
+                                "expected_result_count": int(getattr(planned_query, "max_results", 25) or 25),
+                                "request_status": "pending",
+                                "results_status": "pending",
+                                "persistence_status": "pending",
                                 "quota": {
                                     "search_calls": None,
                                     "search_list_calls": None,
@@ -491,8 +804,15 @@ class YouTubeResearchExecutor:
                             relations.link_research_query(research, query)
     
                         query_video_count = 0
+                        search_quota_token = None
                         try:
                             self._mark_operation_started(plan, "search_videos", query=planned_query)
+                            # Preflight search.list here. The MCP gateway independently checks every
+                            # actual HTTP request, including optional videos.list enrichment.
+                            search_quota_token = self._quota_preflight(
+                                bucket="search", operation="search_videos", method="search.list",
+                                metadata={"query": text},
+                            )
                             result = await session.call_tool(
                                 "search_videos",
                                 {
@@ -504,6 +824,7 @@ class YouTubeResearchExecutor:
                                 },
                             )
                             payload = _tool_payload(result)
+                            self._quota_finish(search_quota_token, status="succeeded")
                             quota_report = payload.get("_quota") if isinstance(payload, dict) else None
                             quota_report = quota_report if isinstance(quota_report, dict) else {}
                             def reported_nonnegative_int(key: str) -> int | None:
@@ -561,6 +882,9 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
+                            query.metadata["request_status"] = "succeeded"
+                            query.metadata["api_items_count"] = len(items)
+                            query.metadata["results_status"] = "received" if items else "empty"
     
                             for item in items:
                                 if not isinstance(item, dict):
@@ -624,15 +948,35 @@ class YouTubeResearchExecutor:
                                     channels.append(channel)
                                     self._mark_operation_started(plan, "collect_channels")
     
-                            query.status = "completed"
+                            # API success, object receipt, and persistence are separate
+                            # facts. An empty items list is not a successful collection.
+                            query.status = "completed" if query_video_count > 0 else "empty"
                             query.metadata["result_count"] = query_video_count
+                            query.metadata["received_video_count"] = query_video_count
                             query.metadata["execution_error"] = None
                             successful_queries += 1
+                            if query_video_count == 0:
+                                empty_queries += 1
     
                         except Exception as exc:
-                            query.status = "failed"
-                            query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
+                            error_text = f"{type(exc).__name__}: {exc}"
+                            error_lower = error_text.casefold()
+                            quota_refusal = any(marker in error_lower for marker in ("quota", "budget_exhausted", "quotaexceeded"))
+                            self._quota_finish(
+                                search_quota_token, status="error",
+                                reason=("quota_refusal: " if quota_refusal else "") + error_text,
+                            )
+                            query.status = "blocked" if quota_refusal else "failed"
+                            query.metadata["request_status"] = "blocked_quota" if quota_refusal else "failed"
+                            query.metadata["results_status"] = "unavailable"
+                            query.metadata["persistence_status"] = "pending"
+                            query.metadata["error_kind"] = "quota_refusal" if quota_refusal else (
+                                "api_error" if "youtube_mcp_api_error" in error_lower or "http" in error_lower
+                                else "request_or_response_error"
+                            )
+                            query.metadata["execution_error"] = error_text
                             query.metadata["result_count"] = query_video_count
+                            query.metadata["received_video_count"] = query_video_count
                             failed_queries += 1
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
                             if self.storage is not None:
@@ -649,6 +993,145 @@ class YouTubeResearchExecutor:
                                         plan.research_id, query.query_id,
                                     )
     
+                    # Refresh video statistics through videos.list in bounded batches.
+                    # This is one API call per <=50 videos and does not use search.list quota.
+                    video_stats_calls = 0
+                    video_stats_errors: list[str] = []
+                    video_ids = list(dict.fromkeys(str(value) for value in research.video_ids if value))
+                    if video_ids and "get_video_stats" in available_tools:
+                        for offset in range(0, len(video_ids), 50):
+                            batch_ids = video_ids[offset:offset + 50]
+                            quota_token = None
+                            try:
+                                quota_token = self._quota_preflight(
+                                    bucket="other", operation="collect_video_snapshots",
+                                    method="videos.list", metadata={"video_ids": batch_ids},
+                                )
+                                stats_result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
+                                stats_payload = _tool_payload(stats_result)
+                                if stats_payload.get("error"):
+                                    raise ValueError(str(stats_payload["error"]))
+                                items = stats_payload.get("items")
+                                if not isinstance(items, list):
+                                    raise ValueError("get_video_stats returned no items list")
+                                self._quota_finish(quota_token, status="succeeded")
+                                video_stats_calls += 1
+                                for item in items:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    raw_id = item.get("id") or item.get("video_id") or item.get("youtube_id")
+                                    if not raw_id:
+                                        continue
+                                    video = registry.get_video(str(raw_id))
+                                    if video is None:
+                                        continue
+                                    # Preserve the richer search metadata while refreshing observed metrics.
+                                    refreshed = video_from_mapping(item, video_id=str(raw_id), source="youtube-mcp:get_video_stats")
+                                    for field_name in ("title", "description", "channel_id", "channel_title", "published_at", "view_count", "like_count", "comment_count", "duration_seconds", "tags", "category_id"):
+                                        value = getattr(refreshed, field_name, None)
+                                        if value not in (None, "", []):
+                                            try:
+                                                setattr(video, field_name, value)
+                                            except (AttributeError, TypeError):
+                                                pass
+                                    snapshot = snapshot_from_mapping(
+                                        item,
+                                        snapshot_id=f"{plan.research_id}_stats_{uuid4().hex[:12]}",
+                                        video_id=video.video_id,
+                                        research_id=plan.research_id,
+                                        query_ids=list(research.query_ids),
+                                        source="youtube-mcp:get_video_stats",
+                                    )
+                                    registry.add_snapshot(snapshot)
+                                    research.add_snapshot(snapshot)
+                                    if relations is not None:
+                                        relations.link_research_snapshot(research, snapshot)
+                                        relations.link_video_snapshot(video, snapshot)
+                            except Exception as stats_exc:
+                                self._quota_finish(quota_token, status="error", reason=f"{type(stats_exc).__name__}: {stats_exc}")
+                                video_stats_errors.append(f"get_video_stats batch {offset // 50 + 1}: {type(stats_exc).__name__}: {stats_exc}")
+                    elif video_ids:
+                        video_stats_errors.append("MCP tool not available: get_video_stats")
+
+                    # Capture a point-in-time channel metrics snapshot for each channel
+                    # discovered from the video results. Do not make channel searches
+                    # implicitly: search_channels is a separate planned operation.
+                    channel_snapshots: list[ChannelSnapshot] = []
+                    channel_stats_errors: list[str] = []
+                    channel_stats_calls = 0
+                    if "collect_channel_snapshots" in {op.operation for op in (plan.operations or [])}:
+                        unique_channels = list({
+                            str(channel.channel_id): channel
+                            for channel in channels
+                            if getattr(channel, "channel_id", None)
+                        }.values())
+                        if unique_channels and "get_channel_stats" in available_tools:
+                            for channel in unique_channels:
+                                quota_token = None
+                                try:
+                                    quota_token = self._quota_preflight(
+                                        bucket="other", operation="collect_channel_snapshots",
+                                        method="channels.list", metadata={"channel_id": channel.channel_id},
+                                    )
+                                    stats_result = await session.call_tool(
+                                        "get_channel_stats",
+                                        {"channel_id": channel.channel_id},
+                                    )
+                                    stats_payload = _tool_payload(stats_result)
+                                    self._quota_finish(quota_token, status="succeeded")
+                                    if stats_payload.get("error"):
+                                        raise ValueError(str(stats_payload["error"]))
+                                    items = stats_payload.get("items")
+                                    if not isinstance(items, list):
+                                        raise ValueError("get_channel_stats returned no items list")
+                                    item = next(
+                                        (candidate for candidate in items if isinstance(candidate, dict)
+                                         and str(candidate.get("id") or "") == channel.channel_id),
+                                        None,
+                                    )
+                                    if item is None:
+                                        raise ValueError("get_channel_stats returned no matching channel")
+                                    channel_stats_calls += 1
+                                    snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+                                    statistics = item.get("statistics") if isinstance(item.get("statistics"), dict) else {}
+                                    def metric_int(value: Any) -> int | None:
+                                        try:
+                                            return int(value) if value is not None else None
+                                        except (TypeError, ValueError):
+                                            return None
+                                    channel.title = str(snippet.get("title") or channel.title or "")
+                                    channel.description = snippet.get("description") or channel.description
+                                    channel.custom_url = snippet.get("customUrl") or channel.custom_url
+                                    channel.country = snippet.get("country") or channel.country
+                                    channel.published_at = snippet.get("publishedAt") or channel.published_at
+                                    channel.subscriber_count = metric_int(statistics.get("subscriberCount"))
+                                    channel.video_count = metric_int(statistics.get("videoCount"))
+                                    channel.view_count = metric_int(statistics.get("viewCount"))
+                                    channel.data.update({
+                                        "statistics_source": "youtube-mcp:get_channel_stats",
+                                        "statistics_captured_at": _now(),
+                                        "hidden_subscriber_count": bool(statistics.get("hiddenSubscriberCount", False)),
+                                    })
+                                    channel_snap = ChannelSnapshot(
+                                        channel_id=channel.channel_id,
+                                        captured_at=_now(),
+                                        subscriber_count=channel.subscriber_count,
+                                        video_count=channel.video_count,
+                                        view_count=channel.view_count,
+                                        data={"source": "youtube-mcp:get_channel_stats", "research_id": plan.research_id},
+                                    )
+                                    if opportunity_registry is None:
+                                        raise RuntimeError("opportunity registry is not available")
+                                    opportunity_registry.add_channel_snapshot(channel_snap)
+                                    channel_snapshots.append(channel_snap)
+                                except Exception as stats_exc:
+                                    self._quota_finish(quota_token, status="error", reason=f"{type(stats_exc).__name__}: {stats_exc}")
+                                    channel_stats_errors.append(f"{channel.channel_id}: {type(stats_exc).__name__}: {stats_exc}")
+                        elif unique_channels:
+                            channel_stats_errors.append("MCP tool not available: get_channel_stats")
+                    errors.extend(video_stats_errors)
+                    errors.extend(f"channel_stats: {error}" for error in channel_stats_errors)
+
         except Exception as exc:
             details = _mcp_error_details(exc)
             logger.error(
@@ -749,8 +1232,18 @@ class YouTubeResearchExecutor:
 
         if current_relation_objects:
             research.mark_data_gathered("relations")
+        if any(op.operation == "collect_channel_snapshots" for op in (plan.operations or [])):
+            if channel_snapshots:
+                research.mark_data_gathered("channel_snapshots")
+            else:
+                research.mark_data_missing("channel_snapshots")
 
         persistence_confirmed = False
+        saved_video_count = 0
+        saved_snapshot_count = 0
+        saved_video_ids: set[str] = set()
+        saved_snapshot_video_ids: list[str] = []
+        saved_snapshot_query_ids: list[list[str]] = []
         if self.storage is not None:
             try:
                 # Persist only objects referenced by this research run. Resolve IDs
@@ -759,13 +1252,33 @@ class YouTubeResearchExecutor:
                 research_videos, research_snapshots = _research_objects_for_persistence(
                     registry, research
                 )
-                await _maybe_await(
+                save_result = await _maybe_await(
                     self.storage.save_youtube_data(
                         project_id=project_id,
                         videos=[video.to_dict() for video in research_videos],
                         snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
                     )
                 )
+                if not isinstance(save_result, dict):
+                    raise RuntimeError("storage did not confirm persisted video/snapshot counts")
+                saved_video_count = int(save_result.get("videos", 0) or 0)
+                saved_snapshot_count = int(save_result.get("snapshots", 0) or 0)
+                saved_video_ids = {str(value) for value in (save_result.get("video_ids") or [])}
+                saved_snapshot_video_ids = [str(value) for value in (save_result.get("snapshot_video_ids") or [])]
+                saved_snapshot_query_ids = [
+                    [str(query_id) for query_id in values]
+                    for values in (save_result.get("snapshot_query_ids") or [])
+                ]
+                persistence_confirmed = (
+                    saved_video_count == len(research_videos)
+                    and saved_snapshot_count == len(research_snapshots)
+                )
+                if not persistence_confirmed:
+                    logger.warning(
+                        "Partial YouTube persistence: saved videos=%s/%s snapshots=%s/%s",
+                        saved_video_count, len(research_videos),
+                        saved_snapshot_count, len(research_snapshots),
+                    )
 
                 await _maybe_await(
                     self.storage.save_research_data(
@@ -795,15 +1308,20 @@ class YouTubeResearchExecutor:
                                 project_id=project_id,
                                 data={
                                     "channels": new_channels,
-                                    "channel_snapshots": [],
+                                    "channel_snapshots": [
+                                        snapshot.to_dict()
+                                        for snapshot in channel_snapshots
+                                        if str(snapshot.channel_id) in seen_channel_ids
+                                    ],
                                     "niches": [],
                                     "niche_snapshots": [],
                                 },
                             )
                         )
 
-                persistence_confirmed = True
+                # Research metadata persistence is separate from YouTube object counts.
             except Exception as exc:
+                persistence_confirmed = False
                 research.mark_partial()
                 errors.append(f"persistence: {type(exc).__name__}: {exc}")
                 logger.exception("Failed to persist research result: research_id=%s", plan.research_id)
@@ -815,12 +1333,77 @@ class YouTubeResearchExecutor:
         missing_expected = research.missing_expected_data()
         if missing_expected:
             research.mark_data_missing(*missing_expected)
-        if failed_queries or missing_expected or not persistence_confirmed:
+        # The requested result volume is evaluated per query, not by the
+        # existence of any recent snapshot elsewhere in the research set.
+        expected_result_count = sum(
+            int((query.metadata or {}).get("expected_result_count", 0) or 0)
+            for query in collected_queries
+        )
+        received_result_count = sum(
+            int((query.metadata or {}).get("received_video_count", 0) or 0)
+            for query in collected_queries
+        )
+        expected_volume_reached = bool(collected_queries) and all(
+            int((query.metadata or {}).get("received_video_count", 0) or 0)
+            >= int((query.metadata or {}).get("expected_result_count", 0) or 0)
+            for query in collected_queries
+            if (query.metadata or {}).get("request_status") == "succeeded"
+        ) and not empty_queries and failed_queries == 0
+        if failed_queries or empty_queries or missing_expected or not persistence_confirmed or not expected_volume_reached:
             research.mark_partial()
         else:
             research.mark_complete()
+        for query in collected_queries:
+            query_id = str(query.query_id)
+            query_saved_snapshot_indexes = [
+                index for index, query_ids in enumerate(saved_snapshot_query_ids)
+                if query_id in query_ids
+            ]
+            query_saved_snapshot_count = len(query_saved_snapshot_indexes)
+            query_saved_video_ids = {
+                saved_snapshot_video_ids[index]
+                for index in query_saved_snapshot_indexes
+                if index < len(saved_snapshot_video_ids)
+                and saved_snapshot_video_ids[index] in saved_video_ids
+            }
+            query_saved_video_count = len(query_saved_video_ids)
+            received_for_query = int(query.metadata.get("received_video_count", 0) or 0)
+            query.metadata["saved_video_count"] = query_saved_video_count
+            query.metadata["saved_snapshot_count"] = query_saved_snapshot_count
+            query.metadata["persistence_status"] = (
+                "saved" if query_saved_video_count >= received_for_query
+                and query_saved_snapshot_count >= received_for_query
+                else "partial" if query_saved_video_count or query_saved_snapshot_count
+                else "failed"
+            )
+            query.metadata["expected_volume_reached"] = (
+                query_saved_video_count
+                >= int(query.metadata.get("expected_result_count", 0) or 0)
+            )
+        # Persist the explicit per-query lifecycle after the object writes so
+        # durable records distinguish API success from saved evidence.
+        if self.storage is not None and collected_queries:
+            try:
+                await _maybe_await(self.storage.save_research_data(
+                    project_id=project_id,
+                    queries=[query.to_dict() for query in collected_queries],
+                    research_sets=[research.to_dict()],
+                    relations=[],
+                ))
+            except Exception as exc:
+                persistence_confirmed = False
+                expected_volume_reached = False
+                research.mark_partial()
+                research.mark_data_missing("research_set")
+                errors.append(f"query_status_persistence: {type(exc).__name__}: {exc}")
+                for query in collected_queries:
+                    query.metadata["persistence_status"] = "failed"
+                    query.metadata["saved_video_count"] = 0
+                    query.metadata["saved_snapshot_count"] = 0
+                    query.metadata["expected_volume_reached"] = False
 
         execution_summary = {
+            **refresh_summary,
             "status": research.status,
             "persisted": persistence_confirmed,
             "research_id": plan.research_id,
@@ -828,12 +1411,25 @@ class YouTubeResearchExecutor:
             "queries_in_plan": len(plan.queries),
             "queries_collected": successful_queries,
             "queries_failed": failed_queries,
+            "queries_empty": empty_queries,
+            "expected_video_count": expected_result_count,
+            "received_video_count": received_result_count,
+            "saved_video_count": received_result_count if persistence_confirmed else 0,
+            "expected_volume_reached": expected_volume_reached,
             "query_results": [
                 {
                     "query_id": query.query_id,
                     "query": query.text,
                     "language": query.language,
                     "status": query.status,
+                    "request_status": (query.metadata or {}).get("request_status"),
+                    "results_status": (query.metadata or {}).get("results_status"),
+                    "persistence_status": (query.metadata or {}).get("persistence_status"),
+                    "expected_result_count": int((query.metadata or {}).get("expected_result_count", 0) or 0),
+                    "received_video_count": int((query.metadata or {}).get("received_video_count", 0) or 0),
+                    "saved_video_count": int((query.metadata or {}).get("saved_video_count", 0) or 0),
+                    "expected_volume_reached": bool((query.metadata or {}).get("expected_volume_reached")),
+                    "error_kind": (query.metadata or {}).get("error_kind"),
                     "result_count": int((query.metadata or {}).get("result_count", 0) or 0),
                     "video_ids": list((query.metadata or {}).get("video_ids") or []),
                     "error": (query.metadata or {}).get("execution_error"),
@@ -860,6 +1456,11 @@ class YouTubeResearchExecutor:
                 "search_calls": sum(int((query.metadata.get("quota") or {}).get("search_calls", 0) or 0) for query in collected_queries),
                 "other_units": sum(int((query.metadata.get("quota") or {}).get("other_units", 0) or 0) for query in collected_queries),
             },
+            "video_stats_calls": video_stats_calls,
+            "video_stats_errors": video_stats_errors,
+            "channel_stats_calls": channel_stats_calls,
+            "channel_stats_errors": channel_stats_errors,
+            "channel_snapshots_collected": len(channel_snapshots),
             "source": "youtube-mcp",
             "mcp_url": mcp_url,
             "completed_at": _now(),
@@ -871,8 +1472,25 @@ class YouTubeResearchExecutor:
         execution_summary["operations_planned"] = len(operation_results)
         execution_summary["operations_succeeded"] = sum(item["status"] == "succeeded" for item in operation_results)
         execution_summary["operations_partial"] = sum(item["status"] == "partial" for item in operation_results)
+        execution_summary["operations_empty"] = sum(item["status"] == "empty" for item in operation_results)
         execution_summary["operations_blocked"] = sum(item["status"] == "blocked" for item in operation_results)
         execution_summary["operations_failed"] = sum(item["status"] == "failed" for item in operation_results)
+        mandatory_ok = all(
+            item["status"] in {"succeeded", "skipped"}
+            for item in operation_results
+        )
+        volume_ok = bool(execution_summary.get("expected_volume_reached"))
+        if mandatory_ok and volume_ok and persistence_confirmed and research.status == "complete":
+            plan.status = ResearchStatus.COMPLETED
+            execution_summary["status"] = "completed"
+        elif not video_count and failed_queries and not empty_queries:
+            plan.status = ResearchStatus.BLOCKED
+            execution_summary["status"] = "failed"
+        else:
+            plan.status = ResearchStatus.PARTIAL
+            execution_summary["status"] = "partial"
+        execution_summary["plan_status"] = plan.status.value
+        execution_summary["research_set_status"] = research.status
 
         # Persist the final operation ledger with the research set, after results
         # are known. A successful transport response alone is not completion.
@@ -898,6 +1516,22 @@ class YouTubeResearchExecutor:
         execution_summary["research"] = research.to_dict()
         execution_summary["errors"] = errors
         return execution_summary
+
+    def _finalize_operations_with_quota(
+        self, plan: Any, summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        results = self._finalize_operations(plan, summary)
+        if self.quota_manager is not None:
+            status = self.quota_manager.get_status()
+            for operation in list(getattr(plan, "operations", []) or []):
+                result = getattr(operation, "result", None)
+                if isinstance(result, dict):
+                    result["quota_status"] = status
+            for item in results:
+                result = item.get("result")
+                if isinstance(result, dict):
+                    result["quota_status"] = status
+        return results
 
     @staticmethod
     def _finalize_operations(plan: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -946,54 +1580,119 @@ class YouTubeResearchExecutor:
                 ]
                 if matched:
                     matched_success = [item for item in matched if item.get("status") == "completed"]
-                    matched_failed = [item for item in matched if item.get("status") != "completed"]
-                    matched_videos = sum(int(item.get("result_count") or 0) for item in matched)
-                    if matched_videos > 0 and matched_failed:
+                    matched_empty = [item for item in matched if item.get("status") == "empty"]
+                    matched_failed = [
+                        item for item in matched
+                        if item.get("status") not in {"completed", "empty"}
+                    ]
+                    matched_videos = sum(int(item.get("saved_video_count", item.get("result_count", 0)) or 0) for item in matched)
+                    if matched_videos > 0 and (matched_failed or matched_empty):
                         status = ResearchOperationStatus.PARTIAL
-                        error = "some_planned_queries_failed_after_partial_collection"
-                    elif matched_success and matched_videos > 0:
-                        status = ResearchOperationStatus.SUCCEEDED
-                    elif matched_success:
-                        status = ResearchOperationStatus.PARTIAL
-                        error = "search_completed_without_relevant_video_results"
+                        error = "partial_collection_with_failed_or_empty_queries"
+                    elif matched_success and matched_videos > 0 and bool(summary.get("persisted")):
+                        status = (
+                            ResearchOperationStatus.SUCCEEDED
+                            if bool(summary.get("expected_volume_reached"))
+                            else ResearchOperationStatus.PARTIAL
+                        )
+                        if status == ResearchOperationStatus.PARTIAL:
+                            error = "expected_result_volume_not_reached"
+                    elif matched_empty and not matched_success and not matched_failed:
+                        status = ResearchOperationStatus.EMPTY
+                        error = "empty_search_result"
+                    elif matched_failed and not matched_success and not matched_empty:
+                        quota_blocked = all(item.get("status") == "blocked" for item in matched_failed)
+                        status = ResearchOperationStatus.BLOCKED if quota_blocked else ResearchOperationStatus.FAILED
+                        error = "; ".join(str(item.get("error") or "query_failed") for item in matched_failed[:5])
                     else:
-                        status = ResearchOperationStatus.FAILED
-                        error = "; ".join(str(item.get("error") or "query_failed") for item in matched[:5])
+                        status = ResearchOperationStatus.PARTIAL
+                        error = "results_received_but_persistence_or_expected_volume_not_confirmed"
                     result = {
                         "queries": matched,
                         "queries_succeeded": len(matched_success),
+                        "queries_empty": len(matched_empty),
                         "queries_failed": len(matched_failed),
-                        "videos_collected": matched_videos,
+                        "videos_received": sum(int(item.get("received_video_count", 0) or 0) for item in matched),
+                        "videos_saved": matched_videos,
+                        "expected_volume_reached": all(bool(item.get("expected_volume_reached")) for item in matched if item.get("status") == "completed"),
+                        "persisted": bool(summary.get("persisted")),
                     }
                 else:
                     if query_count > 0 and query_failed == 0 and video_count > 0:
-                        status = ResearchOperationStatus.SUCCEEDED
+                        status = ResearchOperationStatus.SUCCEEDED if summary.get("expected_volume_reached") and persisted else ResearchOperationStatus.PARTIAL
+                        if status == ResearchOperationStatus.PARTIAL:
+                            error = "expected_result_volume_or_persistence_not_confirmed"
+                    elif int(summary.get("queries_empty", 0) or 0) > 0 and video_count == 0:
+                        status = ResearchOperationStatus.EMPTY
+                        error = "empty_search_result"
                     elif query_count > 0 or video_count > 0:
                         status = ResearchOperationStatus.PARTIAL
-                        if video_count == 0:
-                            error = "search_completed_without_relevant_video_results"
-                        elif query_failed:
-                            error = "some_planned_queries_failed"
+                        error = (
+                            "search_completed_without_relevant_video_results"
+                            if video_count == 0
+                            else "partial_collection_or_expected_volume_not_reached"
+                        )
                     elif errors:
                         status = ResearchOperationStatus.FAILED
                         error = "; ".join(errors[:5])
                     else:
-                        status = ResearchOperationStatus.PARTIAL
-                        error = "search_completed_without_relevant_video_results"
-                    result = {"queries_succeeded": query_count, "queries_failed": query_failed, "videos_collected": video_count}
+                        status = ResearchOperationStatus.BLOCKED
+                        error = "no_results_received"
+                    result = {
+                        "queries_succeeded": query_count,
+                        "queries_empty": int(summary.get("queries_empty", 0) or 0),
+                        "queries_failed": query_failed,
+                        "videos_received": int(summary.get("received_video_count", video_count) or 0),
+                        "videos_saved": int(summary.get("saved_video_count", 0) or 0),
+                        "expected_volume_reached": bool(summary.get("expected_volume_reached")),
+                        "persisted": persisted,
+                    }
+            elif name == "refresh_existing_video_stats":
+                refresh_status = str(summary.get("refresh_existing_video_stats_status") or "blocked")
+                if refresh_status == "succeeded":
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif refresh_status == "partial":
+                    status = ResearchOperationStatus.PARTIAL
+                elif refresh_status == "failed":
+                    status = ResearchOperationStatus.FAILED
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                error_values = list(summary.get("refresh_existing_video_stats_errors") or [])
+                unavailable_values = list(summary.get("refresh_existing_video_stats_unavailable") or [])
+                if error_values or unavailable_values:
+                    error = "; ".join(
+                        error_values[:5] + ([f"unavailable video IDs: {', '.join(unavailable_values[:20])}"] if unavailable_values else [])
+                    )
+                result = {
+                    "candidates": int(summary.get("refresh_existing_video_stats_candidates", 0) or 0),
+                    "refreshed": int(summary.get("refresh_existing_video_stats_refreshed", 0) or 0),
+                    "api_batches": int(summary.get("refresh_existing_video_stats_api_batches", 0) or 0),
+                    "unavailable_video_ids": unavailable_values,
+                    "errors": error_values,
+                    "persisted": bool(summary.get("refresh_existing_video_stats_persisted")),
+                    "latest_snapshot_by_video": dict(summary.get("refresh_existing_video_stats_latest_snapshot_by_video") or {}),
+                }
             elif name == "collect_video_snapshots":
-                if snapshot_count > 0 and persisted:
+                if snapshot_count > 0 and persisted and bool(summary.get("expected_volume_reached")):
                     status = ResearchOperationStatus.SUCCEEDED
                 elif snapshot_count > 0:
                     status = ResearchOperationStatus.PARTIAL
-                    error = "snapshots_collected_but_persistence_not_confirmed"
+                    error = (
+                        "snapshots_not_persisted"
+                        if not persisted else "snapshot_volume_incomplete"
+                    )
+                elif int(summary.get("queries_empty", 0) or 0) > 0:
+                    status = ResearchOperationStatus.EMPTY
+                    error = "empty_search_produced_no_video_snapshots"
                 else:
                     status = ResearchOperationStatus.BLOCKED
                     error = "no_video_snapshots_collected"
                 result = {
-                    "snapshots_collected": snapshot_count,
+                    "snapshots_received": snapshot_count,
+                    "snapshots_saved": snapshot_count if persisted else 0,
                     "snapshot_ids": list(summary.get("snapshot_ids") or []),
                     "video_ids": list(summary.get("video_ids") or []),
+                    "expected_volume_reached": bool(summary.get("expected_volume_reached")),
                     "persisted": persisted,
                 }
             elif name == "register_queries":
@@ -1042,7 +1741,23 @@ class YouTubeResearchExecutor:
                     status = ResearchOperationStatus.BLOCKED
                     error = "dedicated_channel_collection_not_implemented"
                 result = {"videos_collected": video_count, "persisted": persisted}
-            elif name in {"collect_channel_snapshots", "collect_niche_evidence", "build_niche_snapshots"}:
+            elif name == "collect_channel_snapshots":
+                collected = int(summary.get("channel_snapshots_collected", 0) or 0)
+                if collected > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif collected > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "channel_snapshots_collected_but_persistence_not_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "; ".join(summary.get("channel_stats_errors") or []) or "no_channel_snapshots_collected"
+                result = {
+                    "channel_snapshots_collected": collected,
+                    "channel_stats_calls": int(summary.get("channel_stats_calls", 0) or 0),
+                    "errors": list(summary.get("channel_stats_errors") or []),
+                    "persisted": persisted,
+                }
+            elif name in {"collect_niche_evidence", "build_niche_snapshots"}:
                 status = ResearchOperationStatus.BLOCKED
                 error = f"operation_handler_not_implemented: {name}"
             else:

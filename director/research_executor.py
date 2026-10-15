@@ -123,14 +123,11 @@ class YouTubeResearchExecutor:
         self, *, bucket: str, operation: str, method: str, units: int = 1,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Authorize and account for an API attempt before calling the MCP tool."""
+        """Check the budget before MCP; the outbound gateway owns final charging."""
         if self.quota_manager is None:
             # Runtime injects the manager; None is retained for isolated unit tests.
             return None
-        self.quota_manager.record_planned_call(
-            bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
-        )
-        return self.quota_manager.authorize_call(
+        return self.quota_manager.preflight_call(
             bucket=bucket, operation=operation, method=method, units=units, metadata=metadata,
         )
 
@@ -580,12 +577,18 @@ class YouTubeResearchExecutor:
         persisted = False
         if refreshed_snapshots:
             try:
-                await _maybe_await(self.storage.save_youtube_data(
+                save_result = await _maybe_await(self.storage.save_youtube_data(
                     project_id=project_id,
                     videos=refreshed_videos,
                     snapshots=refreshed_snapshots,
                 ))
-                persisted = True
+                expected_videos = len(refreshed_videos)
+                expected_snapshots = len(refreshed_snapshots)
+                if not isinstance(save_result, dict):
+                    raise RuntimeError("storage did not confirm persisted video/snapshot counts")
+                saved_videos = int(save_result.get("videos", 0) or 0)
+                saved_snapshots = int(save_result.get("snapshots", 0) or 0)
+                persisted = saved_videos == expected_videos and saved_snapshots == expected_snapshots
             except Exception as exc:
                 errors.append(f"persist_refresh_snapshots: {type(exc).__name__}: {exc}")
 
@@ -836,14 +839,6 @@ class YouTubeResearchExecutor:
                             search_calls = reported_nonnegative_int("search_calls")
                             search_list_calls = reported_nonnegative_int("search_list_calls")
                             videos_list_calls = reported_nonnegative_int("videos_list_calls")
-                            # The MCP API gateway preflights every actual videos.list
-                            # request. Mirror its observed count into Director's ledger.
-                            if self.quota_manager is not None and videos_list_calls:
-                                self.quota_manager.record_usage(
-                                    operation="search_videos",
-                                    other_units=videos_list_calls,
-                                    metadata={"method": "videos.list", "query": text, "source": "mcp_observed"},
-                                )
                             other_units = reported_nonnegative_int("other_units")
                             accounting_status = (
                                 "observed_method_calls"
@@ -1252,13 +1247,27 @@ class YouTubeResearchExecutor:
                 research_videos, research_snapshots = _research_objects_for_persistence(
                     registry, research
                 )
-                await _maybe_await(
+                save_result = await _maybe_await(
                     self.storage.save_youtube_data(
                         project_id=project_id,
                         videos=[video.to_dict() for video in research_videos],
                         snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
                     )
                 )
+                if not isinstance(save_result, dict):
+                    raise RuntimeError("storage did not confirm persisted video/snapshot counts")
+                saved_video_count = int(save_result.get("videos", 0) or 0)
+                saved_snapshot_count = int(save_result.get("snapshots", 0) or 0)
+                persistence_confirmed = (
+                    saved_video_count == len(research_videos)
+                    and saved_snapshot_count == len(research_snapshots)
+                )
+                if not persistence_confirmed:
+                    logger.warning(
+                        "Partial YouTube persistence: saved videos=%s/%s snapshots=%s/%s",
+                        saved_video_count, len(research_videos),
+                        saved_snapshot_count, len(research_snapshots),
+                    )
 
                 await _maybe_await(
                     self.storage.save_research_data(
@@ -1299,7 +1308,7 @@ class YouTubeResearchExecutor:
                             )
                         )
 
-                persistence_confirmed = True
+                # Research metadata persistence is separate from YouTube object counts.
             except Exception as exc:
                 research.mark_partial()
                 errors.append(f"persistence: {type(exc).__name__}: {exc}")
@@ -1334,12 +1343,14 @@ class YouTubeResearchExecutor:
             research.mark_complete()
         for query in collected_queries:
             query.metadata["persistence_status"] = "saved" if persistence_confirmed else "failed"
+            # Global storage returns authoritative counts; do not fabricate per-query
+            # attribution when the adapter cannot map saved objects back to a query.
             query.metadata["saved_video_count"] = (
-                int(query.metadata.get("received_video_count", 0) or 0)
+                min(int(query.metadata.get("received_video_count", 0) or 0), saved_video_count)
                 if persistence_confirmed else 0
             )
             query.metadata["saved_snapshot_count"] = (
-                int(query.metadata.get("received_video_count", 0) or 0)
+                min(int(query.metadata.get("received_video_count", 0) or 0), saved_snapshot_count)
                 if persistence_confirmed else 0
             )
             query.metadata["expected_volume_reached"] = (

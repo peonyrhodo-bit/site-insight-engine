@@ -156,7 +156,8 @@ except Exception:
     YouTubeResearchExecutor = None
 
 try:
-    from quota.youtube_quota import YouTubeQuotaManager, YouTubeQuotaExceeded
+    from quota.youtube_quota import YouTubeQuotaExceeded
+    from quota.postgres_youtube_quota import YouTubeQuotaManager
 except Exception:
     YouTubeQuotaManager = None
     YouTubeQuotaExceeded = None
@@ -2510,13 +2511,14 @@ class Runtime:
         )
         self.ai = AIAdapter()
 
-        # Quota state must be shared by every research operation in this process.
-        # Configure YOUTUBE_QUOTA_DB_PATH to a persistent mounted path in production
-        # so the daily budget survives service restarts and deployments.
+        # Quota state is held in the existing Supabase PostgreSQL project.
+        # Fail closed rather than silently falling back to ephemeral local storage.
         if YouTubeQuotaManager is None:
-            raise RuntimeError("YouTube quota manager is unavailable; refusing to start without quota control")
-        quota_db_path = os.getenv("YOUTUBE_QUOTA_DB_PATH", "data/youtube_quota.sqlite3")
-        self.quota_manager = YouTubeQuotaManager(db_path=quota_db_path)
+            raise RuntimeError("PostgreSQL YouTube quota manager is unavailable; refusing to start without quota control")
+        quota_database_url = os.getenv("YOUTUBE_QUOTA_DATABASE_URL", "").strip()
+        if not quota_database_url:
+            raise RuntimeError("YOUTUBE_QUOTA_DATABASE_URL is not configured; refusing to start without durable quota control")
+        self.quota_manager = YouTubeQuotaManager(db_url=quota_database_url)
 
         # Research executor is the concrete bridge from Director to YouTube MCP.
         self.research = (

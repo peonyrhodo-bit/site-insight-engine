@@ -665,7 +665,7 @@ class YouTubeResearchExecutor:
             terminal_statuses = {item["status"] for item in operation_results}
             if not operation_results:
                 overall_status = "blocked"
-            elif "partial" in terminal_statuses:
+            elif "partial" in terminal_statuses or "empty" in terminal_statuses:
                 overall_status = "partial"
             elif "failed" in terminal_statuses:
                 overall_status = "failed"

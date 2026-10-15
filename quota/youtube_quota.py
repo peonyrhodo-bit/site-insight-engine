@@ -197,6 +197,40 @@ class YouTubeQuotaManager:
         finally:
             conn.close()
 
+    def preflight_call(
+        self,
+        *,
+        bucket: str,
+        operation: str,
+        method: str,
+        units: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record and check a planned call without consuming quota.
+
+        Final authorization must still happen at the outbound API gateway;
+        this check is advisory and deliberately does not reserve quota.
+        """
+        units = max(1, int(units))
+        event_id = self.record_planned_call(
+            bucket=bucket, operation=operation, method=method,
+            units=units, metadata=metadata,
+        )
+        remaining = self.get_remaining()
+        available = remaining["search_remaining" if bucket == "search" else "other_remaining"]
+        if available < units:
+            conn = self._get_db()
+            try:
+                conn.execute(
+                    "UPDATE youtube_quota_events SET status='blocked', reason='budget_exhausted', finished_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), event_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            raise YouTubeQuotaExceeded(bucket, {**remaining, "event_id": event_id, "reason": "budget_exhausted"})
+        return {"allowed": True, "event_id": event_id, **remaining, "preflight_only": True}
+
     def authorize_call(
         self,
         *,

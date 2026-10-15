@@ -1572,7 +1572,11 @@ class YouTubeResearchExecutor:
                         error = "empty_search_result"
                     elif query_count > 0 or video_count > 0:
                         status = ResearchOperationStatus.PARTIAL
-                        error = "partial_collection_or_expected_volume_not_reached"
+                        error = (
+                            "search_completed_without_relevant_video_results"
+                            if video_count == 0
+                            else "partial_collection_or_expected_volume_not_reached"
+                        )
                     elif errors:
                         status = ResearchOperationStatus.FAILED
                         error = "; ".join(errors[:5])

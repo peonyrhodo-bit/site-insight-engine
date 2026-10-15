@@ -749,6 +749,7 @@ class YouTubeResearchExecutor:
         self._mark_operation_started(plan, "register_research_set")
         successful_queries = 0
         failed_queries = 0
+        empty_queries = 0
         errors: list[str] = []
 
         try:
@@ -774,6 +775,10 @@ class YouTubeResearchExecutor:
                                 "research_id": plan.research_id,
                                 "purpose": getattr(planned_query, "purpose", ""),
                                 "priority": str(getattr(planned_query, "priority", "medium")),
+                                "expected_result_count": int(getattr(planned_query, "max_results", 25) or 25),
+                                "request_status": "pending",
+                                "results_status": "pending",
+                                "persistence_status": "pending",
                                 "quota": {
                                     "search_calls": None,
                                     "search_list_calls": None,
@@ -881,6 +886,9 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
+                            query.metadata["request_status"] = "succeeded"
+                            query.metadata["api_items_count"] = len(items)
+                            query.metadata["results_status"] = "received" if items else "empty"
     
                             for item in items:
                                 if not isinstance(item, dict):
@@ -944,16 +952,35 @@ class YouTubeResearchExecutor:
                                     channels.append(channel)
                                     self._mark_operation_started(plan, "collect_channels")
     
-                            query.status = "completed"
+                            # API success, object receipt, and persistence are separate
+                            # facts. An empty items list is not a successful collection.
+                            query.status = "completed" if query_video_count > 0 else "empty"
                             query.metadata["result_count"] = query_video_count
+                            query.metadata["received_video_count"] = query_video_count
                             query.metadata["execution_error"] = None
                             successful_queries += 1
+                            if query_video_count == 0:
+                                empty_queries += 1
     
                         except Exception as exc:
-                            self._quota_finish(search_quota_token, status="error", reason=f"{type(exc).__name__}: {exc}")
-                            query.status = "failed"
-                            query.metadata["execution_error"] = f"{type(exc).__name__}: {exc}"
+                            error_text = f"{type(exc).__name__}: {exc}"
+                            error_lower = error_text.casefold()
+                            quota_refusal = any(marker in error_lower for marker in ("quota", "budget_exhausted", "quotaexceeded"))
+                            self._quota_finish(
+                                search_quota_token, status="error",
+                                reason=("quota_refusal: " if quota_refusal else "") + error_text,
+                            )
+                            query.status = "blocked" if quota_refusal else "failed"
+                            query.metadata["request_status"] = "blocked_quota" if quota_refusal else "failed"
+                            query.metadata["results_status"] = "unavailable"
+                            query.metadata["persistence_status"] = "pending"
+                            query.metadata["error_kind"] = "quota_refusal" if quota_refusal else (
+                                "api_error" if "youtube_mcp_api_error" in error_lower or "http" in error_lower
+                                else "request_or_response_error"
+                            )
+                            query.metadata["execution_error"] = error_text
                             query.metadata["result_count"] = query_video_count
+                            query.metadata["received_video_count"] = query_video_count
                             failed_queries += 1
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
                             if self.storage is not None:
@@ -1284,10 +1311,40 @@ class YouTubeResearchExecutor:
         missing_expected = research.missing_expected_data()
         if missing_expected:
             research.mark_data_missing(*missing_expected)
-        if failed_queries or missing_expected or not persistence_confirmed:
+        # The requested result volume is evaluated per query, not by the
+        # existence of any recent snapshot elsewhere in the research set.
+        expected_result_count = sum(
+            int((query.metadata or {}).get("expected_result_count", 0) or 0)
+            for query in collected_queries
+        )
+        received_result_count = sum(
+            int((query.metadata or {}).get("received_video_count", 0) or 0)
+            for query in collected_queries
+        )
+        expected_volume_reached = bool(collected_queries) and all(
+            int((query.metadata or {}).get("received_video_count", 0) or 0)
+            >= int((query.metadata or {}).get("expected_result_count", 0) or 0)
+            for query in collected_queries
+            if (query.metadata or {}).get("request_status") == "succeeded"
+        ) and not empty_queries and failed_queries == 0
+        if failed_queries or empty_queries or missing_expected or not persistence_confirmed or not expected_volume_reached:
             research.mark_partial()
         else:
             research.mark_complete()
+        for query in collected_queries:
+            query.metadata["persistence_status"] = "saved" if persistence_confirmed else "failed"
+            query.metadata["saved_video_count"] = (
+                int(query.metadata.get("received_video_count", 0) or 0)
+                if persistence_confirmed else 0
+            )
+            query.metadata["saved_snapshot_count"] = (
+                int(query.metadata.get("received_video_count", 0) or 0)
+                if persistence_confirmed else 0
+            )
+            query.metadata["expected_volume_reached"] = (
+                int(query.metadata.get("saved_video_count", 0) or 0)
+                >= int(query.metadata.get("expected_result_count", 0) or 0)
+            )
 
         execution_summary = {
             **refresh_summary,
@@ -1298,12 +1355,25 @@ class YouTubeResearchExecutor:
             "queries_in_plan": len(plan.queries),
             "queries_collected": successful_queries,
             "queries_failed": failed_queries,
+            "queries_empty": empty_queries,
+            "expected_video_count": expected_result_count,
+            "received_video_count": received_result_count,
+            "saved_video_count": received_result_count if persistence_confirmed else 0,
+            "expected_volume_reached": expected_volume_reached,
             "query_results": [
                 {
                     "query_id": query.query_id,
                     "query": query.text,
                     "language": query.language,
                     "status": query.status,
+                    "request_status": (query.metadata or {}).get("request_status"),
+                    "results_status": (query.metadata or {}).get("results_status"),
+                    "persistence_status": (query.metadata or {}).get("persistence_status"),
+                    "expected_result_count": int((query.metadata or {}).get("expected_result_count", 0) or 0),
+                    "received_video_count": int((query.metadata or {}).get("received_video_count", 0) or 0),
+                    "saved_video_count": int((query.metadata or {}).get("saved_video_count", 0) or 0),
+                    "expected_volume_reached": bool((query.metadata or {}).get("expected_volume_reached")),
+                    "error_kind": (query.metadata or {}).get("error_kind"),
                     "result_count": int((query.metadata or {}).get("result_count", 0) or 0),
                     "video_ids": list((query.metadata or {}).get("video_ids") or []),
                     "error": (query.metadata or {}).get("execution_error"),

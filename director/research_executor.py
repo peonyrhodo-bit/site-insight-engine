@@ -26,6 +26,7 @@ from director.research import (
     ResearchOperation,
     ResearchOperationStatus,
     ResearchPlan,
+    ResearchStatus,
     plan_from_requirements,
     research_from_gaps,
 )
@@ -1416,8 +1417,18 @@ class YouTubeResearchExecutor:
         execution_summary["operations_planned"] = len(operation_results)
         execution_summary["operations_succeeded"] = sum(item["status"] == "succeeded" for item in operation_results)
         execution_summary["operations_partial"] = sum(item["status"] == "partial" for item in operation_results)
+        execution_summary["operations_empty"] = sum(item["status"] == "empty" for item in operation_results)
         execution_summary["operations_blocked"] = sum(item["status"] == "blocked" for item in operation_results)
         execution_summary["operations_failed"] = sum(item["status"] == "failed" for item in operation_results)
+        mandatory_ok = all(
+            item["status"] in {"succeeded", "skipped"}
+            for item in operation_results
+        )
+        if not mandatory_ok or not bool(execution_summary.get("expected_volume_reached")):
+            plan.status = ResearchStatus.PARTIAL
+        else:
+            plan.status = ResearchStatus.COMPLETED
+        execution_summary["plan_status"] = plan.status.value
 
         # Persist the final operation ledger with the research set, after results
         # are known. A successful transport response alone is not completion.
@@ -1505,43 +1516,71 @@ class YouTubeResearchExecutor:
                     if (not planned_text or str(item.get("query") or "").strip().casefold() == planned_text)
                     and (not planned_languages or str(item.get("language") or "").casefold() in planned_languages)
                 ]
-                if matched:
+                        if matched:
                     matched_success = [item for item in matched if item.get("status") == "completed"]
-                    matched_failed = [item for item in matched if item.get("status") != "completed"]
-                    matched_videos = sum(int(item.get("result_count") or 0) for item in matched)
-                    if matched_videos > 0 and matched_failed:
+                    matched_empty = [item for item in matched if item.get("status") == "empty"]
+                    matched_failed = [
+                        item for item in matched
+                        if item.get("status") not in {"completed", "empty"}
+                    ]
+                    matched_videos = sum(int(item.get("saved_video_count", item.get("result_count", 0)) or 0) for item in matched)
+                    if matched_videos > 0 and (matched_failed or matched_empty):
                         status = ResearchOperationStatus.PARTIAL
-                        error = "some_planned_queries_failed_after_partial_collection"
-                    elif matched_success and matched_videos > 0:
-                        status = ResearchOperationStatus.SUCCEEDED
-                    elif matched_success:
-                        status = ResearchOperationStatus.PARTIAL
-                        error = "search_completed_without_relevant_video_results"
+                        error = "partial_collection_with_failed_or_empty_queries"
+                    elif matched_success and matched_videos > 0 and bool(summary.get("persisted")):
+                        status = (
+                            ResearchOperationStatus.SUCCEEDED
+                            if bool(summary.get("expected_volume_reached"))
+                            else ResearchOperationStatus.PARTIAL
+                        )
+                        if status == ResearchOperationStatus.PARTIAL:
+                            error = "expected_result_volume_not_reached"
+                    elif matched_empty and not matched_success and not matched_failed:
+                        status = ResearchOperationStatus.EMPTY
+                        error = "empty_search_result"
+                    elif matched_failed and not matched_success and not matched_empty:
+                        quota_blocked = all(item.get("status") == "blocked" for item in matched_failed)
+                        status = ResearchOperationStatus.BLOCKED if quota_blocked else ResearchOperationStatus.FAILED
+                        error = "; ".join(str(item.get("error") or "query_failed") for item in matched_failed[:5])
                     else:
-                        status = ResearchOperationStatus.FAILED
-                        error = "; ".join(str(item.get("error") or "query_failed") for item in matched[:5])
+                        status = ResearchOperationStatus.PARTIAL
+                        error = "results_received_but_persistence_or_expected_volume_not_confirmed"
                     result = {
                         "queries": matched,
                         "queries_succeeded": len(matched_success),
+                        "queries_empty": len(matched_empty),
                         "queries_failed": len(matched_failed),
-                        "videos_collected": matched_videos,
+                        "videos_received": sum(int(item.get("received_video_count", 0) or 0) for item in matched),
+                        "videos_saved": matched_videos,
+                        "expected_volume_reached": all(bool(item.get("expected_volume_reached")) for item in matched if item.get("status") == "completed"),
+                        "persisted": bool(summary.get("persisted")),
                     }
                 else:
                     if query_count > 0 and query_failed == 0 and video_count > 0:
-                        status = ResearchOperationStatus.SUCCEEDED
+                        status = ResearchOperationStatus.SUCCEEDED if summary.get("expected_volume_reached") and persisted else ResearchOperationStatus.PARTIAL
+                        if status == ResearchOperationStatus.PARTIAL:
+                            error = "expected_result_volume_or_persistence_not_confirmed"
+                    elif int(summary.get("queries_empty", 0) or 0) > 0 and video_count == 0:
+                        status = ResearchOperationStatus.EMPTY
+                        error = "empty_search_result"
                     elif query_count > 0 or video_count > 0:
                         status = ResearchOperationStatus.PARTIAL
-                        if video_count == 0:
-                            error = "search_completed_without_relevant_video_results"
-                        elif query_failed:
-                            error = "some_planned_queries_failed"
+                        error = "partial_collection_or_expected_volume_not_reached"
                     elif errors:
                         status = ResearchOperationStatus.FAILED
                         error = "; ".join(errors[:5])
                     else:
-                        status = ResearchOperationStatus.PARTIAL
-                        error = "search_completed_without_relevant_video_results"
-                    result = {"queries_succeeded": query_count, "queries_failed": query_failed, "videos_collected": video_count}
+                        status = ResearchOperationStatus.BLOCKED
+                        error = "no_results_received"
+                    result = {
+                        "queries_succeeded": query_count,
+                        "queries_empty": int(summary.get("queries_empty", 0) or 0),
+                        "queries_failed": query_failed,
+                        "videos_received": int(summary.get("received_video_count", video_count) or 0),
+                        "videos_saved": int(summary.get("saved_video_count", 0) or 0),
+                        "expected_volume_reached": bool(summary.get("expected_volume_reached")),
+                        "persisted": persisted,
+                    }
             elif name == "refresh_existing_video_stats":
                 refresh_status = str(summary.get("refresh_existing_video_stats_status") or "blocked")
                 if refresh_status == "succeeded":
@@ -1568,18 +1607,26 @@ class YouTubeResearchExecutor:
                     "latest_snapshot_by_video": dict(summary.get("refresh_existing_video_stats_latest_snapshot_by_video") or {}),
                 }
             elif name == "collect_video_snapshots":
-                if snapshot_count > 0 and persisted:
+                if snapshot_count > 0 and persisted and bool(summary.get("expected_volume_reached")):
                     status = ResearchOperationStatus.SUCCEEDED
                 elif snapshot_count > 0:
                     status = ResearchOperationStatus.PARTIAL
-                    error = "snapshots_collected_but_persistence_not_confirmed"
+                    error = (
+                        "snapshots_not_persisted"
+                        if not persisted else "snapshot_volume_incomplete"
+                    )
+                elif int(summary.get("queries_empty", 0) or 0) > 0:
+                    status = ResearchOperationStatus.EMPTY
+                    error = "empty_search_produced_no_video_snapshots"
                 else:
                     status = ResearchOperationStatus.BLOCKED
                     error = "no_video_snapshots_collected"
                 result = {
-                    "snapshots_collected": snapshot_count,
+                    "snapshots_received": snapshot_count,
+                    "snapshots_saved": snapshot_count if persisted else 0,
                     "snapshot_ids": list(summary.get("snapshot_ids") or []),
                     "video_ids": list(summary.get("video_ids") or []),
+                    "expected_volume_reached": bool(summary.get("expected_volume_reached")),
                     "persisted": persisted,
                 }
             elif name == "register_queries":

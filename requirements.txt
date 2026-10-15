@@ -4,3 +4,4 @@ requests
 aiofiles
 mcp==1.30.0
 supabase
+psycopg[binary]==3.2.10

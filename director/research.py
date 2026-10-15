@@ -25,6 +25,7 @@ class ResearchPriority(str, Enum):
 class ResearchStatus(str, Enum):
     PLANNED = "planned"
     RUNNING = "running"
+    PARTIAL = "partial"
     COMPLETED = "completed"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
@@ -63,6 +64,7 @@ class ResearchOperationStatus(str, Enum):
     FAILED = "failed"
     BLOCKED = "blocked"
     SKIPPED = "skipped"
+    EMPTY = "empty"
 
 
 @dataclass
@@ -651,7 +653,19 @@ def mark_running(plan: ResearchPlan) -> ResearchPlan:
 
 
 def mark_completed(plan: ResearchPlan) -> ResearchPlan:
+    """Complete only when every planned mandatory operation has succeeded."""
+    statuses = {
+        str(getattr(getattr(operation, "status", ""), "value", getattr(operation, "status", "")))
+        for operation in (plan.operations or [])
+    }
+    if statuses and not statuses.issubset({"succeeded", "skipped"}):
+        plan.status = ResearchStatus.PARTIAL
+        plan.metadata["completion_blocked_by_operations"] = sorted(
+            status for status in statuses if status not in {"succeeded", "skipped"}
+        )
+        return plan
     plan.status = ResearchStatus.COMPLETED
+    plan.metadata.pop("completion_blocked_by_operations", None)
     return plan
 
 

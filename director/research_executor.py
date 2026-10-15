@@ -1239,6 +1239,8 @@ class YouTubeResearchExecutor:
                 research.mark_data_missing("channel_snapshots")
 
         persistence_confirmed = False
+        saved_video_count = 0
+        saved_snapshot_count = 0
         if self.storage is not None:
             try:
                 # Persist only objects referenced by this research run. Resolve IDs

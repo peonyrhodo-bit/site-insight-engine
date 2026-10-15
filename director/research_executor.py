@@ -1346,6 +1346,27 @@ class YouTubeResearchExecutor:
                 int(query.metadata.get("saved_video_count", 0) or 0)
                 >= int(query.metadata.get("expected_result_count", 0) or 0)
             )
+        # Persist the explicit per-query lifecycle after the object writes so
+        # durable records distinguish API success from saved evidence.
+        if self.storage is not None and collected_queries:
+            try:
+                await _maybe_await(self.storage.save_research_data(
+                    project_id=project_id,
+                    queries=[query.to_dict() for query in collected_queries],
+                    research_sets=[research.to_dict()],
+                    relations=[],
+                ))
+            except Exception as exc:
+                persistence_confirmed = False
+                expected_volume_reached = False
+                research.mark_partial()
+                research.mark_data_missing("research_set")
+                errors.append(f"query_status_persistence: {type(exc).__name__}: {exc}")
+                for query in collected_queries:
+                    query.metadata["persistence_status"] = "failed"
+                    query.metadata["saved_video_count"] = 0
+                    query.metadata["saved_snapshot_count"] = 0
+                    query.metadata["expected_volume_reached"] = False
 
         execution_summary = {
             **refresh_summary,

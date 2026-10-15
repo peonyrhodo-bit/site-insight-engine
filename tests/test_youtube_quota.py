@@ -61,6 +61,27 @@ class YouTubeQuotaManagerTests(unittest.TestCase):
         self.assertIn("error", statuses)
         self.assertEqual(self.manager.get_status()["other_units"], 1)
 
+    def test_preflight_records_plan_without_consuming_quota(self):
+        token = self.manager.preflight_call(
+            bucket="search", operation="preflight", method="search.list"
+        )
+        self.assertTrue(token["preflight_only"])
+        self.assertEqual(self.manager.get_status()["search_calls"], 0)
+        events = self.manager.get_events(limit=5)
+        self.assertEqual(events[0]["status"], "planned")
+
+    def test_preflight_blocks_exhausted_bucket_without_charging(self):
+        self.manager.authorize_call(
+            bucket="search", operation="consume", method="search.list"
+        )
+        with self.assertRaises(YouTubeQuotaExceeded):
+            self.manager.preflight_call(
+                bucket="search", operation="preflight-blocked", method="search.list"
+            )
+        self.assertEqual(self.manager.get_status()["search_calls"], 1)
+        self.assertEqual(self.manager.get_status()["search_remaining"], 0)
+        self.assertIn("blocked", {event["status"] for event in self.manager.get_events(limit=5)})
+
     def test_reset_uses_pacific_midnight_including_dst(self):
         # 2026-03-08 is the spring-forward day in Los Angeles.
         now = datetime(2026, 3, 8, 8, 30, tzinfo=timezone.utc)

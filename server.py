@@ -3222,6 +3222,10 @@ async def _execute_autonomous_cycle_locked(
                 decision_db_id=decision_db_id,
                 run_id=run_id,
             )
+            if recommendation_db_id is None:
+                raise RuntimeError(
+                    f"Director recommendation was not persisted for run_id={run_id}"
+                )
 
         result_db_id = await runtime.memory.save_result(
             project_id=project_id,
@@ -3234,7 +3238,12 @@ async def _execute_autonomous_cycle_locked(
             decision_db_id=decision_db_id,
             recommendation_db_id=recommendation_db_id,
         )
-        await runtime.memory.save_event(
+        if result_db_id is None:
+            raise RuntimeError(
+                f"Director result was not persisted for run_id={run_id}"
+            )
+
+        event_id = await runtime.memory.save_event(
             project_id=project_id,
             event_type="director_autonomous_run",
             data={
@@ -3244,6 +3253,10 @@ async def _execute_autonomous_cycle_locked(
                 "result_id": result_db_id,
             },
         )
+        if event_id is None:
+            raise RuntimeError(
+                f"Director run event was not persisted for run_id={run_id}"
+            )
 
         final_status = str(serialized.get("status") or "succeeded").strip().lower()
         if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:

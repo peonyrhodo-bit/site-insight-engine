@@ -1313,7 +1313,7 @@ class Director:
                     "decision": decision.to_dict(),
                     "analysis": analysis,
                     "director_context": (
-                        self.context.to_ai_decision_dict()
+                        self.context.to_analysis_dict()
                     ),
                 }
             )

@@ -3009,6 +3009,23 @@ async def _run_director_once(
     objective: str | None,
     idempotency_key: str | None,
 ) -> dict[str, Any]:
+    reserved_run_id = None
+    if idempotency_key:
+        reserved_run_id = await runtime.memory.create_run(
+            project_id,
+            {
+                "status": "requested",
+                "current_step": "director_cycle",
+                "started_at": utc_now(),
+                "idempotency_key": idempotency_key,
+                "idempotency_status": "in_progress",
+                "language": language,
+                "region_code": region_code,
+                "hours_back": hours_back,
+                "max_results": max_results,
+            },
+        )
+
     director = runtime.get_director(
         project_id=project_id,
     )
@@ -3035,33 +3052,29 @@ async def _run_director_once(
 
         # Persist the run first so every entity created by this
         # Director cycle can carry the same persistent run_id.
-        run_id = await runtime.memory.save_run(
-            project_id=project_id,
-            run={
-                "run_id": (
-                    serialized.get("run_id")
-                    if isinstance(serialized, dict)
-                    else None
-                ),
-                "created_at": utc_now(),
-                "language": language,
-                "region_code": region_code,
-                "hours_back": hours_back,
-                "max_results": max_results,
-                "idempotency_key": idempotency_key,
-                "idempotency_status": "in_progress",
-                "status": (
-                    serialized.get("status")
-                    if isinstance(serialized, dict)
-                    else "succeeded"
-                ),
-                "result": serialized,
-            },
-        )
-        if run_id is None:
-            raise RuntimeError(
-                "Director run was not persisted: save_run returned no ID."
+        if reserved_run_id is not None:
+            run_id = reserved_run_id
+        else:
+            run_id = await runtime.memory.save_run(
+                project_id=project_id,
+                run={
+                    "run_id": (
+                        serialized.get("run_id")
+                        if isinstance(serialized, dict)
+                        else None
+                    ),
+                    "created_at": utc_now(),
+                    "language": language,
+                    "region_code": region_code,
+                    "hours_back": hours_back,
+                    "max_results": max_results,
+                    "result": serialized,
+                },
             )
+            if run_id is None:
+                raise RuntimeError(
+                    "Director run was not persisted: save_run returned no ID."
+                )
 
         decision = getattr(
             result,
@@ -3169,6 +3182,9 @@ async def _run_director_once(
                 run_id,
                 project_id=project_id,
                 fields={
+                    "status": "succeeded",
+                    "current_step": "completed",
+                    "finished_at": utc_now(),
                     "idempotency_status": "completed",
                     "result": serialized,
                 },
@@ -3177,6 +3193,24 @@ async def _run_director_once(
         return serialized
 
     except Exception as exc:
+        if reserved_run_id is not None:
+            try:
+                await runtime.memory.update_run(
+                    reserved_run_id,
+                    project_id=project_id,
+                    fields={
+                        "status": "failed",
+                        "current_step": "director_run",
+                        "finished_at": utc_now(),
+                        "idempotency_status": "failed",
+                        "error_message": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to mark idempotent Director run as failed: run_id=%s",
+                    reserved_run_id,
+                )
         logger.exception(
             "Director run failed: project=%s",
             project_id,

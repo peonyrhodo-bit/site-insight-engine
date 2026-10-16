@@ -702,7 +702,7 @@ async def test_completed_persisted_idempotency_key_returns_saved_result(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_idempotency_lookup_ignores_different_key_and_incomplete_run(monkeypatch):
+async def test_idempotency_lookup_ignores_different_key_and_blocks_incomplete_run(monkeypatch):
     class ContextMemory:
         async def get_context(self, *, project_id, limit_runs):
             return {
@@ -714,12 +714,13 @@ async def test_idempotency_lookup_ignores_different_key_and_incomplete_run(monke
 
     monkeypatch.setattr(server.runtime, "memory", ContextMemory())
 
-    result = await server._find_completed_idempotent_run(
-        project_id="persisted-project",
-        idempotency_key="same",
-    )
+    with pytest.raises(server.HTTPException) as error:
+        await server._find_completed_idempotent_run(
+            project_id="persisted-project",
+            idempotency_key="same",
+        )
 
-    assert result is None
+    assert error.value.status_code == 409
 
 
 

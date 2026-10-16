@@ -475,3 +475,150 @@ async def test_missing_event_id_does_not_mark_run_succeeded(monkeypatch):
     assert row["status"] == "partial"
     assert row["current_step"] == "persisting_result"
     assert "run event was not persisted" in row["error_message"]
+
+class OrdinaryCycleMemory:
+    def __init__(self, *, fail_at=None, transient_result_failure=False):
+        self.fail_at = fail_at
+        self.transient_result_failure = transient_result_failure
+        self.result_attempts = 0
+        self.saved = []
+
+    async def save_run(self, **kwargs):
+        self.saved.append(("run", kwargs))
+        return None if self.fail_at == "run" else 301
+
+    async def save_decision(self, **kwargs):
+        self.saved.append(("decision", kwargs))
+        return None if self.fail_at == "decision" else 302
+
+    async def save_recommendation(self, **kwargs):
+        self.saved.append(("recommendation", kwargs))
+        return None if self.fail_at == "recommendation" else 303
+
+    async def save_result(self, **kwargs):
+        self.saved.append(("result", kwargs))
+        self.result_attempts += 1
+        if self.fail_at == "result":
+            return None
+        if self.transient_result_failure and self.result_attempts == 1:
+            return None
+        return 304
+
+    async def save_event(self, **kwargs):
+        self.saved.append(("event", kwargs))
+        return None if self.fail_at == "event" else 305
+
+
+class OrdinaryCycleDirector:
+    def __init__(self, *, decision=None, recommendation=None):
+        self.context = SimpleNamespace(objective=None)
+        self.decision = decision
+        self.recommendation = recommendation
+
+    async def run_once(self):
+        return SimpleNamespace(
+            status="succeeded",
+            message="cycle completed",
+            decision=self.decision,
+            recommendation=self.recommendation,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["run", "result", "event"])
+async def test_ordinary_cycle_does_not_report_success_when_storage_returns_no_id(
+    monkeypatch, fail_at
+):
+    memory = OrdinaryCycleMemory(fail_at=fail_at)
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime, "get_director", lambda **kwargs: OrdinaryCycleDirector()
+    )
+
+    with pytest.raises(server.HTTPException) as error:
+        await server._run_director(
+            project_id="ordinary-project",
+            language="en",
+            region_code="US",
+            hours_back=24,
+            max_results=10,
+            objective=None,
+        )
+
+    assert error.value.status_code == 500
+    assert fail_at in str(error.value.__cause__).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "fail_at"),
+    [("decision", "decision"), ("recommendation", "recommendation")],
+)
+async def test_ordinary_cycle_checks_decision_and_recommendation_persistence(
+    monkeypatch, field, fail_at
+):
+    memory = OrdinaryCycleMemory(fail_at=fail_at)
+    director_kwargs = {field: {"id": field}}
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime,
+        "get_director",
+        lambda **kwargs: OrdinaryCycleDirector(**director_kwargs),
+    )
+
+    with pytest.raises(server.HTTPException) as error:
+        await server._run_director(
+            project_id="ordinary-project",
+            language="en",
+            region_code="US",
+            hours_back=24,
+            max_results=10,
+            objective=None,
+        )
+
+    assert error.value.status_code == 500
+    assert "not persisted" in str(error.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_director_result_endpoint_does_not_return_success_for_missing_saved_id(
+    monkeypatch,
+):
+    memory = OrdinaryCycleMemory(fail_at="result")
+    monkeypatch.setattr(server.runtime, "memory", memory)
+
+    with pytest.raises(server.HTTPException) as error:
+        await server.director_result(
+            {"project_id": "ordinary-project", "result": {"value": "test"}}
+        )
+
+    assert error.value.status_code == 500
+    assert "сохранить результат" in error.value.detail
+
+
+@pytest.mark.asyncio
+async def test_ordinary_cycle_recovers_after_transient_result_persistence_failure(
+    monkeypatch,
+):
+    memory = OrdinaryCycleMemory(transient_result_failure=True)
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime, "get_director", lambda **kwargs: OrdinaryCycleDirector()
+    )
+    args = {
+        "project_id": "ordinary-project",
+        "language": "en",
+        "region_code": "US",
+        "hours_back": 24,
+        "max_results": 10,
+        "objective": None,
+    }
+
+    with pytest.raises(server.HTTPException):
+        await server._run_director(**args)
+
+    result = await server._run_director(**args)
+
+    assert result["status"] == "succeeded"
+    assert memory.result_attempts == 2
+

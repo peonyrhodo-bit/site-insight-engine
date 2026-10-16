@@ -3011,13 +3011,13 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
         result = row.get("result") or data.get("result")
         if stored_key != idempotency_key:
             continue
-        if idempotency_status == "failed":
+        if idempotency_status in {"failed", "in_progress"}:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "A previous run with this Idempotency-Key failed or was "
-                    "interrupted. Inspect its run record and use a new key "
-                    "for an intentional retry."
+                    "A previous run with this Idempotency-Key failed, was "
+                    "interrupted, or is still running. Inspect its run record "
+                    "and use a new key for an intentional retry."
                 ),
             )
         if idempotency_status == "completed" and isinstance(result, dict):

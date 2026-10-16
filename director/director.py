@@ -1865,6 +1865,9 @@ class Director:
         """
         Start one bounded autonomous wake cycle.
         """
+        # A prior wake's decision must never be persisted as this wake's decision.
+        self.state.metadata.pop("current_decision", None)
+
         autonomy = DirectorAutonomy(
             config=self.autonomy_config,
             capabilities=self._autonomy_capabilities,
@@ -2326,6 +2329,46 @@ class Director:
             analysis
         )
 
+        hypothesis = analysis.get("hypothesis")
+        expected_outcome = (
+            hypothesis.get("expected_outcome")
+            if isinstance(hypothesis, dict)
+            else None
+        )
+        if expected_outcome:
+            decision.metadata["expected_outcome"] = str(expected_outcome)
+        else:
+            decision.metadata.setdefault(
+                "expected_outcome",
+                {
+                    DecisionType.RESEARCH: (
+                        "Получить дополнительные данные, достаточные для проверки "
+                        "перспективности направления."
+                    ),
+                    DecisionType.ANALYZE: (
+                        "Сравнить доступные направления и уточнить, какое из них "
+                        "заслуживает дальнейшей проверки."
+                    ),
+                    DecisionType.TEST: (
+                        "Получить измеряемые результаты проверки спроса, чтобы "
+                        "решить, стоит ли продолжать работу с направлением."
+                    ),
+                    DecisionType.WAIT: (
+                        "Не повторять действие без новых данных и дождаться "
+                        "условий для обоснованного следующего шага."
+                    ),
+                    DecisionType.SLEEP: (
+                        "Приостановить работу до следующего полезного сигнала."
+                    ),
+                }.get(
+                    decision.decision_type,
+                    decision.next_action or "Определить следующий проверяемый шаг.",
+                ),
+            )
+
+        # Keep the actual decision on the cycle state so it can be persisted
+        # even when the cycle waits before creating a recommendation.
+        state.metadata["current_decision"] = decision.to_dict()
         return decision.to_dict()
 
     def _autonomy_act(

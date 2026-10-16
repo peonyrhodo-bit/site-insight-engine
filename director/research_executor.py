@@ -1091,7 +1091,7 @@ class YouTubeResearchExecutor:
                                 try:
                                     quota_token = self._quota_preflight(
                                         bucket="other", operation="collect_channel_snapshots",
-                                        method="channels.list", metadata={"channel_id": channel.channel_id},
+                                        method="channels.list", metadata={"channel_id": channel.channel_id, "correlation_id": get_correlation_id()},
                                     )
                                     stats_result = await session.call_tool(
                                         "get_channel_stats",

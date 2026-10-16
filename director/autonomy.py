@@ -261,6 +261,14 @@ class DirectorAutonomy:
         try:
             return await self._run_cycle(cycle)
         except Exception as exc:
+            failed_phase = cycle.state.phase.value
+            failure = {
+                "phase": failed_phase,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            cycle.state.metadata["failure"] = failure
+            cycle.state.metadata["failed_step"] = failed_phase
+            cycle.state.metadata["error_message"] = failure["error"]
             cycle.status = CycleStatus.ERROR
             cycle.state.status = CycleStatus.ERROR
             cycle.state.phase = DirectorPhase.ERROR
@@ -269,7 +277,7 @@ class DirectorAutonomy:
                 cycle,
                 DirectorPhase.ERROR,
                 "cycle_error",
-                f"Цикл завершился с ошибкой: {exc}",
+                f"Цикл завершился с ошибкой на этапе {failed_phase}: {exc}",
             )
 
             cycle.finished_at = datetime.now(

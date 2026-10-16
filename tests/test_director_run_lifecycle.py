@@ -749,3 +749,22 @@ async def test_failed_persisted_idempotency_key_requires_explicit_new_key(monkey
 
     assert error.value.status_code == 409
     assert "use a new key" in error.value.detail
+
+
+@pytest.mark.asyncio
+async def test_request_logging_preserves_correlation_id():
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(
+        headers={"X-Correlation-ID": "audit-run-17"},
+        method="GET",
+        url=SimpleNamespace(path="/health"),
+    )
+    response = SimpleNamespace(status_code=200, headers={})
+
+    async def call_next(_request):
+        return response
+
+    result = await server.request_logging(request, call_next)
+    assert result.headers["X-Correlation-ID"] == "audit-run-17"
+    assert server.get_correlation_id() == "-"

@@ -34,8 +34,11 @@ from pydantic import BaseModel, Field
 # Logging
 # ---------------------------------------------------------------------------
 
+from director.trace_context import correlation_id_var, get_correlation_id
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
 logger = logging.getLogger("site-insight-engine")
@@ -1310,6 +1313,7 @@ class ServerMemory:
         try:
             payload = dict(data or {})
             payload["project_id"] = project_id
+            payload.setdefault("correlation_id", get_correlation_id())
 
             result = self.memory.save_event(
                 event_type=event_type,
@@ -2775,22 +2779,20 @@ async def request_logging(
     request: Request,
     call_next: Any,) -> JSONResponse:
     started = datetime.now(timezone.utc)
+    supplied_id = request.headers.get("X-Correlation-ID", "").strip()
+    correlation_id = "".join(char for char in supplied_id if char.isalnum() or char in "-_.:")[:128] or secrets.token_hex(16)
+    token = correlation_id_var.set(correlation_id)
+    status_code = 500
 
     try:
         response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Correlation-ID"] = correlation_id
         return response
-
     finally:
-        elapsed = (
-            datetime.now(timezone.utc) - started
-        ).total_seconds()
-
-        logger.info(
-            "%s %s %.3fs",
-            request.method,
-            request.url.path,
-            elapsed,
-        )
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        logger.info("HTTP request finished method=%s path=%s status=%s elapsed_seconds=%.3f correlation_id=%s", request.method, request.url.path, status_code, elapsed, correlation_id)
+        correlation_id_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

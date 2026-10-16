@@ -2990,11 +2990,18 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
             or ""
         ).lower()
         result = row.get("result") or data.get("result")
-        if (
-            stored_key == idempotency_key
-            and idempotency_status == "completed"
-            and isinstance(result, dict)
-        ):
+        if stored_key != idempotency_key:
+            continue
+        if idempotency_status == "failed":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A previous run with this Idempotency-Key failed or was "
+                    "interrupted. Inspect its run record and use a new key "
+                    "for an intentional retry."
+                ),
+            )
+        if idempotency_status == "completed" and isinstance(result, dict):
             return result
     return None
 

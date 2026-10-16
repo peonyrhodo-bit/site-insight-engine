@@ -3011,27 +3011,23 @@ async def _run_director_once(
 ) -> dict[str, Any]:
     reserved_run_id = None
     if idempotency_key:
-        reserved_run_id = await runtime.memory.create_run(
-            project_id,
-            {
-                "status": "requested",
-                "current_step": "director_cycle",
-                "started_at": utc_now(),
-                "idempotency_key": idempotency_key,
-                "idempotency_status": "in_progress",
-                "language": language,
-                "region_code": region_code,
-                "hours_back": hours_back,
-                "max_results": max_results,
-            },
-        )
-
-    director = runtime.get_director(
-        project_id=project_id,
-    )
-
-    if objective:
-        director.context.objective = objective
+        try:
+            reserved_run_id = await runtime.memory.create_run(
+                project_id,
+                {
+                    "status": "requested",
+                    "current_step": "director_cycle",
+                    "started_at": utc_now(),
+                    "idempotency_key": idempotency_key,
+                    "idempotency_status": "in_progress",
+                    "language": language,
+                    "region_code": region_code,
+                    "hours_back": hours_back,
+                    "max_results": max_results,
+                },
+            )
+        except DirectorCycleAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # ---------------------------------------------------------------
     # The current modular Director owns the strategic cycle.
@@ -3039,6 +3035,12 @@ async def _run_director_once(
     # ---------------------------------------------------------------
 
     try:
+        director = runtime.get_director(
+            project_id=project_id,
+        )
+        if objective:
+            director.context.objective = objective
+
         result = await call_maybe_async(
             director.run_once,
         )

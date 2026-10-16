@@ -720,3 +720,31 @@ async def test_idempotency_lookup_ignores_different_key_and_incomplete_run(monke
     )
 
     assert result is None
+
+
+
+@pytest.mark.asyncio
+async def test_failed_persisted_idempotency_key_requires_explicit_new_key(monkeypatch):
+    class ContextMemory:
+        async def get_context(self, *, project_id, limit_runs):
+            return {
+                "runs": [{
+                    "data_json": {
+                        "idempotency_key": "failed-key",
+                        "idempotency_status": "failed",
+                        "status": "failed",
+                        "error_message": "timeout",
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(server.runtime, "memory", ContextMemory())
+
+    with pytest.raises(server.HTTPException) as error:
+        await server._find_completed_idempotent_run(
+            project_id="persisted-project",
+            idempotency_key="failed-key",
+        )
+
+    assert error.value.status_code == 409
+    assert "use a new key" in error.value.detail

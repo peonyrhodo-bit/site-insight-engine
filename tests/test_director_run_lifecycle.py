@@ -636,3 +636,116 @@ async def test_ordinary_cycle_recovers_after_transient_result_persistence_failur
     assert result["status"] == "succeeded"
     assert memory.result_attempts == 2
 
+
+
+
+@pytest.mark.asyncio
+async def test_same_idempotency_key_reuses_result_without_running_director_twice(monkeypatch):
+    import asyncio
+
+    calls = []
+    key = "test-idempotency-replay-116"
+    server._DIRECTOR_REQUEST_RESULTS.pop(f"test-project:{key}", None)
+    server._DIRECTOR_REQUEST_LOCKS.pop(f"test-project:{key}", None)
+
+    async def fake_find(**kwargs):
+        return None
+
+    async def fake_run_once(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0)
+        return {"status": "succeeded", "run_id": "run-116", "message": "ok"}
+
+    monkeypatch.setattr(server, "_find_completed_idempotent_run", fake_find)
+    monkeypatch.setattr(server, "_run_director_once", fake_run_once)
+
+    args = dict(
+        project_id="test-project", language="en", region_code="US",
+        hours_back=72, max_results=25, objective=None,
+        idempotency_key=key,
+    )
+    first, second = await asyncio.gather(
+        server._run_director(**args),
+        server._run_director(**args),
+    )
+
+    assert first == second
+    assert first["run_id"] == "run-116"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_persisted_idempotency_key_returns_saved_result(monkeypatch):
+    class ContextMemory:
+        async def get_context(self, *, project_id, limit_runs):
+            assert project_id == "persisted-project"
+            assert limit_runs == 100
+            return {
+                "runs": [{
+                    "data_json": {
+                        "idempotency_key": "request-abc",
+                        "status": "succeeded",
+                        "idempotency_status": "completed",
+                        "result": {"status": "succeeded", "run_id": "old-run"},
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(server.runtime, "memory", ContextMemory())
+
+    result = await server._find_completed_idempotent_run(
+        project_id="persisted-project",
+        idempotency_key="request-abc",
+    )
+
+    assert result == {"status": "succeeded", "run_id": "old-run"}
+
+
+@pytest.mark.asyncio
+async def test_idempotency_lookup_ignores_different_key_and_blocks_incomplete_run(monkeypatch):
+    class ContextMemory:
+        async def get_context(self, *, project_id, limit_runs):
+            return {
+                "runs": [
+                    {"data_json": {"idempotency_key": "other", "status": "succeeded", "result": {"run_id": "wrong"}}},
+                    {"data_json": {"idempotency_key": "same", "status": "running", "idempotency_status": "in_progress", "result": {"run_id": "incomplete"}}},
+                ]
+            }
+
+    monkeypatch.setattr(server.runtime, "memory", ContextMemory())
+
+    with pytest.raises(server.HTTPException) as error:
+        await server._find_completed_idempotent_run(
+            project_id="persisted-project",
+            idempotency_key="same",
+        )
+
+    assert error.value.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_failed_persisted_idempotency_key_requires_explicit_new_key(monkeypatch):
+    class ContextMemory:
+        async def get_context(self, *, project_id, limit_runs):
+            return {
+                "runs": [{
+                    "data_json": {
+                        "idempotency_key": "failed-key",
+                        "idempotency_status": "failed",
+                        "status": "failed",
+                        "error_message": "timeout",
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(server.runtime, "memory", ContextMemory())
+
+    with pytest.raises(server.HTTPException) as error:
+        await server._find_completed_idempotent_run(
+            project_id="persisted-project",
+            idempotency_key="failed-key",
+        )
+
+    assert error.value.status_code == 409
+    assert "use a new key" in error.value.detail

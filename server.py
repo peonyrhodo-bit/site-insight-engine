@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -287,6 +287,8 @@ class DirectorCycleAlreadyRunning(RuntimeError):
 
 
 _DIRECTOR_CYCLE_LOCKS: dict[str, asyncio.Lock] = {}
+_DIRECTOR_REQUEST_LOCKS: dict[str, asyncio.Lock] = {}
+_DIRECTOR_REQUEST_RESULTS: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -2620,6 +2622,7 @@ class DirectorRunRequest(BaseModel):
         ge=1,
         le=100,
     )
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class DirectorChatRequest(BaseModel):
@@ -2895,6 +2898,7 @@ async def director_run_get(
     region_code: str = DEFAULT_REGION_CODE,
     hours_back: int = 72,
     max_results: int = 25,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """
     Existing external contract.
@@ -2910,6 +2914,7 @@ async def director_run_get(
         hours_back=hours_back,
         max_results=max_results,
         objective=None,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -2928,6 +2933,7 @@ async def director_run_post(
         hours_back=request.hours_back,
         max_results=request.max_results,
         objective=request.objective,
+        idempotency_key=request.idempotency_key,
     )
 
 
@@ -2939,13 +2945,115 @@ async def _run_director(
     hours_back: int,
     max_results: int,
     objective: str | None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    director = runtime.get_director(
-        project_id=project_id,
+    key = f"{project_id}:{idempotency_key.strip()}" if idempotency_key and idempotency_key.strip() else None
+    if key:
+        lock = _DIRECTOR_REQUEST_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = _DIRECTOR_REQUEST_RESULTS.get(key)
+            if cached is not None:
+                return dict(cached)
+            prior = await _find_completed_idempotent_run(project_id=project_id, idempotency_key=idempotency_key.strip())
+            if prior is not None:
+                _DIRECTOR_REQUEST_RESULTS[key] = dict(prior)
+                return dict(prior)
+            response = await _run_director_once(
+                project_id=project_id, language=language, region_code=region_code,
+                hours_back=hours_back, max_results=max_results, objective=objective,
+                idempotency_key=idempotency_key.strip(),
+            )
+            _DIRECTOR_REQUEST_RESULTS[key] = dict(response)
+            return response
+    return await _run_director_once(
+        project_id=project_id, language=language, region_code=region_code,
+        hours_back=hours_back, max_results=max_results, objective=objective,
+        idempotency_key=None,
     )
 
-    if objective:
-        director.context.objective = objective
+
+async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    try:
+        backend = getattr(runtime.memory, "backend", None)
+        if (
+            backend is not None
+            and hasattr(backend, "_recent_for_project")
+            and hasattr(backend, "TABLE_RUNS")
+        ):
+            runs = backend._recent_for_project(
+                backend.TABLE_RUNS,
+                limit=None,
+                project_id=project_id,
+                order_key="created_at",
+            )
+        else:
+            context = await runtime.memory.get_context(
+                project_id=project_id,
+                limit_runs=100,
+            )
+            runs = context.get("runs", []) if isinstance(context, dict) else []
+    except Exception:
+        logger.exception(
+            "Could not inspect Director idempotency history: project=%s",
+            project_id,
+        )
+        return None
+    for row in runs:
+        if not isinstance(row, dict):
+            continue
+        data = row.get("data_json") if isinstance(row.get("data_json"), dict) else {}
+        stored_key = row.get("idempotency_key") or data.get("idempotency_key")
+        idempotency_status = str(
+            row.get("idempotency_status")
+            or data.get("idempotency_status")
+            or ""
+        ).lower()
+        result = row.get("result") or data.get("result")
+        if stored_key != idempotency_key:
+            continue
+        if idempotency_status in {"failed", "in_progress"}:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A previous run with this Idempotency-Key failed, was "
+                    "interrupted, or is still running. Inspect its run record "
+                    "and use a new key for an intentional retry."
+                ),
+            )
+        if idempotency_status == "completed" and isinstance(result, dict):
+            return result
+    return None
+
+
+async def _run_director_once(
+    *,
+    project_id: str,
+    language: str,
+    region_code: str,
+    hours_back: int,
+    max_results: int,
+    objective: str | None,
+    idempotency_key: str | None,
+) -> dict[str, Any]:
+    reserved_run_id = None
+    if idempotency_key:
+        try:
+            reserved_run_id = await runtime.memory.create_run(
+                project_id,
+                {
+                    "status": "requested",
+                    "current_step": "director_cycle",
+                    "started_at": utc_now(),
+                    "idempotency_key": idempotency_key,
+                    "idempotency_status": "in_progress",
+                    "language": language,
+                    "region_code": region_code,
+                    "hours_back": hours_back,
+                    "max_results": max_results,
+                },
+            )
+        except DirectorCycleAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # ---------------------------------------------------------------
     # The current modular Director owns the strategic cycle.
@@ -2953,6 +3061,12 @@ async def _run_director(
     # ---------------------------------------------------------------
 
     try:
+        director = runtime.get_director(
+            project_id=project_id,
+        )
+        if objective:
+            director.context.objective = objective
+
         result = await call_maybe_async(
             director.run_once,
         )
@@ -2966,26 +3080,29 @@ async def _run_director(
 
         # Persist the run first so every entity created by this
         # Director cycle can carry the same persistent run_id.
-        run_id = await runtime.memory.save_run(
-            project_id=project_id,
-            run={
-                "run_id": (
-                    serialized.get("run_id")
-                    if isinstance(serialized, dict)
-                    else None
-                ),
-                "created_at": utc_now(),
-                "language": language,
-                "region_code": region_code,
-                "hours_back": hours_back,
-                "max_results": max_results,
-                "result": serialized,
-            },
-        )
-        if run_id is None:
-            raise RuntimeError(
-                "Director run was not persisted: save_run returned no ID."
+        if reserved_run_id is not None:
+            run_id = reserved_run_id
+        else:
+            run_id = await runtime.memory.save_run(
+                project_id=project_id,
+                run={
+                    "run_id": (
+                        serialized.get("run_id")
+                        if isinstance(serialized, dict)
+                        else None
+                    ),
+                    "created_at": utc_now(),
+                    "language": language,
+                    "region_code": region_code,
+                    "hours_back": hours_back,
+                    "max_results": max_results,
+                    "result": serialized,
+                },
             )
+            if run_id is None:
+                raise RuntimeError(
+                    "Director run was not persisted: save_run returned no ID."
+                )
 
         decision = getattr(
             result,
@@ -3088,9 +3205,40 @@ async def _run_director(
                 },
             )
 
+        if idempotency_key:
+            await runtime.memory.update_run(
+                run_id,
+                project_id=project_id,
+                fields={
+                    "status": "succeeded",
+                    "current_step": "completed",
+                    "finished_at": utc_now(),
+                    "idempotency_status": "completed",
+                    "result": serialized,
+                },
+            )
+
         return serialized
 
     except Exception as exc:
+        if reserved_run_id is not None:
+            try:
+                await runtime.memory.update_run(
+                    reserved_run_id,
+                    project_id=project_id,
+                    fields={
+                        "status": "failed",
+                        "current_step": "director_run",
+                        "finished_at": utc_now(),
+                        "idempotency_status": "failed",
+                        "error_message": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to mark idempotent Director run as failed: run_id=%s",
+                    reserved_run_id,
+                )
         logger.exception(
             "Director run failed: project=%s",
             project_id,

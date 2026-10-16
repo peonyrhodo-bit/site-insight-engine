@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -287,6 +287,8 @@ class DirectorCycleAlreadyRunning(RuntimeError):
 
 
 _DIRECTOR_CYCLE_LOCKS: dict[str, asyncio.Lock] = {}
+_DIRECTOR_REQUEST_LOCKS: dict[str, asyncio.Lock] = {}
+_DIRECTOR_REQUEST_RESULTS: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -2620,6 +2622,7 @@ class DirectorRunRequest(BaseModel):
         ge=1,
         le=100,
     )
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class DirectorChatRequest(BaseModel):
@@ -2895,6 +2898,7 @@ async def director_run_get(
     region_code: str = DEFAULT_REGION_CODE,
     hours_back: int = 72,
     max_results: int = 25,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """
     Existing external contract.
@@ -2910,6 +2914,7 @@ async def director_run_get(
         hours_back=hours_back,
         max_results=max_results,
         objective=None,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -2928,6 +2933,7 @@ async def director_run_post(
         hours_back=request.hours_back,
         max_results=request.max_results,
         objective=request.objective,
+        idempotency_key=request.idempotency_key,
     )
 
 
@@ -2939,8 +2945,53 @@ async def _run_director(
     hours_back: int,
     max_results: int,
     objective: str | None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    director = runtime.get_director(
+    key = f"{project_id}:{idempotency_key.strip()}" if idempotency_key and idempotency_key.strip() else None
+    if key:
+        lock = _DIRECTOR_REQUEST_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = _DIRECTOR_REQUEST_RESULTS.get(key)
+            if cached is not None:
+                return dict(cached)
+            prior = await _find_completed_idempotent_run(project_id=project_id, idempotency_key=idempotency_key.strip())
+            if prior is not None:
+                _DIRECTOR_REQUEST_RESULTS[key] = dict(prior)
+                return dict(prior)
+            response = await _run_director_once(
+                project_id=project_id, language=language, region_code=region_code,
+                hours_back=hours_back, max_results=max_results, objective=objective,
+                idempotency_key=idempotency_key.strip(),
+            )
+            _DIRECTOR_REQUEST_RESULTS[key] = dict(response)
+            return response
+    return await _run_director_once(
+        project_id=project_id, language=language, region_code=region_code,
+        hours_back=hours_back, max_results=max_results, objective=objective,
+        idempotency_key=None,
+    )
+
+
+async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    try:
+        context = await runtime.memory.get_context(project_id=project_id, limit_runs=100)
+    except Exception:
+        logger.exception("Could not inspect Director idempotency history: project=%s", project_id)
+        return None
+    runs = context.get("runs", []) if isinstance(context, dict) else []
+    for row in runs:
+        if not isinstance(row, dict):
+            continue
+        data = row.get("data_json") if isinstance(row.get("data_json"), dict) else {}
+        stored_key = row.get("idempotency_key") or data.get("idempotency_key")
+        status = str(row.get("status") or data.get("status") or "").lower()
+        result = row.get("result") or data.get("result")
+        if stored_key == idempotency_key and status in {"succeeded", "complete", "completed"} and isinstance(result, dict):
+            return result
+    return None
+
+
+async def _run_director_once(
         project_id=project_id,
     )
 
@@ -2979,6 +3030,8 @@ async def _run_director(
                 "region_code": region_code,
                 "hours_back": hours_back,
                 "max_results": max_results,
+                "idempotency_key": idempotency_key,
+                "status": "succeeded",
                 "result": serialized,
             },
         )

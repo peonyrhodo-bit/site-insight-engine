@@ -6,10 +6,11 @@ import server
 
 
 class FakeMemory:
-    def __init__(self, *, fail_result=False):
+    def __init__(self, *, fail_result=False, empty_result=False):
         self.rows = {}
         self.next_id = 1
         self.fail_result = fail_result
+        self.empty_result = empty_result
         self.events = []
 
     async def create_run(self, project_id, run):
@@ -32,6 +33,8 @@ class FakeMemory:
     async def save_result(self, **kwargs):
         if self.fail_result:
             raise RuntimeError("result persistence failed")
+        if self.empty_result:
+            return None
         return 101
 
     async def save_event(self, **kwargs):
@@ -389,3 +392,55 @@ async def test_cycle_is_not_reported_as_complete_when_decision_persistence_fails
     row = memory.rows[1]
     assert row["status"] == "partial"
     assert "decision was not persisted" in row["error_message"]
+
+
+
+@pytest.mark.asyncio
+async def test_missing_result_id_does_not_mark_run_succeeded(monkeypatch):
+    memory = FakeMemory(empty_result=True)
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: FakeDirector())
+
+    with pytest.raises(RuntimeError, match="result was not persisted"):
+        await server._execute_autonomous_cycle(project_id="test-project")
+
+    row = memory.rows[1]
+    assert row["status"] == "partial"
+    assert row["current_step"] == "persisting_result"
+    assert "result was not persisted" in row["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_without_persisted_id_does_not_mark_run_succeeded(monkeypatch):
+    memory = FakeMemory()
+    director = FakeDirector()
+    director.last_result.recommendation = {"title": "Test recommendation", "description": "Test"}
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    with pytest.raises(RuntimeError, match="recommendation was not persisted"):
+        await server._execute_autonomous_cycle(project_id="test-project")
+
+    row = memory.rows[1]
+    assert row["status"] == "partial"
+    assert row["current_step"] == "persisting_result"
+    assert "recommendation was not persisted" in row["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_missing_event_id_does_not_mark_run_succeeded(monkeypatch):
+    class MissingEventMemory(FakeMemory):
+        async def save_event(self, **kwargs):
+            return None
+
+    memory = MissingEventMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: FakeDirector())
+
+    with pytest.raises(RuntimeError, match="run event was not persisted"):
+        await server._execute_autonomous_cycle(project_id="test-project")
+
+    row = memory.rows[1]
+    assert row["status"] == "partial"
+    assert row["current_step"] == "persisting_result"
+    assert "run event was not persisted" in row["error_message"]

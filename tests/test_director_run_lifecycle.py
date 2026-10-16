@@ -324,3 +324,68 @@ async def test_active_run_older_than_recent_100_still_blocks_new_cycle(monkeypat
         await adapter.create_run("deep-history", {"status": "requested"})
 
     assert backend.inserted == 0
+
+
+class DecisionFakeMemory(FakeMemory):
+    def __init__(self):
+        super().__init__()
+        self.saved_decisions = []
+
+    async def save_decision(self, **kwargs):
+        self.saved_decisions.append(kwargs)
+        return 202
+
+
+class DecisionOnlyDirector(FakeDirector):
+    async def run_autonomous_cycle(self, objective=None):
+        return {
+            "status": "partial",
+            "message": "Research paused because the quota is exhausted.",
+            "state": {
+                "metadata": {
+                    "current_decision": {
+                        "decision_id": "dec_test123",
+                        "decision_type": "research",
+                        "objective": "Check a YouTube opportunity",
+                        "rationale": "Current evidence is incomplete.",
+                        "next_action": "Gather more evidence when quota is available.",
+                        "metadata": {
+                            "expected_outcome": "Obtain evidence to assess the opportunity."
+                        },
+                    }
+                }
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_decision_is_persisted_when_cycle_stops_before_recommendation(monkeypatch):
+    memory = DecisionFakeMemory()
+    director = DecisionOnlyDirector()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    result = await server._execute_autonomous_cycle(project_id="decision-project")
+
+    assert len(memory.saved_decisions) == 1
+    saved = memory.saved_decisions[0]
+    assert saved["run_id"] == result["run_id"]
+    assert saved["decision"]["decision_id"] == "dec_test123"
+    assert saved["decision"]["rationale"] == "Current evidence is incomplete."
+    assert saved["decision"]["metadata"]["expected_outcome"] == (
+        "Obtain evidence to assess the opportunity."
+    )
+
+
+@pytest.mark.asyncio
+async def test_cycle_is_not_reported_as_complete_when_decision_persistence_fails(monkeypatch):
+    memory = FakeMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: DecisionOnlyDirector())
+
+    with pytest.raises(RuntimeError, match="decision was not persisted"):
+        await server._execute_autonomous_cycle(project_id="decision-project")
+
+    row = memory.rows[1]
+    assert row["status"] == "partial"
+    assert "decision was not persisted" in row["error_message"]

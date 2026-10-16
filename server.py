@@ -2974,11 +2974,30 @@ async def _run_director(
 
 async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: str) -> dict[str, Any] | None:
     try:
-        context = await runtime.memory.get_context(project_id=project_id, limit_runs=100)
+        backend = getattr(runtime.memory, "backend", None)
+        if (
+            backend is not None
+            and hasattr(backend, "_recent_for_project")
+            and hasattr(backend, "TABLE_RUNS")
+        ):
+            runs = backend._recent_for_project(
+                backend.TABLE_RUNS,
+                limit=None,
+                project_id=project_id,
+                order_key="created_at",
+            )
+        else:
+            context = await runtime.memory.get_context(
+                project_id=project_id,
+                limit_runs=100,
+            )
+            runs = context.get("runs", []) if isinstance(context, dict) else []
     except Exception:
-        logger.exception("Could not inspect Director idempotency history: project=%s", project_id)
+        logger.exception(
+            "Could not inspect Director idempotency history: project=%s",
+            project_id,
+        )
         return None
-    runs = context.get("runs", []) if isinstance(context, dict) else []
     for row in runs:
         if not isinstance(row, dict):
             continue

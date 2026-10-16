@@ -509,6 +509,22 @@ class OrdinaryCycleMemory:
         return None if self.fail_at == "event" else 305
 
 
+class OrdinaryCycleResult:
+    def __init__(self, *, decision=None, recommendation=None):
+        self.status = "succeeded"
+        self.message = "cycle completed"
+        self.decision = decision
+        self.recommendation = recommendation
+
+    def to_dict(self):
+        return {
+            "status": self.status,
+            "message": self.message,
+            "decision": self.decision,
+            "recommendation": self.recommendation,
+        }
+
+
 class OrdinaryCycleDirector:
     def __init__(self, *, decision=None, recommendation=None):
         self.context = SimpleNamespace(objective=None)
@@ -516,9 +532,7 @@ class OrdinaryCycleDirector:
         self.recommendation = recommendation
 
     async def run_once(self):
-        return SimpleNamespace(
-            status="succeeded",
-            message="cycle completed",
+        return OrdinaryCycleResult(
             decision=self.decision,
             recommendation=self.recommendation,
         )

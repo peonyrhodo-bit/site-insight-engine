@@ -108,6 +108,15 @@ def _extract_video_id(item: Any) -> str | None:
     return video_id or None
 
 
+def _validate_search_items(items: list[Any]) -> None:
+    """Reject non-empty search responses that contain no usable video IDs."""
+    if items and not any(_extract_video_id(item) is not None for item in items):
+        raise ValueError(
+            "youtube_mcp_malformed_response: non-empty 'items' list "
+            f"contained no recognizable video IDs (items_count={len(items)})"
+        )
+
+
 def _research_objects_for_persistence(
     registry: Any,
     research: Any,
@@ -897,6 +906,7 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
+                            _validate_search_items(items)
                             query.metadata["request_status"] = "succeeded"
                             query.metadata["api_items_count"] = len(items)
                             query.metadata["results_status"] = "received" if items else "empty"
@@ -954,14 +964,6 @@ class YouTubeResearchExecutor:
                                     channels.append(channel)
                                     self._mark_operation_started(plan, "collect_channels")
     
-                            # A genuinely empty list is a valid zero-result response.
-                            # A non-empty list with no usable video IDs is malformed, not empty.
-                            if items and query_video_count == 0:
-                                raise ValueError(
-                                    "youtube_mcp_malformed_response: non-empty 'items' list "
-                                    f"contained no recognizable video IDs (items_count={len(items)})"
-                                )
-
                             # API success, object receipt, and persistence are separate
                             # facts. An empty items list is not a successful collection.
                             query.status = "completed" if query_video_count > 0 else "empty"

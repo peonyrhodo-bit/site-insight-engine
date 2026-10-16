@@ -2982,6 +2982,10 @@ async def _run_director(
                 "result": serialized,
             },
         )
+        if run_id is None:
+            raise RuntimeError(
+                "Director run was not persisted: save_run returned no ID."
+            )
 
         decision = getattr(
             result,
@@ -2997,6 +3001,10 @@ async def _run_director(
                 decision=decision,
                 run_id=run_id,
             )
+            if decision_db_id is None:
+                raise RuntimeError(
+                    "Director decision was not persisted: save_decision returned no ID."
+                )
 
         recommendation = getattr(
             result,
@@ -3015,6 +3023,11 @@ async def _run_director(
                     run_id=run_id,
                 )
             )
+            if recommendation_db_id is None:
+                raise RuntimeError(
+                    "Director recommendation was not persisted: "
+                    "save_recommendation returned no ID."
+                )
 
         result_db_id = await runtime.memory.save_result(
             project_id=project_id,
@@ -3031,8 +3044,12 @@ async def _run_director(
             decision_db_id=decision_db_id,
             recommendation_db_id=recommendation_db_id,
         )
+        if result_db_id is None:
+            raise RuntimeError(
+                "Director result was not persisted: save_result returned no ID."
+            )
 
-        await runtime.memory.save_event(
+        event_id = await runtime.memory.save_event(
             project_id=project_id,
             event_type="director_run",
             data={
@@ -3050,6 +3067,10 @@ async def _run_director(
                 ),
             },
         )
+        if event_id is None:
+            raise RuntimeError(
+                "Director run event was not persisted: save_event returned no ID."
+            )
 
         if isinstance(serialized, dict):
             serialized.setdefault(
@@ -4171,6 +4192,11 @@ async def director_result(
         project_id=project_id,
         result=result,
     )
+    if saved is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось сохранить результат Директора.",
+        )
 
     return {
         "success": True,

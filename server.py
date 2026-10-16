@@ -34,6 +34,8 @@ from pydantic import BaseModel, Field
 # Logging
 # ---------------------------------------------------------------------------
 
+from director.trace_context import correlation_id_var, get_correlation_id
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
 )
@@ -1310,6 +1312,7 @@ class ServerMemory:
         try:
             payload = dict(data or {})
             payload["project_id"] = project_id
+            payload.setdefault("correlation_id", get_correlation_id())
 
             result = self.memory.save_event(
                 event_type=event_type,

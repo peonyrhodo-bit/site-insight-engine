@@ -2401,18 +2401,25 @@ class AIAdapter:
 
     def __init__(self) -> None:
         self.provider = None
+        self.provider_error: str | None = None
 
         if create_ai_provider is None:
+            self.provider_error = "AI provider factory is unavailable"
+            logger.error(self.provider_error)
             return
 
         # In FREE_MODE without an API key there is no AI backend to
-        # call; disable the provider cleanly instead of failing later.
+        # call; keep deterministic Director behavior, but report why AI
+        # assistance is unavailable when a decision is enriched.
         api_key = (
             os.getenv("OPENROUTER_API_KEY")
             or os.getenv("DIRECTOR_AI_KEY")
         )
 
         if FREE_MODE and not api_key:
+            self.provider_error = (
+                "AI provider disabled: no API key configured"
+            )
             logger.info(
                 "FREE_MODE: AI provider disabled "
                 "(no API key configured)"
@@ -2422,10 +2429,9 @@ class AIAdapter:
         try:
             self.provider = create_ai_provider()
             logger.info("AI provider initialized")
-        except Exception:
-            logger.exception(
-                "AI provider unavailable"
-            )
+        except Exception as exc:
+            self.provider_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("AI provider unavailable")
             self.provider = None
 
     @property
@@ -2440,32 +2446,26 @@ class AIAdapter:
         Provide structured AI reasoning for a Director decision.
 
         Director remains the decision owner: AI only receives a
-        structured context and returns structured JSON.
+        structured context and returns structured JSON. Provider failures
+        are raised so Director can record them while using its fallback.
         """
 
         if not self.provider:
-            return {}
+            raise RuntimeError(
+                self.provider_error or "AI provider unavailable"
+            )
 
         try:
-            from ai.provider import AIMessage
+            from ai.provider import AIMessage, AIProviderResponseError
             from ai.prompts import (
                 build_decision_prompt,
                 get_system_prompt,
             )
 
-            prompt = build_decision_prompt(
-                context=context,
-            )
-
+            prompt = build_decision_prompt(context=context)
             messages = [
-                AIMessage(
-                    role="system",
-                    content=get_system_prompt(),
-                ),
-                AIMessage(
-                    role="user",
-                    content=prompt,
-                ),
+                AIMessage(role="system", content=get_system_prompt()),
+                AIMessage(role="user", content=prompt),
             ]
 
             response = await self.provider.generate_json(
@@ -2477,21 +2477,20 @@ class AIAdapter:
 
             if hasattr(response, "content"):
                 content = response.content
-
                 if isinstance(content, dict):
                     return content
+                if isinstance(content, str):
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        return parsed
 
-                try:
-                    return json.loads(content)
-                except Exception:
-                    return {}
-
-        except Exception:
-            logger.exception(
-                "AI decision generation failed"
+            raise AIProviderResponseError(
+                "AI decision response must be a JSON object."
             )
 
-        return {}
+        except Exception:
+            logger.exception("AI decision generation failed")
+            raise
 
 
 # ---------------------------------------------------------------------------

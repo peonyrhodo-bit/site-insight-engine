@@ -3187,11 +3187,31 @@ async def _execute_autonomous_cycle_locked(
         )
 
         decision = getattr(director.last_result, "decision", None)
+        if decision is None:
+            # A cycle can stop on quota exhaustion or a wait decision before
+            # _autonomy_recommend sets last_result. Use the decision captured
+            # during this cycle instead of silently losing it.
+            cycle_state = serialized.get("state", {})
+            cycle_metadata = (
+                cycle_state.get("metadata", {})
+                if isinstance(cycle_state, dict)
+                else {}
+            )
+            decision = (
+                cycle_metadata.get("current_decision")
+                if isinstance(cycle_metadata, dict)
+                else None
+            )
+
         decision_db_id = None
         if decision is not None:
             decision_db_id = await runtime.memory.save_decision(
                 project_id=project_id, decision=decision, run_id=run_id,
             )
+            if decision_db_id is None:
+                raise RuntimeError(
+                    f"Director decision was not persisted for run_id={run_id}"
+                )
 
         recommendation = getattr(director.last_result, "recommendation", None)
         recommendation_db_id = None

@@ -3259,16 +3259,30 @@ async def _execute_autonomous_cycle_locked(
             )
 
         final_status = str(serialized.get("status") or "succeeded").strip().lower()
+        state = serialized.get("state", {})
+        state_metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
+        failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}
+        failure_phase = failure.get("phase") if isinstance(failure, dict) else None
+        failure_message = failure.get("error") if isinstance(failure, dict) else None
         if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:
             # An unknown Director result state is not proof of success.
+            final_status = "partial"
+        if failure_message:
+            # Internal Director errors are returned as a cycle result. Preserve
+            # the actual failing phase and diagnostic instead of only "partial".
             final_status = "partial"
         await runtime.memory.update_run(
             run_id, project_id=project_id,
             fields={
                 "status": final_status,
                 "finished_at": utc_now(),
-                "current_step": "completed" if final_status == "succeeded" else final_status,
-                "error_message": None,
+                "current_step": (
+                    str(failure_phase) if failure_message and failure_phase
+                    else "partial" if failure_message
+                    else "completed" if final_status == "succeeded"
+                    else final_status
+                ),
+                "error_message": str(failure_message)[:2000] if failure_message else None,
                 "result": serialized,
             },
         )

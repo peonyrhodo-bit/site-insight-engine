@@ -102,6 +102,37 @@ async def test_result_persistence_error_marks_run_partial(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_internal_director_error_persists_failed_phase_and_reason(monkeypatch):
+    memory = FakeMemory()
+    director = FakeDirector(status="error")
+    # The autonomy layer returns errors as a cycle result rather than raising.
+    async def failed_cycle(objective=None):
+        return {
+            "status": "error",
+            "message": "cycle failed",
+            "state": {
+                "metadata": {
+                    "failure": {
+                        "phase": "research",
+                        "error": "TimeoutError: MCP request timed out",
+                    }
+                }
+            },
+        }
+    director.run_autonomous_cycle = failed_cycle
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    result = await server._execute_autonomous_cycle(project_id="test-project")
+
+    row = memory.rows[result["run_id"]]
+    assert row["status"] == "partial"
+    assert row["current_step"] == "research"
+    assert row["error_message"] == "TimeoutError: MCP request timed out"
+    assert row["result"]["state"]["metadata"]["failure"]["phase"] == "research"
+
+
+@pytest.mark.asyncio
 async def test_repeated_runs_receive_distinct_ids(monkeypatch):
     memory = FakeMemory()
     monkeypatch.setattr(server.runtime, "memory", memory)

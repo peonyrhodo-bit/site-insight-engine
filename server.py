@@ -2984,9 +2984,17 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
             continue
         data = row.get("data_json") if isinstance(row.get("data_json"), dict) else {}
         stored_key = row.get("idempotency_key") or data.get("idempotency_key")
-        status = str(row.get("status") or data.get("status") or "").lower()
+        idempotency_status = str(
+            row.get("idempotency_status")
+            or data.get("idempotency_status")
+            or ""
+        ).lower()
         result = row.get("result") or data.get("result")
-        if stored_key == idempotency_key and status in {"succeeded", "complete", "completed", "waiting", "partial", "failed"} and isinstance(result, dict):
+        if (
+            stored_key == idempotency_key
+            and idempotency_status == "completed"
+            and isinstance(result, dict)
+        ):
             return result
     return None
 
@@ -3041,7 +3049,12 @@ async def _run_director_once(
                 "hours_back": hours_back,
                 "max_results": max_results,
                 "idempotency_key": idempotency_key,
-                "status": (serialized.get("status") if isinstance(serialized, dict) else "succeeded"),
+                "idempotency_status": "in_progress",
+                "status": (
+                    serialized.get("status")
+                    if isinstance(serialized, dict)
+                    else "succeeded"
+                ),
                 "result": serialized,
             },
         )
@@ -3148,6 +3161,16 @@ async def _run_director_once(
                     "region_code": region_code,
                     "hours_back": hours_back,
                     "max_results": max_results,
+                },
+            )
+
+        if idempotency_key:
+            await runtime.memory.update_run(
+                run_id,
+                project_id=project_id,
+                fields={
+                    "idempotency_status": "completed",
+                    "result": serialized,
                 },
             )
 

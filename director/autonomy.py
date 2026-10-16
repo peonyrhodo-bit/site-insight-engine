@@ -7,6 +7,8 @@ It must never research forever or execute uncontrolled actions.
 
 from __future__ import annotations
 
+from director.trace_context import get_correlation_id
+
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum

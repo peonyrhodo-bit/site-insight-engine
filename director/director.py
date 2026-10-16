@@ -1342,7 +1342,22 @@ class Director:
                     )
 
         except Exception as exc:
-            decision.metadata["ai_enrichment_error"] = str(exc)
+            error_type = type(exc).__name__
+            error_message = str(exc) or error_type
+            decision.metadata["ai_enrichment_status"] = "failed"
+            decision.metadata["ai_enrichment_error"] = (
+                f"{error_type}: {error_message}"
+            )
+            logger.warning(
+                "AI decision enrichment failed; continuing with "
+                "deterministic Director decision",
+                extra={
+                    "ai_error_type": error_type,
+                    "ai_error": error_message,
+                    "project_id": self.project_id,
+                },
+                exc_info=True,
+            )
 
         return decision
 

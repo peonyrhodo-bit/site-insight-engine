@@ -685,6 +685,7 @@ async def test_completed_persisted_idempotency_key_returns_saved_result(monkeypa
                     "data_json": {
                         "idempotency_key": "request-abc",
                         "status": "succeeded",
+                        "idempotency_status": "completed",
                         "result": {"status": "succeeded", "run_id": "old-run"},
                     }
                 }]
@@ -707,7 +708,7 @@ async def test_idempotency_lookup_ignores_different_key_and_incomplete_run(monke
             return {
                 "runs": [
                     {"data_json": {"idempotency_key": "other", "status": "succeeded", "result": {"run_id": "wrong"}}},
-                    {"data_json": {"idempotency_key": "same", "status": "running", "result": {"run_id": "incomplete"}}},
+                    {"data_json": {"idempotency_key": "same", "status": "running", "idempotency_status": "in_progress", "result": {"run_id": "incomplete"}}},
                 ]
             }
 

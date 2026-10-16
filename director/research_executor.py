@@ -93,6 +93,30 @@ def _tool_payload(result: Any) -> dict[str, Any]:
     return {}
 
 
+def _extract_video_id(item: Any) -> str | None:
+    """Return a scalar video ID from supported search-result shapes."""
+    if not isinstance(item, dict):
+        return None
+    item_id = item.get("id")
+    if isinstance(item_id, dict):
+        raw_id = item_id.get("videoId")
+    else:
+        raw_id = item.get("video_id") or item.get("youtube_id") or item_id
+    if not isinstance(raw_id, (str, int)):
+        return None
+    video_id = str(raw_id).strip()
+    return video_id or None
+
+
+def _validate_search_items(items: list[Any]) -> None:
+    """Reject non-empty search responses that contain no usable video IDs."""
+    if items and not any(_extract_video_id(item) is not None for item in items):
+        raise ValueError(
+            "youtube_mcp_malformed_response: non-empty 'items' list "
+            f"contained no recognizable video IDs (items_count={len(items)})"
+        )
+
+
 def _research_objects_for_persistence(
     registry: Any,
     research: Any,
@@ -882,22 +906,14 @@ class YouTubeResearchExecutor:
                                     "youtube_mcp_invalid_response: expected 'items' list"
                                 )
                             items = payload["items"]
+                            _validate_search_items(items)
                             query.metadata["request_status"] = "succeeded"
                             query.metadata["api_items_count"] = len(items)
                             query.metadata["results_status"] = "received" if items else "empty"
     
                             for item in items:
-                                if not isinstance(item, dict):
-                                    continue
-    
-                                raw_id = (
-                                    item.get("id", {}).get("videoId")
-                                    if isinstance(item.get("id"), dict)
-                                    else item.get("video_id")
-                                )
-                                if not raw_id:
-                                    raw_id = item.get("youtube_id") or item.get("id")
-                                if not raw_id:
+                                raw_id = _extract_video_id(item)
+                                if raw_id is None:
                                     continue
     
                                 video = video_from_mapping(
@@ -971,7 +987,8 @@ class YouTubeResearchExecutor:
                             query.metadata["results_status"] = "unavailable"
                             query.metadata["persistence_status"] = "pending"
                             query.metadata["error_kind"] = "quota_refusal" if quota_refusal else (
-                                "api_error" if "youtube_mcp_api_error" in error_lower or "http" in error_lower
+                                "malformed_response" if "youtube_mcp_malformed_response" in error_lower
+                                else "api_error" if "youtube_mcp_api_error" in error_lower or "http" in error_lower
                                 else "request_or_response_error"
                             )
                             query.metadata["execution_error"] = error_text

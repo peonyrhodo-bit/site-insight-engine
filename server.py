@@ -38,6 +38,7 @@ from director.trace_context import correlation_id_var, get_correlation_id
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
 logger = logging.getLogger("site-insight-engine")
@@ -2779,7 +2780,7 @@ async def request_logging(
     call_next: Any,) -> JSONResponse:
     started = datetime.now(timezone.utc)
     supplied_id = request.headers.get("X-Correlation-ID", "").strip()
-    correlation_id = supplied_id if supplied_id and len(supplied_id) <= 128 else secrets.token_hex(16)
+    correlation_id = "".join(char for char in supplied_id if char.isalnum() or char in "-_.:")[:128] or secrets.token_hex(16)
     token = correlation_id_var.set(correlation_id)
     status_code = 500
 

@@ -2986,12 +2986,22 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
         stored_key = row.get("idempotency_key") or data.get("idempotency_key")
         status = str(row.get("status") or data.get("status") or "").lower()
         result = row.get("result") or data.get("result")
-        if stored_key == idempotency_key and status in {"succeeded", "complete", "completed"} and isinstance(result, dict):
+        if stored_key == idempotency_key and status in {"succeeded", "complete", "completed", "waiting", "partial", "failed"} and isinstance(result, dict):
             return result
     return None
 
 
 async def _run_director_once(
+    *,
+    project_id: str,
+    language: str,
+    region_code: str,
+    hours_back: int,
+    max_results: int,
+    objective: str | None,
+    idempotency_key: str | None,
+) -> dict[str, Any]:
+    director = runtime.get_director(
         project_id=project_id,
     )
 
@@ -3031,7 +3041,7 @@ async def _run_director_once(
                 "hours_back": hours_back,
                 "max_results": max_results,
                 "idempotency_key": idempotency_key,
-                "status": "succeeded",
+                "status": (serialized.get("status") if isinstance(serialized, dict) else "succeeded"),
                 "result": serialized,
             },
         )

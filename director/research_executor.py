@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from director.trace_context import get_correlation_id
+
 import json
 import logging
 import os
@@ -553,7 +555,7 @@ class YouTubeResearchExecutor:
                                 bucket="other", operation="refresh_existing_video_stats",
                                 method="videos.list", metadata={"video_ids": batch_ids},
                             )
-                            result = await session.call_tool("get_video_stats", {"video_ids": batch_ids})
+                            result = await session.call_tool("get_video_stats", {"video_ids": batch_ids, "correlation_id": get_correlation_id()})
                             batch_payload = _tool_payload(result)
                             if batch_payload.get("error"):
                                 raise ValueError(str(batch_payload["error"]))
@@ -841,6 +843,7 @@ class YouTubeResearchExecutor:
                                 "search_videos",
                                 {
                                     "query": text,
+                                    "correlation_id": get_correlation_id(),
                                     "max_results": int(getattr(planned_query, "max_results", 25) or 25),
                                     "region_code": getattr(planned_query, "region_code", None),
                                     "relevance_language": getattr(planned_query, "language", None),

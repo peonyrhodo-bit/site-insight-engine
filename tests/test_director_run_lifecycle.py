@@ -126,10 +126,45 @@ async def test_internal_director_error_persists_failed_phase_and_reason(monkeypa
     result = await server._execute_autonomous_cycle(project_id="test-project")
 
     row = memory.rows[result["run_id"]]
-    assert row["status"] == "partial"
+    assert row["status"] == "failed"
+    assert result["status"] == "failed"
     assert row["current_step"] == "research"
     assert row["error_message"] == "TimeoutError: MCP request timed out"
     assert row["result"]["state"]["metadata"]["failure"]["phase"] == "research"
+
+
+
+
+@pytest.mark.parametrize(
+    ("director_status", "expected_status"),
+    [
+        ("completed", "succeeded"),
+        ("sleeping", "sleeping"),
+        ("waiting", "waiting"),
+        ("error", "failed"),
+        ("partial", "partial"),
+        ("blocked", "blocked"),
+        ("skipped", "skipped"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_director_cycle_status_is_normalized_consistently(
+    monkeypatch, director_status, expected_status
+):
+    memory = FakeMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime,
+        "get_director",
+        lambda **kwargs: FakeDirector(status=director_status),
+    )
+
+    result = await server._execute_autonomous_cycle(project_id="status-project")
+
+    row = memory.rows[result["run_id"]]
+    assert result["status"] == expected_status
+    assert row["status"] == expected_status
+    assert row["result"]["status"] == expected_status
 
 
 @pytest.mark.asyncio
@@ -179,7 +214,7 @@ async def test_unknown_director_status_is_not_marked_succeeded(monkeypatch):
     result = await server._execute_autonomous_cycle(project_id="test-project")
 
     assert result["status"] == "waiting"
-    assert memory.rows[result["run_id"]]["status"] == "partial"
+    assert memory.rows[result["run_id"]]["status"] == "waiting"
 
 
 class BlockingDirector(FakeDirector):

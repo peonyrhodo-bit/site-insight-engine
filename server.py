@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import secrets
+import urllib.request
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
@@ -2590,6 +2591,148 @@ class Runtime:
         # into Director itself.
         self.autonomous_worker: asyncio.Task | None = None
 
+    async def collect_runtime_health(self, project_id: str) -> dict[str, Any]:
+        """Collect bounded, read-only probes for the pre-cycle state snapshot."""
+        checked_at = utc_now()
+        health: dict[str, Any] = {}
+
+        # Provider configuration is not a live health check. Only call a
+        # provider's explicit health/ping method; never spend inference tokens
+        # just to populate a status page.
+        provider = getattr(self.ai, "provider", None)
+        if provider is None:
+            health["ai"] = {
+                "status": "unavailable",
+                "checked_at": checked_at,
+                "reason": getattr(self.ai, "provider_error", None) or "AI provider is not configured.",
+            }
+        else:
+            probe = next(
+                (getattr(provider, name, None) for name in ("health_check", "check_health", "ping")
+                 if callable(getattr(provider, name, None))),
+                None,
+            )
+            if probe is None:
+                health["ai"] = {
+                    "status": "unknown",
+                    "checked_at": checked_at,
+                    "reason": "Provider has no explicit health-check method; no paid inference probe was sent.",
+                }
+            else:
+                try:
+                    result = await call_maybe_async(probe)
+                    if isinstance(result, dict):
+                        okay = result.get("healthy", result.get("available", result.get("ok")))
+                        status = "healthy" if okay is True else "unavailable" if okay is False else "degraded"
+                        health["ai"] = {"status": status, "checked_at": utc_now(), "result": serialize(result)}
+                    elif result is True:
+                        health["ai"] = {"status": "healthy", "checked_at": utc_now(), "result": True}
+                    elif result is False:
+                        health["ai"] = {"status": "unavailable", "checked_at": utc_now(), "result": False}
+                    else:
+                        health["ai"] = {"status": "degraded", "checked_at": utc_now(), "reason": "Health check returned no explicit boolean result."}
+                except Exception as exc:
+                    health["ai"] = {"status": "unavailable", "checked_at": utc_now(), "reason": f"{type(exc).__name__}: {exc}"}
+
+        # Probe the configured MCP health endpoint with a short timeout. A
+        # missing URL is unknown, not a claim that the source is down.
+        mcp_url = (os.getenv("YOUTUBE_MCP_URL") or os.getenv("MCP_URL") or "").strip()
+        if not mcp_url:
+            health["youtube_sources"] = {
+                "status": "unknown",
+                "checked_at": checked_at,
+                "reason": "YOUTUBE_MCP_URL/MCP_URL is not configured.",
+            }
+        else:
+            health_url = mcp_url.rstrip("/")
+            if not health_url.endswith("/health"):
+                health_url += "/health"
+            def _probe_mcp() -> dict[str, Any]:
+                request = urllib.request.Request(health_url, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    body = response.read(2048).decode("utf-8", errors="replace")
+                    return {"http_status": int(response.status), "body": body}
+            try:
+                response = await asyncio.to_thread(_probe_mcp)
+                health["youtube_sources"] = {
+                    "status": "healthy" if 200 <= response["http_status"] < 300 else "degraded",
+                    "checked_at": utc_now(),
+                    "endpoint": health_url,
+                    "http_status": response["http_status"],
+                }
+            except Exception as exc:
+                health["youtube_sources"] = {
+                    "status": "unavailable",
+                    "checked_at": utc_now(),
+                    "endpoint": health_url,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+
+        # The scheduler is process-local. Report its actual object/configuration
+        # separately from durability, which this scheduler does not provide.
+        scheduler = self.scheduler
+        if scheduler is None:
+            health["scheduler"] = {"status": "unavailable", "checked_at": checked_at, "reason": "Scheduler is not initialized."}
+        else:
+            enabled = bool(getattr(scheduler, "enabled", False))
+            health["scheduler"] = {
+                "status": "available" if enabled else "unavailable",
+                "checked_at": checked_at,
+                "enabled": enabled,
+                "persistence": "in_memory",
+                "durable_across_restart": False,
+            }
+
+        manager = getattr(self, "quota_manager", None)
+        status_reader = getattr(manager, "get_status", None)
+        if not callable(status_reader):
+            health["quota_manager"] = {
+                "status": "unavailable",
+                "checked_at": checked_at,
+                "reason": getattr(manager, "reason", None) or "Quota manager exposes no read-only get_status method.",
+            }
+        else:
+            try:
+                quota_status = await asyncio.to_thread(status_reader)
+                if not isinstance(quota_status, dict):
+                    raise TypeError("Quota manager get_status() returned a non-dict value.")
+                health["quota_manager"] = {
+                    "status": "healthy",
+                    "checked_at": utc_now(),
+                    "value": serialize(quota_status),
+                }
+            except Exception as exc:
+                health["quota_manager"] = {
+                    "status": "unavailable",
+                    "checked_at": utc_now(),
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+
+        cycle_lock = _DIRECTOR_CYCLE_LOCKS.get(project_id)
+        health["active_cycle"] = {
+            "status": "healthy",
+            "checked_at": checked_at,
+            "active": bool(cycle_lock and cycle_lock.locked()),
+            "source": "in_process_project_cycle_lock",
+            "note": "This lock is process-local; persisted cross-process run status is read separately from memory.",
+        }
+
+        health["production_budget_mode"] = {
+            "mode": "free" if FREE_MODE else "production",
+            "free_mode": bool(FREE_MODE),
+            "configured_at_runtime": True,
+            "source": "server FREE_MODE configuration",
+        }
+
+        # The deployed UI/website is not this API process and must be probed
+        # independently; do not infer it from the API being alive.
+        health["website"] = {
+            "status": "unknown",
+            "checked_at": checked_at,
+            "reason": "Website/UI endpoint is not configured as a health probe in this service.",
+        }
+        return health
+
     def get_director(
         self,
         project_id: str,
@@ -2879,6 +3022,15 @@ async def ai_status() -> dict[str, Any]:
     }
 
 
+@app.get("/director/snapshot")
+async def director_snapshot(project_id: str = DEFAULT_PROJECT_ID) -> dict[str, Any]:
+    """Read-only view of the latest complete pre-cycle state snapshot."""
+    director = runtime.get_director(project_id=project_id)
+    director.context.metadata["runtime_health"] = await runtime.collect_runtime_health(project_id)
+    await director.inspect()
+    return serialize(director.get_unified_state_snapshot())
+
+
 @app.get("/director/status")
 async def director_status(
     project_id: str = DEFAULT_PROJECT_ID,
@@ -3089,11 +3241,28 @@ async def _run_director_once(
         if objective:
             director.context.objective = objective
 
+        # Collect read-only service health before the cycle's inspect phase.
+        # The Director snapshot keeps unknowns explicit when no safe probe exists.
+        runtime_health = await runtime.collect_runtime_health(project_id)
+        director_context = getattr(director, "context", None)
+        director_metadata = getattr(director_context, "metadata", None)
+        if isinstance(director_metadata, dict):
+            director_metadata["runtime_health"] = runtime_health
+
         result = await call_maybe_async(
             director.run_once,
         )
 
         serialized = serialize(result)
+        # Keep the exact pre-cycle snapshot alongside the cycle result so it
+        # survives process restarts and can be compared with later cycles.
+        snapshot_reader = getattr(director, "get_unified_state_snapshot", None)
+        if callable(snapshot_reader):
+            state_snapshot = serialize(snapshot_reader())
+            if isinstance(serialized, dict):
+                serialized["state_snapshot"] = state_snapshot
+            else:
+                serialized = {"result": serialized, "state_snapshot": state_snapshot}
 
         # ---------------------------------------------------------------
         # Persist the strategic outputs through Memory 2.0 so that the

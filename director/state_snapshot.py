@@ -67,7 +67,9 @@ def _entry(value: Any = None, *, known: bool = False, evidence: str = "",
 
 
 def _status_of(item: Any) -> str:
-    return str(_dict(item).get("status") or "").strip().lower()
+    row = _dict(item)
+    nested = _dict(row.get("data_json")) or _dict(row.get("data"))
+    return str(row.get("status") or nested.get("status") or "").strip().lower()
 
 
 def _latest_successful_run(runs: list[Any]) -> dict[str, Any] | None:
@@ -81,7 +83,10 @@ def _latest_successful_run(runs: list[Any]) -> dict[str, Any] | None:
         successful,
         key=lambda item: str(
             item.get("updated_at") or item.get("completed_at")
-            or item.get("created_at") or ""
+            or item.get("created_at")
+            or _dict(item.get("data_json")).get("updated_at")
+            or _dict(item.get("data_json")).get("completed_at")
+            or _dict(item.get("data_json")).get("created_at") or ""
         ),
     )
 

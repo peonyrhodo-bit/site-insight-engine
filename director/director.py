@@ -1922,6 +1922,140 @@ class Director:
     ) -> dict[str, Any]:
         return self.discover_capabilities()
 
+    @staticmethod
+    def _status_bucket(items: list[dict[str, Any]], statuses: set[str]) -> list[dict[str, Any]]:
+        """Return persisted items whose lifecycle status matches the requested bucket."""
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or item.get("state") or "").strip().lower()
+            if status in statuses:
+                result.append(item)
+        return result
+
+    def _build_wake_assessment(
+        self,
+        *,
+        state: DirectorState,
+        inventory: dict[str, Any],
+        project_state: dict[str, Any],
+        capabilities: dict[str, Any],
+        wake_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Group wake-time signals into six blocks without claiming unknowns are healthy.
+
+        This is a best-effort assessment of persisted/configured state, not a live
+        health probe. A service being configured is deliberately not treated as
+        proof that the remote dependency is reachable.
+        """
+        connected = capabilities.get("connected_services", {})
+        connected = connected if isinstance(connected, dict) else {}
+        freshness = project_state.get("freshness", {})
+        freshness = freshness if isinstance(freshness, dict) else {}
+        quota = project_state.get("quota", {})
+        quota = quota if isinstance(quota, dict) else {}
+        research = [item for item in self.context.research_history if isinstance(item, dict)]
+        recommendations = [item for item in self.context.recommendations if isinstance(item, dict)]
+        decisions = [item for item in self.context.decisions if isinstance(item, dict)]
+        prior_snapshot = self.context.metadata.get("previous_wake_snapshot")
+        if not isinstance(prior_snapshot, dict):
+            prior_snapshot = None
+
+        unfinished_research = self._status_bucket(
+            research, {"pending", "queued", "running", "in_progress", "in-progress", "started"}
+        )
+        recommendation_waiting = self._status_bucket(
+            recommendations, {"pending", "awaiting_decision", "awaiting_user", "proposed", "needs_review"}
+        )
+        recommendation_discussion = self._status_bucket(
+            recommendations, {"discussing", "in_discussion", "under_discussion"}
+        )
+        recommendation_decided = self._status_bucket(
+            recommendations, {"accepted", "rejected", "declined"}
+        )
+        video_tasks = [
+            item for item in self.context.metadata.get("video_preparation_tasks", [])
+            if isinstance(item, dict)
+        ] if isinstance(self.context.metadata.get("video_preparation_tasks"), list) else []
+
+        snapshot_inventory = wake_snapshot.get("inventory", {})
+        previous_inventory = prior_snapshot.get("inventory", {}) if prior_snapshot else {}
+        new_data = None
+        if prior_snapshot and isinstance(snapshot_inventory, dict) and isinstance(previous_inventory, dict):
+            new_data = {
+                key: max(int(value or 0) - int(previous_inventory.get(key, 0) or 0), 0)
+                for key, value in snapshot_inventory.items()
+                if isinstance(value, (int, float)) and isinstance(previous_inventory.get(key, 0), (int, float))
+            }
+
+        service_configuration = {
+            name: ("configured" if enabled else "not_configured")
+            for name, enabled in connected.items()
+        }
+        # The quota values currently present in project_state are estimates from
+        # persisted counters. Do not label them authoritative unless their source
+        # is explicitly the single quota manager.
+        quota_source = str(quota.get("accounting") or "unknown")
+        quota_authoritative = quota_source in {"quota_manager", "youtube_quota_manager", "single_quota_manager"}
+
+        blocks = {
+            "cycle_integrity": {
+                "status": "running",
+                "current_cycle_count": state.cycle_count,
+                "last_successful_full_cycle": "unknown",
+                "unfinished_research_count": len(unfinished_research),
+                "unfinished_operations": self.context.metadata.get("unfinished_operations", "unknown"),
+                "concurrency_guard": "enforced_by_server_if_using_autonomous_endpoint",
+            },
+            "data_and_dependencies": {
+                "service_configuration": service_configuration,
+                "live_dependency_health": "unknown",
+                "storage_write_health": "unknown",
+                "missing_data": list(self.context.missing_data),
+            },
+            "research_state": {
+                "completed_research_count": len(self._status_bucket(research, {"completed", "succeeded", "success"})),
+                "unfinished_research_count": len(unfinished_research),
+                "reusable_results_available": bool(research),
+                "research_history_count": len(research),
+                "hypotheses": self.context.metadata.get("current_hypothesis", "unknown"),
+                "due_repeat_measurement": freshness.get("status") in {"stale", "unknown"},
+                "freshness": freshness,
+            },
+            "data_changes": {
+                "new_data_since_previous_wake": new_data if new_data is not None else "unknown",
+                "previous_wake_snapshot_available": prior_snapshot is not None,
+                "conclusion_reassessment": "required_when_new_evidence_changes_support",
+            },
+            "recommendations_and_user_tasks": {
+                "recommendation_count": len(recommendations),
+                "awaiting_user_decision": len(recommendation_waiting),
+                "under_discussion": len(recommendation_discussion),
+                "accepted_or_rejected": len(recommendation_decided),
+                "video_preparation_tasks": video_tasks,
+                "video_preparation_consent_required": True,
+            },
+            "resources_and_plan": {
+                "quota": quota,
+                "quota_source_authoritative": quota_authoritative,
+                "available_actions": list(self.context.available_actions),
+                "budget_mode": self.context.metadata.get("budget_mode", "unknown"),
+                "pending_user_tasks": self.context.metadata.get("pending_user_tasks", "unknown"),
+                "end_of_day_feasibility": "unknown",
+            },
+        }
+        return {
+            "schema_version": 1,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "status": "partial" if any(
+                value == "unknown"
+                for block in blocks.values()
+                for value in block.values()
+            ) else "assessed",
+            "blocks": blocks,
+        }
+
     async def _autonomy_inspect(
         self,
         state: DirectorState,
@@ -1984,6 +2118,21 @@ class Director:
             "available_actions": list(context.available_actions),
             "connected_services": capabilities.get("connected_services", {}),
         }
+        wake_snapshot["assessment"] = self._build_wake_assessment(
+            state=state,
+            inventory=inventory if isinstance(inventory, dict) else {},
+            project_state=project_state if isinstance(project_state, dict) else {},
+            capabilities=capabilities if isinstance(capabilities, dict) else {},
+            wake_snapshot=wake_snapshot,
+        )
+        # Preserve a compact prior snapshot in context metadata for the next wake.
+        # It is intentionally not treated as persisted cross-process history unless
+        # the memory adapter itself stores context metadata.
+        previous_snapshot = self.context.metadata.get("previous_wake_snapshot")
+        if isinstance(previous_snapshot, dict):
+            self.context.metadata["previous_wake_snapshot"] = previous_snapshot
+        self.context.metadata["last_wake_snapshot"] = wake_snapshot
+        self.context.metadata["previous_wake_snapshot"] = wake_snapshot
         state.metadata["wake_snapshot"] = wake_snapshot
         logger.info(
             "DIRECTOR WAKE SNAPSHOT: %s",

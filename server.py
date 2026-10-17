@@ -2654,11 +2654,26 @@ class Runtime:
                     return {"http_status": int(response.status), "body": body}
             try:
                 response = await asyncio.to_thread(_probe_mcp)
+                try:
+                    mcp_payload = json.loads(response["body"])
+                except (TypeError, ValueError):
+                    mcp_payload = {}
+                mcp_service_status = str(mcp_payload.get("status") or "").lower()
+                http_ok = 200 <= response["http_status"] < 300
+                service_ready = mcp_service_status not in {"degraded", "error", "unavailable", "failed"}
+                checks = mcp_payload.get("checks") if isinstance(mcp_payload.get("checks"), dict) else {}
                 health["youtube_sources"] = {
-                    "status": "healthy" if 200 <= response["http_status"] < 300 else "degraded",
+                    "status": "healthy" if http_ok and service_ready else "degraded",
                     "checked_at": utc_now(),
                     "endpoint": health_url,
                     "http_status": response["http_status"],
+                    "service_status": mcp_service_status or "unknown",
+                    "checks": serialize(checks),
+                    "youtube_api_live_probe": mcp_payload.get(
+                        "youtube_api_live_probe",
+                        "not_reported_by_mcp_health_endpoint",
+                    ),
+                    "note": "MCP/configuration health is not proof that a live YouTube API request would succeed.",
                 }
             except Exception as exc:
                 health["youtube_sources"] = {

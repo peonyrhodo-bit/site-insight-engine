@@ -141,8 +141,12 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     decisions = _list(getattr(context, "decisions", []))
     recommendations = _list(getattr(context, "recommendations", []))
     actions = _list(memory_state.get("unfinished_actions"))
-    if not actions:
-        actions = _list(memory_state.get("recent_actions")) or _list(metadata.get("recent_actions"))
+    # Memory 2.0 also returns the bounded raw action history at the top level.
+    # Include it so statuses such as waiting_for_user are not lost merely
+    # because they are excluded from the semantic unfinished-actions subset.
+    for action in _list(memory_state.get("recent_actions")) + _list(metadata.get("actions")) + _list(metadata.get("recent_actions")):
+        if action not in actions:
+            actions.append(action)
     events = _list(memory_state.get("recent_events")) or _list(metadata.get("recent_events"))
     results = _list(memory_state.get("recent_results")) or _list(metadata.get("recent_results"))
     pending_memory_recommendations = _list(memory_state.get("pending_recommendations"))
@@ -293,8 +297,43 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     due = metadata.get("due_measurements")
     if due is None:
         due = _typed_records(results, "due_measurement", "repeat_measurement", "measurement_schedule") or None
-    put("due_measurements", due, known=due is not None, evidence="metadata.due_measurements or typed persisted measurement records",
-        reason="Нет вычисленного списка наступивших повторных измерений или сохранённого расписания измерений.")
+    due_evidence = "metadata.due_measurements or typed persisted measurement records"
+    if due is None:
+        scheduler_state = _dict(health.get("scheduler"))
+        scheduled_items = _list(scheduler_state.get("scheduled_items"))
+        measurement_schedules = []
+        for item in scheduled_items:
+            row = _record_payload(item)
+            schedule_metadata = _dict(row.get("metadata"))
+            descriptor = " ".join(str(value or "") for value in (
+                row.get("reason"), row.get("schedule_type"), schedule_metadata.get("kind"),
+                schedule_metadata.get("task_type"), schedule_metadata.get("purpose"),
+                schedule_metadata.get("category"),
+            )).lower()
+            if any(token in descriptor for token in ("measurement", "repeat_measurement", "замер", "измерен")):
+                run_at = row.get("run_at")
+                try:
+                    parsed_due = datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+                    if parsed_due.tzinfo is None:
+                        parsed_due = parsed_due.replace(tzinfo=timezone.utc)
+                    is_due = parsed_due <= datetime.now(timezone.utc)
+                except (TypeError, ValueError):
+                    is_due = None
+                measurement_schedules.append({
+                    **row,
+                    "due": is_due,
+                    "due_check": "run_at compared with current UTC time" if is_due is not None else "run_at missing or invalid",
+                })
+        if measurement_schedules:
+            due = {
+                "due": [item for item in measurement_schedules if item.get("due") is True],
+                "scheduled_measurements": measurement_schedules,
+                "source": "runtime_health.scheduler.scheduled_items",
+                "scheduler_durability": "in_memory_only",
+            }
+            due_evidence = "explicit measurement-tagged schedules in the inspected in-memory scheduler queue"
+    put("due_measurements", due, known=due is not None, evidence=due_evidence,
+        reason="Нет вычисленного списка наступивших повторных измерений или сохранённого расписания измерений с явной меткой.")
     changes = metadata.get("new_data_since_last_cycle")
     if changes is not None:
         put("new_data_since_last_cycle", changes, known=True, evidence="metadata.new_data_since_last_cycle")

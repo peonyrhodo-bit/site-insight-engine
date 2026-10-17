@@ -3008,12 +3008,18 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
                 limit_runs=100,
             )
             runs = context.get("runs", []) if isinstance(context, dict) else []
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Could not inspect Director idempotency history: project=%s",
             project_id,
         )
-        return None
+        # A failed history read is not equivalent to "no prior request". If we
+        # continue, a retry after process/cache loss can start duplicate work
+        # with the same idempotency key. Fail closed and let the caller retry.
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot verify idempotency history right now; retry with the same Idempotency-Key.",
+        ) from exc
     for row in runs:
         if not isinstance(row, dict):
             continue

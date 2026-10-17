@@ -538,8 +538,13 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
             evidence="project_state.quota",
             reason="Снимок содержит только оценку по inventory/env, а не подтверждённое чтение единого менеджера квоты.")
     free_tools = metadata.get("free_tools")
-    put("free_tools", free_tools, known=free_tools is not None, evidence="metadata.free_tools",
-        reason="Нет актуального реестра инструментов, стоимости и доступности.")
+    if free_tools is None:
+        configured_tools = _dict(health.get("free_tools"))
+        if configured_tools.get("status") == "available":
+            free_tools = configured_tools
+    put("free_tools", free_tools, known=free_tools is not None,
+        evidence="metadata.free_tools or runtime_health.free_tools from FREE_TOOLS_JSON",
+        reason="Нет актуального реестра FREE_TOOLS_JSON с явной стоимостью и live-проверкой связанного сервиса.")
     restrictions = metadata.get("source_restrictions")
     if restrictions is not None:
         put("source_restrictions", restrictions, known=True, evidence="metadata.source_restrictions")

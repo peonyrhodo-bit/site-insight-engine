@@ -1909,9 +1909,41 @@ class YouTubeResearchExecutor:
                     "errors": list(summary.get("channel_stats_errors") or []),
                     "persisted": persisted,
                 }
-            elif name in {"collect_niche_evidence", "build_niche_snapshots"}:
-                status = ResearchOperationStatus.BLOCKED
-                error = f"operation_handler_not_implemented: {name}"
+            elif name == "collect_niche_evidence":
+                collected = int(summary.get("niches_collected", 0) or 0)
+                evidence_videos = int(summary.get("niche_evidence_video_count", 0) or 0)
+                niche_persisted = bool(summary.get("niche_data_persisted"))
+                if collected > 0 and niche_persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif collected > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "niche_evidence_collected_but_persistence_not_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "no_candidate_niche_evidence_from_research_queries"
+                result = {
+                    "niches_collected": collected,
+                    "evidence_video_count": evidence_videos,
+                    "persisted": niche_persisted,
+                    "classification": "query-derived candidate buckets; Director retains strategic decision ownership",
+                }
+            elif name == "build_niche_snapshots":
+                collected = int(summary.get("niche_snapshots_collected", 0) or 0)
+                niche_persisted = bool(summary.get("niche_data_persisted"))
+                if collected > 0 and niche_persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif collected > 0:
+                    status = ResearchOperationStatus.PARTIAL
+                    error = "niche_snapshots_built_but_persistence_not_confirmed"
+                else:
+                    status = ResearchOperationStatus.BLOCKED
+                    error = "no_niche_snapshots_could_be_built_from_available_evidence"
+                result = {
+                    "niche_snapshots_collected": collected,
+                    "persisted": niche_persisted,
+                    "historical_growth_computed": False,
+                    "note": "Growth requires multiple comparable observations; this run creates point-in-time aggregates.",
+                }
             else:
                 status = ResearchOperationStatus.BLOCKED
                 error = f"unknown_operation_type: {name}"

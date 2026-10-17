@@ -48,8 +48,11 @@ class InMemoryBoundsTests(unittest.TestCase):
         backend = SupabaseMemoryBackend(client=client)
 
         with patch.dict("os.environ", {"DIRECTOR_SNAPSHOTS_PER_VIDEO": "2"}):
-            payload = backend.load_youtube_data(project_id="p")
+            with self.assertLogs("memory.supabase", level="INFO") as captured:
+                payload = backend.load_youtube_data(project_id="p")
 
+        self.assertTrue(any("video_rows_scanned=1" in line for line in captured.output))
+        self.assertTrue(any("snapshots_loaded=2" in line for line in captured.output))
         self.assertEqual(len(payload["videos"]), 1)
         self.assertEqual(len(payload["snapshots"]), 2)
         self.assertEqual(

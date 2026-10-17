@@ -109,6 +109,8 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
         actions = _list(memory_state.get("recent_actions"))
     events = _list(memory_state.get("recent_events"))
     research = _list(getattr(context, "research_history", []))
+    if not research:
+        research = _list(metadata.get("research_sets")) or _list(memory_state.get("recent_results"))
     observations = _list(getattr(context, "observations", []))
     constraints = _list(getattr(context, "constraints", []))
     feedback = _list(getattr(context, "feedback", []))
@@ -191,9 +193,10 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
 
     topics = _dict(getattr(context, "topics", {}))
     coverage = _dict(project_state.get("coverage"))
-    put("under_researched_directions", coverage if coverage else topics,
-        known=bool(coverage or topics), evidence="project_state.coverage/topics",
-        reason="Нет списка направлений и оценки покрытия.")
+    under_researched = metadata.get("under_researched_directions")
+    put("under_researched_directions", under_researched,
+        known=under_researched is not None, evidence="metadata.under_researched_directions",
+        reason="Инвентарь тем и число запросов не показывают, какие именно направления недостаточно изучены.")
 
     hypothesis = metadata.get("current_hypothesis")
     hypotheses = metadata.get("hypotheses")
@@ -211,12 +214,10 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     changes = metadata.get("new_data_since_last_cycle")
     if changes is not None:
         put("new_data_since_last_cycle", changes, known=True, evidence="metadata.new_data_since_last_cycle")
-    elif freshness:
-        put("new_data_since_last_cycle", {"freshness": freshness, "observation_count": len(observations)},
-            known=True, evidence="project_state.freshness/observations",
-            reason="") 
     else:
-        put("new_data_since_last_cycle", None, reason="Нет сравнения с состоянием предыдущего цикла.")
+        put("new_data_since_last_cycle", None,
+            evidence="project_state.freshness" if freshness else "",
+            reason="Свежесть данных сама по себе не доказывает, какие данные появились после прошлого цикла; нет сравнения двух снимков.")
 
     put("created_recommendations", recommendations, known=bool(recommendations),
         evidence="DirectorContext.recommendations", reason="Рекомендации не загружены в контекст.")

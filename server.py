@@ -2301,6 +2301,23 @@ class DataAdapter:
                         except (TypeError, ValueError):
                             return False
 
+                    def quota_value(query: Any, field: str) -> int:
+                        query_metadata = getattr(query, "metadata", {})
+                        if not isinstance(query_metadata, dict):
+                            return 0
+                        quota_metadata = query_metadata.get("quota", {})
+                        if not isinstance(quota_metadata, dict):
+                            return 0
+                        try:
+                            return max(int(quota_metadata.get(field, 0) or 0), 0)
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                "Ignoring malformed quota metadata: query_id=%s field=%s",
+                                getattr(query, "query_id", None),
+                                field,
+                            )
+                            return 0
+
                     # Expose DATA inventory explicitly so Director can
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
@@ -2320,12 +2337,12 @@ class DataAdapter:
                                 default=None,
                             ),
                             "youtube_other_units_today": sum(
-                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)
+                                quota_value(query, "other_units")
                                 for query in self.youtube_registry.queries()
                                 if query_counts_toward_today(query)
                             ),
                             "youtube_search_calls_today": sum(
-                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("search_calls", 0) or 0), 0)
+                                quota_value(query, "search_calls")
                                 for query in self.youtube_registry.queries()
                                 if query_counts_toward_today(query)
                             ),

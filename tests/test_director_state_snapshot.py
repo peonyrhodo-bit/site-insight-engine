@@ -174,3 +174,52 @@ async def test_runtime_health_uses_read_only_quota_probe_and_does_not_infer_ai_h
     assert health["active_cycle"]["active"] is False
     assert health["youtube_sources"]["status"] == "unknown"
     assert health["website"]["status"] == "unknown"
+
+
+def test_snapshot_reads_typed_strategy_records_from_existing_memory_results():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={
+            "memory_state": {
+                "recent_runs": [],
+                "recent_results": [
+                    {"result_type": "hypothesis", "data_json": {"title": "H1", "statement": "Test retention"}},
+                    {"result_type": "forecast", "data_json": {"metric": "views", "expected": 1200}},
+                    {"result_type": "repeat_measurement", "data_json": {"due_at": "2026-10-18T12:00:00Z"}},
+                    {"result_type": "conclusion_revision", "data_json": {"reason": "New evidence"}},
+                    {"result_type": "daily_plan", "data_json": {"tasks": ["review results"]}},
+                    {"result_type": "research_set", "data_json": {"research_id": "r1", "missing_data": ["retention by source"]}},
+                ],
+                "unfinished_actions": [
+                    {"action_type": "video_script", "status": "pending", "description": "Prepare video script"},
+                    {"action_type": "user_confirmation", "status": "waiting_for_user", "description": "Approve next research batch"},
+                ],
+                "pending_recommendations": [{"status": "pending", "title": "Test new format"}],
+                "unresolved_decisions": [{"status": "proposed", "decision": "Run experiment"}],
+                "recent_events": [],
+            }
+        },
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+
+    snapshot = build_unified_state_snapshot(context)
+    params = snapshot["parameters"]
+
+    assert params["hypotheses"]["status"] == STATUS_KNOWN
+    assert params["forecasts"]["status"] == STATUS_KNOWN
+    assert params["due_measurements"]["status"] == STATUS_KNOWN
+    assert params["under_researched_directions"]["status"] == STATUS_KNOWN
+    assert params["changed_conclusions"]["status"] == STATUS_KNOWN
+    assert params["end_of_day_plan"]["status"] == STATUS_KNOWN
+    assert params["video_preparation_tasks"]["status"] == STATUS_KNOWN
+    assert params["pending_user_tasks"]["status"] == STATUS_KNOWN
+    assert params["created_recommendations"]["status"] == STATUS_KNOWN
+    assert params["accepted_rejected_decisions"]["status"] == STATUS_KNOWN
+    assert validate_unified_state_snapshot(snapshot) == []

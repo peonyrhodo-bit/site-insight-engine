@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from director.director import Director
-from server import Runtime
+from server import Runtime, persist_typed_director_records
 from director.state_snapshot import (
     REQUIRED_PARAMETERS,
     STATUS_KNOWN,
@@ -431,3 +431,69 @@ def test_explicit_production_budget_mode_is_known_independently_of_free_ai_mode(
 
     assert snapshot["parameters"]["production_budget_mode"]["status"] == STATUS_KNOWN
     assert snapshot["parameters"]["production_budget_mode"]["value"]["mode"] == "minimal"
+
+
+
+def test_last_successful_cycle_requires_terminal_run_and_persisted_result():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={
+            "memory_state": {
+                "recent_runs": [
+                    {"id": 7, "status": "completed", "completed_at": "2026-10-17T10:00:00+00:00"},
+                    {"id": 8, "status": "completed", "completed_at": "2026-10-18T10:00:00+00:00"},
+                ],
+                "recent_results": [
+                    {"id": 21, "run_id": 7, "result_type": "autonomous_cycle", "created_at": "2026-10-17T10:00:00+00:00"}
+                ],
+            }
+        },
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+
+    snapshot = build_unified_state_snapshot(context)
+
+    assert snapshot["parameters"]["last_successful_cycle"]["status"] == STATUS_KNOWN
+    assert snapshot["parameters"]["last_successful_cycle"]["value"]["id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_typed_director_records_are_persisted_with_run_provenance():
+    class FakeMemory:
+        def __init__(self):
+            self.rows = []
+
+        async def save_result(self, **kwargs):
+            self.rows.append(kwargs)
+            return len(self.rows)
+
+    memory = FakeMemory()
+    ids = await persist_typed_director_records(
+        memory,
+        "test-project",
+        44,
+        {
+            "data": {
+                "hypotheses": [{"title": "Retention improves", "statement": "Shorter intros improve retention"}],
+                "forecasts": {"metric": "views", "expected_value": 1200},
+                "due_measurements": [{"measurement_id": "m1", "run_at": "2026-10-18T00:00:00+00:00"}],
+                "changed_conclusions": [{"conclusion_id": "c1", "reason": "new evidence"}],
+                "end_of_day_plan": {"tasks": [{"title": "compare forecast"}]},
+            }
+        },
+    )
+
+    assert len(ids) == 5
+    assert {row["result_type"] for row in memory.rows} == {
+        "hypothesis", "forecast", "due_measurement", "changed_conclusion", "end_of_day_plan"
+    }
+    assert all(row["run_id"] == 44 for row in memory.rows)
+    assert all(row["data"]["project_id"] == "test-project" for row in memory.rows)
+    assert all(row["data"]["source_run_id"] == 44 for row in memory.rows)

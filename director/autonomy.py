@@ -7,6 +7,7 @@ It must never research forever or execute uncontrolled actions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -97,6 +98,7 @@ class AutonomyConfig:
     max_steps_per_cycle: int = 32
     max_research_steps: int = 10
     max_action_steps: int = 3
+    step_timeout_seconds: float = 120.0
     allow_external_actions: bool = False
     sleep_after_recommendation: bool = True
     sleep_after_insufficient_data: bool = False
@@ -209,7 +211,10 @@ class DirectorAutonomy:
             result = handler(state, payload)
 
             if hasattr(result, "__await__"):
-                result = await result
+                result = await asyncio.wait_for(
+                    result,
+                    timeout=max(0.01, float(self.config.step_timeout_seconds)),
+                )
 
             logger.info(
                 "DIRECTOR STEP FINISH: handler=%s phase=%s cycle=%s",

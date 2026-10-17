@@ -2417,22 +2417,56 @@ class AIAdapter:
             logger.error(self.provider_error)
             return
 
-        # In FREE_MODE without an API key there is no AI backend to
-        # call; keep deterministic Director behavior, but report why AI
-        # assistance is unavailable when a decision is enriched.
+        # Never allow an implicit paid inference path. Budget modes do not
+        # authorize spending, so the default paid model must remain disabled
+        # even when an API key happens to be configured. Only an explicitly
+        # free OpenRouter model is eligible for automatic use.
         api_key = (
             os.getenv("OPENROUTER_API_KEY")
             or os.getenv("DIRECTOR_AI_KEY")
         )
 
-        if FREE_MODE and not api_key:
+        if not api_key:
             self.provider_error = (
                 "AI provider disabled: no API key configured"
             )
-            logger.info(
-                "FREE_MODE: AI provider disabled "
-                "(no API key configured)"
+            logger.info("AI provider disabled (no API key configured)")
+            return
+
+        provider_name = (
+            os.getenv("AI_PROVIDER")
+            or os.getenv("DIRECTOR_AI_PROVIDER")
+            or "openrouter"
+        ).strip().lower()
+        if provider_name != "openrouter":
+            self.provider_error = (
+                "AI provider disabled: provider cost cannot be verified; "
+                "only explicitly free OpenRouter models are allowed"
             )
+            logger.warning(self.provider_error)
+            return
+
+        model_name = os.getenv(
+            "OPENROUTER_MODEL",
+            "openai/gpt-4o-mini",
+        ).strip()
+        if not model_name.lower().endswith(":free"):
+            self.provider_error = (
+                "AI provider disabled: configured model is not explicitly "
+                "marked free (:free); paid inference is prohibited"
+            )
+            logger.warning(self.provider_error)
+            return
+
+        base_url = os.getenv(
+            "OPENROUTER_BASE_URL",
+            "https://openrouter.ai/api/v1",
+        ).strip().rstrip("/")
+        if base_url != "https://openrouter.ai/api/v1":
+            self.provider_error = (
+                "AI provider disabled: custom endpoint cost is unverified"
+            )
+            logger.warning(self.provider_error)
             return
 
         try:

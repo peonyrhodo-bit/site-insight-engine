@@ -2301,6 +2301,23 @@ class DataAdapter:
                         except (TypeError, ValueError):
                             return False
 
+                    def quota_value(query: Any, field: str) -> int:
+                        query_metadata = getattr(query, "metadata", {})
+                        if not isinstance(query_metadata, dict):
+                            return 0
+                        quota_metadata = query_metadata.get("quota", {})
+                        if not isinstance(quota_metadata, dict):
+                            return 0
+                        try:
+                            return max(int(quota_metadata.get(field, 0) or 0), 0)
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                "Ignoring malformed quota metadata: query_id=%s field=%s",
+                                getattr(query, "query_id", None),
+                                field,
+                            )
+                            return 0
+
                     # Expose DATA inventory explicitly so Director can
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
@@ -2320,12 +2337,12 @@ class DataAdapter:
                                 default=None,
                             ),
                             "youtube_other_units_today": sum(
-                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)
+                                quota_value(query, "other_units")
                                 for query in self.youtube_registry.queries()
                                 if query_counts_toward_today(query)
                             ),
                             "youtube_search_calls_today": sum(
-                                max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("search_calls", 0) or 0), 0)
+                                quota_value(query, "search_calls")
                                 for query in self.youtube_registry.queries()
                                 if query_counts_toward_today(query)
                             ),
@@ -2348,10 +2365,17 @@ class DataAdapter:
                             "niche_count": 0,
                             "niche_snapshot_count": 0,
                         }
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to load youtube observations"
                 )
+                result["data_load_status"] = "unavailable"
+                result["data_load_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                result["data_load_status"] = "available"
+        else:
+            result["data_load_status"] = "unavailable"
+            result["data_load_error"] = "YouTube data registry unavailable"
 
         if self.research_manager is not None:
             try:
@@ -2366,6 +2390,11 @@ class DataAdapter:
                     result["research_sets"] = serialize(
                         research_sets
                     )
+                    # DirectorContext consumes research_history, not an
+                    # unrecognized research_sets metadata key. Preserve prior
+                    # research in the strategic context so repeated work can be
+                    # avoided and the wake snapshot reflects actual history.
+                    result["research_history"] = serialize(research_sets)
             except Exception:
                 logger.exception(
                     "Failed to load research sets"

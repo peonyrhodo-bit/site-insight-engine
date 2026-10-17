@@ -474,6 +474,7 @@ class Director:
         }
 
         requirements: list[dict[str, Any]] = []
+        data_unavailable = str(self.context.metadata.get("data_load_status") or "").lower() == "unavailable"
 
         def require(key: str, description: str, priority: str, *, needed_when: bool = True) -> None:
             count = inventory_counts[key]
@@ -483,7 +484,7 @@ class Director:
                 "priority": priority,
                 "available": count > 0,
                 "count": count,
-                "needed_now": bool(needed_when and count == 0),
+                "needed_now": bool(needed_when and count == 0 and not data_unavailable),
             })
 
         # Inventory is descriptive, not a global checklist. Only raw evidence
@@ -499,6 +500,10 @@ class Director:
         require("channel_snapshots", "История каналов для оценки роста каналов и конкурентной динамики.", "medium", needed_when=False)
         require("niches", "Явные сущности ниш/направлений, которые можно сравнивать между собой.", "critical", needed_when=False)
         require("niche_snapshots", "История ниш для оценки роста, конкуренции и изменения opportunity.", "high", needed_when=False)
+
+        if data_unavailable:
+            detail = str(self.context.metadata.get("data_load_error") or "причина не указана")
+            gaps.append(f"Хранилище DATA недоступно: наличие данных неизвестно; не считать набор пустым. {detail}")
 
         for requirement in requirements:
             if requirement["needed_now"]:
@@ -2257,7 +2262,9 @@ class Director:
             and stored_query_count >= 12
         )
         if quota_remaining < estimated_cost or search_remaining < 1:
-            sufficient = True  # Research is unavailable; analyze what exists and log the hard stop.
+            # A quota stop permits analysis of existing evidence; it does not
+            # manufacture evidence when storage is empty or unavailable.
+            sufficient = bool(self.state.evidence_sufficient)
 
         hypothesis = self.context.metadata.get("current_hypothesis")
         hypothesis_status = (

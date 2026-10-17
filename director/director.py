@@ -1180,6 +1180,10 @@ class Director:
                 rationale="Все доступные направления уже рассмотрены в текущем цикле. Повторять ту же задачу без новых данных не нужно.",
                 confidence=0.65,
                 next_action="Дождаться новых данных или следующего пробуждения.",
+                expected_outcome=(
+                    "Не повторять уже выполненные задачи; пересмотреть план после "
+                    "поступления новых данных или следующего пробуждения."
+                ),
                 metadata={"reason": "all_current_opportunities_handled"},
             )
 
@@ -1190,6 +1194,10 @@ class Director:
                 rationale="Доступное исследование уже выполнялось в этом цикле, а новых направлений для полезной работы пока нет.",
                 confidence=0.6,
                 next_action="Дождаться новых данных или следующего пробуждения.",
+                expected_outcome=(
+                    "Не повторять исчерпанное исследование; дождаться новых данных "
+                    "или следующего пробуждения для выбора нового шага."
+                ),
                 metadata={"reason": "research_already_attempted"},
             )
 
@@ -1212,6 +1220,10 @@ class Director:
                     "Недостаточно исследованных направлений."
                 ],
                 next_action="Провести исследование YouTube.",
+                expected_outcome=(
+                    "Получить проверяемые данные о перспективных направлениях и "
+                    "сократить неопределённость перед следующим решением."
+                ),
             )
 
         # --------------------------------------------------------
@@ -1238,6 +1250,12 @@ class Director:
         if isinstance(hypothesis, dict):
             decision.metadata["hypothesis_id"] = hypothesis.get("hypothesis_id")
             decision.metadata["hypothesis"] = hypothesis
+            hypothesis_outcome = str(hypothesis.get("expected_outcome") or "").strip()
+            if (
+                hypothesis_outcome
+                and decision.decision_type in {DecisionType.TEST, DecisionType.ANALYZE}
+            ):
+                decision.expected_outcome = hypothesis_outcome
 
         # AI may enrich rationale, but does not replace the Director.
         if self.ai_service is not None:
@@ -1340,6 +1358,11 @@ class Director:
                     decision.next_action = str(
                         result["next_action"]
                     )
+
+                if result.get("expected_outcome"):
+                    decision.expected_outcome = str(
+                        result["expected_outcome"]
+                    ).strip()
 
         except Exception as exc:
             error_type = type(exc).__name__

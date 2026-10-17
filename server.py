@@ -3394,8 +3394,11 @@ async def _execute_autonomous_cycle_locked(
         if failure_message:
             final_status = "failed"
 
-        # The response, saved result, and durable run row must agree.
+        # The response, nested cycle state, saved result, and durable run
+        # row must agree on the canonical outcome name.
         serialized["status"] = final_status
+        if isinstance(state, dict) and "status" in state:
+            state["status"] = final_status
         serialized["run_id"] = run_id
 
         current_step = "persisting_result"

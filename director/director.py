@@ -65,6 +65,7 @@ from .research import (
     build_query,
     plan_next_research,
 )
+from .state_snapshot import build_unified_state_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,7 @@ class Director:
                     "project_state", "data_inventory", "capabilities",
                     "signal_interpretation", "current_hypothesis",
                     "data_requirements", "preferred_languages",
+                    "unified_state_snapshot", "runtime_health",
                 )
                 if key in self.metadata
             },
@@ -343,66 +345,122 @@ class Director:
 
     async def inspect(self) -> DirectorContext:
         """
-        Build a current strategic context.
+        Build a current strategic context and an evidence-backed pre-cycle snapshot.
 
-        External memory/data services can enrich it later.
+        Probe failures are recorded as unknown/unavailable state rather than
+        silently treating a missing source as a healthy source.
         """
+        runtime_health = dict(self.context.metadata.get("runtime_health") or {})
+
         if self.memory_service is not None:
-            loader = getattr(
-                self.memory_service,
-                "get_context",
-                None,
-            )
-
+            loader = getattr(self.memory_service, "get_context", None)
             if loader:
-                external_context = loader(
-                    project_id=self.project_id,
-                    limit_runs=10,
-                    limit_decisions=20,
-                    limit_events=30,
-                    limit_chat=20,
-                    limit_actions=20,
-                    limit_results=20,
-                    limit_recommendations=20,
-                    limit_constraints=20,
-                )
-
-                if hasattr(
-                    external_context,
-                    "__await__",
-                ):
-                    external_context = (
-                        await external_context
+                try:
+                    external_context = loader(
+                        project_id=self.project_id,
+                        limit_runs=10,
+                        limit_decisions=20,
+                        limit_events=30,
+                        limit_chat=20,
+                        limit_actions=20,
+                        limit_results=20,
+                        limit_recommendations=20,
+                        limit_constraints=20,
                     )
-
-                if isinstance(external_context, dict):
-                    self._merge_context(external_context)
+                    if hasattr(external_context, "__await__"):
+                        external_context = await external_context
+                    if isinstance(external_context, dict):
+                        self._merge_context(external_context)
+                        runtime_health["memory"] = {
+                            "status": "healthy",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "operation": "get_context",
+                        }
+                    else:
+                        runtime_health["memory"] = {
+                            "status": "degraded",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "reason": "Memory returned a non-dict context.",
+                        }
+                except Exception as exc:
+                    runtime_health["memory"] = {
+                        "status": "unavailable",
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    logger.warning("Director memory inspection failed", exc_info=True)
+        else:
+            runtime_health["memory"] = {
+                "status": "unavailable",
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "No memory service configured.",
+            }
 
         if self.data_service is not None:
-            loader = getattr(
-                self.data_service,
-                "get_project_state",
-                None,
-            )
-
+            loader = getattr(self.data_service, "get_project_state", None)
             if loader:
-                external_state = loader(
-                    project_id=self.project_id
-                )
+                try:
+                    external_state = loader(project_id=self.project_id)
+                    if hasattr(external_state, "__await__"):
+                        external_state = await external_state
+                    if isinstance(external_state, dict):
+                        self._merge_context(external_state)
+                        runtime_health["project_data"] = {
+                            "status": "healthy",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "operation": "get_project_state",
+                        }
+                    else:
+                        runtime_health["project_data"] = {
+                            "status": "degraded",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "reason": "Data service returned a non-dict project state.",
+                        }
+                except Exception as exc:
+                    runtime_health["project_data"] = {
+                        "status": "unavailable",
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    logger.warning("Director project data inspection failed", exc_info=True)
+        else:
+            runtime_health["project_data"] = {
+                "status": "unavailable",
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "No data service configured.",
+            }
 
-                if hasattr(
-                    external_state,
-                    "__await__",
-                ):
-                    external_state = (
-                        await external_state
-                    )
-
-                if isinstance(external_state, dict):
-                    self._merge_context(external_state)
-
+        self.context.metadata["runtime_health"] = runtime_health
         self._refresh_project_state()
+        last_cycle = self.last_cycle
+        if hasattr(last_cycle, "to_dict"):
+            last_cycle = last_cycle.to_dict()
+        elif last_cycle is not None and hasattr(last_cycle, "__dict__"):
+            last_cycle = dict(last_cycle.__dict__)
+        self.context.metadata["unified_state_snapshot"] = build_unified_state_snapshot(
+            self.context,
+            runtime_health=runtime_health,
+            last_cycle=last_cycle,
+        )
         return self.context
+
+    def get_unified_state_snapshot(self) -> dict[str, Any]:
+        """Return the latest snapshot, generating one if inspection has not run."""
+        snapshot = self.context.metadata.get("unified_state_snapshot")
+        if isinstance(snapshot, dict):
+            return snapshot
+        last_cycle = self.last_cycle
+        if hasattr(last_cycle, "to_dict"):
+            last_cycle = last_cycle.to_dict()
+        elif last_cycle is not None and hasattr(last_cycle, "__dict__"):
+            last_cycle = dict(last_cycle.__dict__)
+        snapshot = build_unified_state_snapshot(
+            self.context,
+            runtime_health=self.context.metadata.get("runtime_health"),
+            last_cycle=last_cycle,
+        )
+        self.context.metadata["unified_state_snapshot"] = snapshot
+        return snapshot
 
     def _refresh_project_state(self) -> None:
         """Reconcile persisted evidence into an operational project state."""

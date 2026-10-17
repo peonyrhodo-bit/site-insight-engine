@@ -470,8 +470,8 @@ async def test_typed_director_records_are_persisted_with_run_provenance():
         def __init__(self):
             self.rows = []
 
-        async def save_result(self, **kwargs):
-            self.rows.append(kwargs)
+        async def save_result(self, *, project_id, result, run_id=None):
+            self.rows.append({"project_id": project_id, "result": result, "run_id": run_id})
             return len(self.rows)
 
     memory = FakeMemory()
@@ -491,9 +491,9 @@ async def test_typed_director_records_are_persisted_with_run_provenance():
     )
 
     assert len(ids) == 5
-    assert {row["result_type"] for row in memory.rows} == {
+    assert {row["result"]["type"] for row in memory.rows} == {
         "hypothesis", "forecast", "due_measurement", "changed_conclusion", "end_of_day_plan"
     }
     assert all(row["run_id"] == 44 for row in memory.rows)
-    assert all(row["data"]["project_id"] == "test-project" for row in memory.rows)
-    assert all(row["data"]["source_run_id"] == 44 for row in memory.rows)
+    assert all(row["result"]["project_id"] == "test-project" for row in memory.rows)
+    assert all(row["result"]["source_run_id"] == 44 for row in memory.rows)

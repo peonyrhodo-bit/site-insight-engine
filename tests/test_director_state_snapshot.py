@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from director.state_snapshot import (
     REQUIRED_PARAMETERS,
     STATUS_KNOWN,
     STATUS_UNKNOWN,
+    assess_freshness,
     build_unified_state_snapshot,
     validate_unified_state_snapshot,
 )
@@ -338,3 +340,94 @@ def test_snapshot_reads_measurement_due_time_from_scheduler_and_raw_action_histo
     assert params["due_measurements"]["value"]["due"][0]["schedule_id"] == "measurement-1"
     assert params["pending_user_tasks"]["status"] == STATUS_KNOWN
     assert params["pending_user_tasks"]["value"][0]["action_type"] == "user_confirmation"
+
+
+
+def test_freshness_is_fresh_stale_or_unknown_without_inference():
+    now = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
+
+    fresh = assess_freshness(
+        {"checked_at": (now - timedelta(seconds=30)).isoformat()},
+        max_age_seconds=60,
+        now=now,
+    )
+    stale = assess_freshness(
+        {"updated_at": (now - timedelta(seconds=120)).isoformat()},
+        max_age_seconds=60,
+        now=now,
+    )
+    unknown = assess_freshness({"value": "configured"}, max_age_seconds=60, now=now)
+
+    assert fresh["status"] == "fresh"
+    assert fresh["age_seconds"] == 30
+    assert stale["status"] == "stale"
+    assert stale["age_seconds"] == 120
+    assert unknown["status"] == "unknown"
+    assert unknown["source_observed_at"] is None
+
+
+def test_snapshot_exposes_freshness_policy_for_all_27_parameters():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={},
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+
+    snapshot = build_unified_state_snapshot(context)
+
+    assert len(snapshot["parameters"]) == 27
+    assert all("freshness" in item for item in snapshot["parameters"].values())
+    assert all(item["freshness"]["max_age_seconds"] > 0 for item in snapshot["parameters"].values())
+
+
+def test_free_ai_mode_is_not_accepted_as_production_budget_mode():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={"runtime_health": {"free_ai_mode": {"enabled": True, "checked_at": "2026-10-18T00:00:00+00:00"}}},
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+
+    snapshot = build_unified_state_snapshot(context)
+
+    assert snapshot["parameters"]["production_budget_mode"]["status"] == STATUS_UNKNOWN
+
+
+def test_explicit_production_budget_mode_is_known_independently_of_free_ai_mode():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={"runtime_health": {
+            "production_budget_mode": {
+                "status": "available",
+                "mode": "minimal",
+                "checked_at": "2026-10-18T00:00:00+00:00",
+            },
+            "free_ai_mode": {"enabled": True},
+        }},
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+
+    snapshot = build_unified_state_snapshot(context)
+
+    assert snapshot["parameters"]["production_budget_mode"]["status"] == STATUS_KNOWN
+    assert snapshot["parameters"]["production_budget_mode"]["value"]["mode"] == "minimal"

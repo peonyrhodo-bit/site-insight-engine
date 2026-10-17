@@ -153,17 +153,30 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     else:
         put("persistence_and_memory", None, reason="Не зафиксирован результат проверки чтения памяти/хранилища.")
 
-    run_status = str(_dict(last_cycle).get("status") or "").lower()
     active_statuses = {"requested", "registered", "running", "initializing", "in_progress"}
-    if run_status in active_statuses or run_status in {"completed", "partial", "failed", "cancelled"}:
-        put("concurrent_cycle", {"status": run_status, "cycle": _dict(last_cycle)},
-            known=True, evidence="Director.last_cycle")
+    persisted_active_runs = [item for item in runs if _status_of(item) in active_statuses]
+    active = _dict(health.get("active_cycle"))
+    if persisted_active_runs:
+        put("concurrent_cycle", {
+            "active": True,
+            "runs": persisted_active_runs,
+            "source": "memory_state.recent_runs",
+            "scope": "recent bounded run history",
+        }, known=True, evidence="memory_state.recent_runs")
+    elif active.get("status") in {"healthy", "available", "unavailable", "degraded"}:
+        put("concurrent_cycle", {
+            **active,
+            "active": bool(active.get("active", False)),
+            "persisted_recent_active_runs": 0 if runs else None,
+        }, known=True, evidence="runtime_health.active_cycle")
+    elif runs:
+        put("concurrent_cycle", {
+            "active": False,
+            "source": "memory_state.recent_runs",
+            "scope": "recent bounded run history",
+        }, known=True, evidence="memory_state.recent_runs")
     else:
-        active = _dict(health.get("active_cycle"))
-        if active.get("status") in {"healthy", "available", "unavailable", "degraded"}:
-            put("concurrent_cycle", active, known=True, evidence="runtime_health.active_cycle")
-        else:
-            put("concurrent_cycle", None, reason="Нет подтверждённого снимка блокировки/активных запусков.")
+        put("concurrent_cycle", None, reason="Нет подтверждённого снимка блокировки и истории активных запусков.")
 
     last_success = _latest_successful_run(runs)
     if last_success:
@@ -218,9 +231,38 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     if changes is not None:
         put("new_data_since_last_cycle", changes, known=True, evidence="metadata.new_data_since_last_cycle")
     else:
-        put("new_data_since_last_cycle", None,
-            evidence="project_state.freshness" if freshness else "",
-            reason="Свежесть данных сама по себе не доказывает, какие данные появились после прошлого цикла; нет сравнения двух снимков.")
+        last_success = _latest_successful_run(runs)
+        last_success_at = None
+        if last_success:
+            nested_run = _dict(last_success.get("data_json")) or _dict(last_success.get("data"))
+            last_success_at = (
+                last_success.get("completed_at") or last_success.get("updated_at")
+                or nested_run.get("completed_at") or nested_run.get("updated_at")
+                or last_success.get("created_at") or nested_run.get("created_at")
+            )
+        latest_observation_at = None
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            captured = (
+                observation.get("snapshot_captured_at")
+                or observation.get("captured_at")
+                or observation.get("updated_at")
+            )
+            if captured and (latest_observation_at is None or str(captured) > str(latest_observation_at)):
+                latest_observation_at = captured
+        if last_success_at and latest_observation_at:
+            put("new_data_since_last_cycle", {
+                "latest_observation_at": latest_observation_at,
+                "last_successful_cycle_at": last_success_at,
+                "newer_observation_exists": str(latest_observation_at) > str(last_success_at),
+                "comparison": "latest available observation timestamp vs last successful cycle timestamp",
+            }, known=True, evidence="observations timestamps + memory_state.recent_runs",
+                reason="This is a timestamp-based signal, not a full row-by-row change diff.")
+        else:
+            put("new_data_since_last_cycle", None,
+                evidence="project_state.freshness" if freshness else "",
+                reason="Нет сопоставимых временных меток последнего успешного цикла и последнего наблюдения.")
 
     put("created_recommendations", recommendations, known=bool(recommendations),
         evidence="DirectorContext.recommendations", reason="Рекомендации не загружены в контекст.")
@@ -265,8 +307,11 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
             evidence="DirectorContext.constraints/runtime_health.youtube_sources",
             reason="Нет единого списка ограничений и ошибок источников.")
     budget = metadata.get("production_budget_mode")
-    put("production_budget_mode", budget, known=budget is not None, evidence="metadata.production_budget_mode",
-        reason="Режим бюджета производства не передан в контекст.")
+    if budget is None:
+        budget = health.get("production_budget_mode")
+    put("production_budget_mode", budget, known=budget is not None,
+        evidence="metadata.production_budget_mode/runtime_health.production_budget_mode",
+        reason="Режим бюджета производства не передан в контекст или runtime health.")
     pending_tasks = metadata.get("pending_user_tasks")
     put("pending_user_tasks", pending_tasks, known=pending_tasks is not None, evidence="metadata.pending_user_tasks",
         reason="Нет полного списка задач, ожидающих пользователя.")

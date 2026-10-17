@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from director.autonomy import (
@@ -145,6 +146,23 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(metadata_at_first_assessment[0]["completed_task_keys"], [])
         self.assertNotIn("research_task_exhausted", metadata_at_first_assessment[0])
+
+
+    async def test_hung_async_handler_times_out_and_marks_cycle_error(self):
+        async def hanging_handler(state, payload):
+            await asyncio.sleep(1)
+
+        autonomy = DirectorAutonomy(
+            config=AutonomyConfig(step_timeout_seconds=0.01),
+            capabilities=hanging_handler,
+        )
+
+        cycle = await autonomy.run()
+
+        self.assertEqual(cycle.status, CycleStatus.ERROR)
+        self.assertEqual(cycle.state.metadata["failure"]["phase"], "capabilities")
+        self.assertIn("TimeoutError", cycle.state.metadata["failure"]["error"])
+
 
 
 if __name__ == "__main__":

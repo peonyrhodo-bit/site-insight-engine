@@ -167,6 +167,24 @@ async def test_director_cycle_status_is_normalized_consistently(
     assert row["result"]["status"] == expected_status
 
 
+
+
+@pytest.mark.asyncio
+async def test_unknown_director_status_falls_back_to_partial(monkeypatch):
+    memory = FakeMemory()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(
+        server.runtime,
+        "get_director",
+        lambda **kwargs: FakeDirector(status="unrecognized-status"),
+    )
+
+    result = await server._execute_autonomous_cycle(project_id="unknown-status-project")
+
+    assert result["status"] == "partial"
+    assert memory.rows[result["run_id"]]["status"] == "partial"
+
+
 @pytest.mark.asyncio
 async def test_repeated_runs_receive_distinct_ids(monkeypatch):
     memory = FakeMemory()
@@ -202,7 +220,7 @@ async def test_director_initialization_error_is_recorded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unknown_director_status_is_not_marked_succeeded(monkeypatch):
+async def test_waiting_director_status_is_preserved(monkeypatch):
     memory = FakeMemory()
     monkeypatch.setattr(server.runtime, "memory", memory)
     monkeypatch.setattr(

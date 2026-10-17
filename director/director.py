@@ -371,11 +371,31 @@ class Director:
                         external_context = await external_context
                     if isinstance(external_context, dict):
                         self._merge_context(external_context)
-                        runtime_health["memory"] = {
-                            "status": "healthy",
-                            "checked_at": datetime.now(timezone.utc).isoformat(),
-                            "operation": "get_context",
-                        }
+                        # Server adapters may translate backend exceptions into
+                        # an empty dict. A completely empty payload is therefore
+                        # not proof that storage is healthy or merely has no rows.
+                        if external_context:
+                            external_health = external_context.get("runtime_health")
+                            external_memory_health = (
+                                external_health.get("memory")
+                                if isinstance(external_health, dict)
+                                else None
+                            )
+                            runtime_health["memory"] = (
+                                external_memory_health
+                                if isinstance(external_memory_health, dict)
+                                else {
+                                    "status": "healthy",
+                                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                                    "operation": "get_context",
+                                }
+                            )
+                        else:
+                            runtime_health["memory"] = {
+                                "status": "degraded",
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "reason": "Memory returned an empty context; backend failure and genuinely empty state are indistinguishable.",
+                            }
                     else:
                         runtime_health["memory"] = {
                             "status": "degraded",

@@ -23,7 +23,7 @@ from data.youtube import (
     video_from_mapping,
 )
 from data.research_sets import ResearchSet
-from data.opportunity_entities import ChannelSnapshot, YouTubeChannel
+from data.opportunity_entities import ChannelSnapshot, NicheSnapshot, YouTubeChannel, YouTubeNiche
 from director.research import (
     ResearchOperation,
     ResearchOperationStatus,
@@ -1422,8 +1422,123 @@ class YouTubeResearchExecutor:
                     query.metadata["saved_snapshot_count"] = 0
                     query.metadata["expected_volume_reached"] = False
 
+        # Derive conservative candidate niches from the actual search queries used
+        # in this run. These are evidence buckets, not strategic recommendations.
+        niche_records: list[dict[str, Any]] = []
+        niche_snapshot_records: list[dict[str, Any]] = []
+        niche_evidence_by_key: dict[str, dict[str, Any]] = {}
+        query_video_ids: dict[str, set[str]] = {}
+        for query_result in [
+            {
+                "query": query.text,
+                "language": query.language,
+                "region": query.region,
+                "video_ids": list((query.metadata or {}).get("video_ids") or []),
+                "result_count": int((query.metadata or {}).get("received_video_count", 0) or 0),
+            }
+            for query in collected_queries
+        ]:
+            query_text = str(query_result.get("query") or "").strip()
+            if not query_text:
+                continue
+            niche_key = "query:" + " ".join(query_text.casefold().split())
+            entry = niche_evidence_by_key.setdefault(niche_key, {
+                "niche_id": niche_key,
+                "name": query_text,
+                "aliases": [],
+                "language": query_result.get("language"),
+                "region": query_result.get("region"),
+                "video_ids": set(),
+                "queries": [],
+            })
+            entry["video_ids"].update(str(v) for v in query_result.get("video_ids", []) if v)
+            entry["queries"].append(query_text)
+        registry_videos = list(registry.videos()) if hasattr(registry, "videos") else []
+        videos_by_youtube_id = {
+            str(getattr(video, "youtube_id", "") or getattr(video, "video_id", "")): video
+            for video in registry_videos
+        }
+        registry_snapshots = list(registry.snapshots()) if hasattr(registry, "snapshots") else []
+        latest_by_video: dict[str, Any] = {}
+        for snapshot in registry_snapshots:
+            video = next((v for v in registry_videos if str(getattr(v, "video_id", "")) == str(getattr(snapshot, "video_id", ""))), None)
+            youtube_id = str(getattr(video, "youtube_id", "") or "") if video is not None else ""
+            if not youtube_id:
+                continue
+            previous = latest_by_video.get(youtube_id)
+            if previous is None or str(getattr(snapshot, "captured_at", "") or "") >= str(getattr(previous, "captured_at", "") or ""):
+                latest_by_video[youtube_id] = snapshot
+        captured_at = _now()
+        for niche_key, evidence in niche_evidence_by_key.items():
+            matched_videos = [videos_by_youtube_id[video_id] for video_id in evidence["video_ids"] if video_id in videos_by_youtube_id]
+            titles = [str(getattr(video, "title", "") or "") for video in matched_videos if getattr(video, "title", "")]
+            channel_ids = {str(getattr(video, "channel_id", "") or "") for video in matched_videos if getattr(video, "channel_id", "")}
+            view_values = []
+            for video in matched_videos:
+                youtube_id = str(getattr(video, "youtube_id", "") or "")
+                snapshot = latest_by_video.get(youtube_id)
+                metrics = getattr(snapshot, "metrics", {}) or {}
+                value = metrics.get("view_count", metrics.get("views"))
+                try:
+                    if value is not None:
+                        view_values.append(float(value))
+                except (TypeError, ValueError):
+                    pass
+            niche = YouTubeNiche(
+                niche_id=niche_key,
+                name=evidence["name"],
+                aliases=[],
+                language=evidence.get("language"),
+                region=evidence.get("region"),
+                data={
+                    "source": "director_search_queries",
+                    "research_id": plan.research_id,
+                    "evidence_video_ids": sorted(evidence["video_ids"]),
+                    "evidence_video_count": len(matched_videos),
+                    "evidence_titles": titles[:20],
+                    "query_count": len(evidence["queries"]),
+                    "classification_note": "Candidate bucket derived from explicit research query; not a strategic decision.",
+                },
+            )
+            niche_records.append(niche.to_dict())
+            niche_snapshot = NicheSnapshot(
+                niche_id=niche_key,
+                captured_at=captured_at,
+                video_count=len(matched_videos),
+                channel_count=len(channel_ids),
+                median_views=sorted(view_values)[len(view_values) // 2] if view_values else None,
+                average_views=(sum(view_values) / len(view_values)) if view_values else None,
+                data={
+                    "source": "director_observed_video_evidence",
+                    "research_id": plan.research_id,
+                    "view_metric_sample_size": len(view_values),
+                    "historical_growth_available": False,
+                    "note": "This is a point-in-time aggregate; growth requires at least two comparable snapshots.",
+                },
+            )
+            niche_snapshot_records.append(niche_snapshot.to_dict())
+        niche_persistence_confirmed = False
+        if (niche_records or niche_snapshot_records) and self.storage is not None and hasattr(self.storage, "save_opportunity_data"):
+            try:
+                niche_save = await _maybe_await(self.storage.save_opportunity_data(
+                    project_id=project_id,
+                    data={"channels": [], "channel_snapshots": [], "niches": niche_records, "niche_snapshots": niche_snapshot_records},
+                ))
+                niche_persistence_confirmed = (
+                    int((niche_save or {}).get("niches", 0) or 0) == len(niche_records)
+                    and int((niche_save or {}).get("niche_snapshots", 0) or 0) == len(niche_snapshot_records)
+                )
+            except Exception as exc:
+                errors.append(f"niche_persistence: {type(exc).__name__}: {exc}")
+        elif not niche_records and not niche_snapshot_records:
+            niche_persistence_confirmed = bool(self.storage is not None)
+
         execution_summary = {
             **refresh_summary,
+            "niches_collected": len(niche_records),
+            "niche_evidence_video_count": sum(int((item.get("data") or {}).get("evidence_video_count", 0) or 0) for item in niche_records),
+            "niche_snapshots_collected": len(niche_snapshot_records),
+            "niche_data_persisted": niche_persistence_confirmed,
             "status": research.status,
             "persisted": persistence_confirmed,
             "research_id": plan.research_id,

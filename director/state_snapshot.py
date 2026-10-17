@@ -6,7 +6,7 @@ is not. This module is pure and does not make network calls.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 

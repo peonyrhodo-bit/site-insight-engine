@@ -2683,20 +2683,46 @@ class Runtime:
                     "reason": f"{type(exc).__name__}: {exc}",
                 }
 
-        # The scheduler is process-local. Report its actual object/configuration
-        # separately from durability, which this scheduler does not provide.
+        # The scheduler is process-local. Inspect its actual queue as well
+        # as its enabled flag, while making its non-durable nature explicit.
         scheduler = self.scheduler
         if scheduler is None:
             health["scheduler"] = {"status": "unavailable", "checked_at": checked_at, "reason": "Scheduler is not initialized."}
         else:
             enabled = bool(getattr(scheduler, "enabled", False))
-            health["scheduler"] = {
+            scheduler_state = {
                 "status": "available" if enabled else "unavailable",
                 "checked_at": checked_at,
                 "enabled": enabled,
                 "persistence": "in_memory",
                 "durable_across_restart": False,
             }
+            list_reader = getattr(scheduler, "list", None)
+            if callable(list_reader):
+                try:
+                    scheduled_items = await call_maybe_async(
+                        list_reader,
+                        project_id=project_id,
+                        include_completed=False,
+                    )
+                    scheduler_state["scheduled_items"] = serialize(scheduled_items or [])
+                    scheduler_state["scheduled_count"] = len(scheduled_items or [])
+                    scheduler_state["queue_inspection"] = "successful"
+                except TypeError:
+                    try:
+                        scheduled_items = await call_maybe_async(list_reader)
+                        scheduler_state["scheduled_items"] = serialize(scheduled_items or [])
+                        scheduler_state["scheduled_count"] = len(scheduled_items or [])
+                        scheduler_state["queue_inspection"] = "successful_unfiltered"
+                    except Exception as exc:
+                        scheduler_state["queue_inspection"] = "failed"
+                        scheduler_state["queue_error"] = f"{type(exc).__name__}: {exc}"
+                except Exception as exc:
+                    scheduler_state["queue_inspection"] = "failed"
+                    scheduler_state["queue_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                scheduler_state["queue_inspection"] = "unsupported"
+            health["scheduler"] = scheduler_state
 
         manager = getattr(self, "quota_manager", None)
         status_reader = getattr(manager, "get_status", None)

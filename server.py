@@ -3526,6 +3526,12 @@ async def director_autonomous_run(
 
 async def _autonomous_worker_loop() -> None:
     """Continuously bridge Scheduler/WakeupManager to Director execution."""
+    # Keep this guard even though startup also gates task creation: tests,
+    # manual invocations, and future refactors must not bypass the feature flag.
+    if not AUTONOMOUS_ENABLED:
+        logger.info("Autonomous wakeup worker exited: AUTONOMOUS_ENABLED=false")
+        return
+
     logger.info(
         "Autonomous wakeup worker started: poll=%ss interval=%ss",
         AUTONOMOUS_POLL_INTERVAL_SECONDS,
@@ -4679,13 +4685,13 @@ async def startup() -> None:
         else "disabled",
     )
 
-    logger.info(
-        "Director continuous cycle: enabled",
-    )
-
-    runtime.autonomous_worker = asyncio.create_task(
-        _autonomous_worker_loop(),
-    )
+    if AUTONOMOUS_ENABLED:
+        logger.info("Director continuous cycle: enabled")
+        runtime.autonomous_worker = asyncio.create_task(
+            _autonomous_worker_loop(),
+        )
+    else:
+        logger.info("Director continuous cycle: disabled by AUTONOMOUS_ENABLED")
 
 
 @app.on_event("shutdown")

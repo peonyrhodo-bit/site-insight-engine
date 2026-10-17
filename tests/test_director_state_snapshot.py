@@ -223,3 +223,75 @@ def test_snapshot_reads_typed_strategy_records_from_existing_memory_results():
     assert params["created_recommendations"]["status"] == STATUS_KNOWN
     assert params["accepted_rejected_decisions"]["status"] == STATUS_KNOWN
     assert validate_unified_state_snapshot(snapshot) == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_health_preserves_mcp_upstream_configuration_status(monkeypatch):
+    import json
+    import server
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return json.dumps({
+                "service": "youtube-mcp",
+                "status": "degraded",
+                "checks": {
+                    "youtube_api_key_configured": False,
+                    "central_quota_authority_configured": True,
+                },
+                "youtube_api_live_probe": "not_performed_to_avoid_quota_consumption",
+            }).encode("utf-8")
+
+    runtime = Runtime.__new__(Runtime)
+    runtime.ai = SimpleNamespace(provider=None, provider_error=None)
+    runtime.scheduler = SimpleNamespace(enabled=True)
+    runtime.quota_manager = SimpleNamespace(get_status=lambda: {"search_remaining": 5})
+    monkeypatch.setenv("YOUTUBE_MCP_URL", "https://mcp.example")
+    monkeypatch.delenv("MCP_URL", raising=False)
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+
+    health = await runtime.collect_runtime_health("test-project")
+
+    assert health["youtube_sources"]["status"] == "degraded"
+    assert health["youtube_sources"]["checks"]["youtube_api_key_configured"] is False
+    assert health["youtube_sources"]["youtube_api_live_probe"] == "not_performed_to_avoid_quota_consumption"
+
+
+@pytest.mark.asyncio
+async def test_runtime_health_probes_explicit_website_endpoint_without_claiming_write_health(monkeypatch):
+    import server
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return b'{"status":"ok"}'
+
+    runtime = Runtime.__new__(Runtime)
+    runtime.ai = SimpleNamespace(provider=None, provider_error=None)
+    runtime.scheduler = SimpleNamespace(enabled=True)
+    runtime.quota_manager = SimpleNamespace(get_status=lambda: {"search_remaining": 5})
+    monkeypatch.setenv("DIRECTOR_WEBSITE_HEALTH_URL", "https://website.example/health")
+    monkeypatch.delenv("YOUTUBE_MCP_URL", raising=False)
+    monkeypatch.delenv("MCP_URL", raising=False)
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+
+    health = await runtime.collect_runtime_health("test-project")
+
+    assert health["website"]["status"] == "healthy"
+    assert health["website"]["http_status"] == 200
+    assert health["website"]["recommendation_persistence"] == "not_probed_by_http_health_check"

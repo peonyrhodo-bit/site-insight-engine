@@ -851,7 +851,6 @@ class YouTubeResearchExecutor:
                                 },
                             )
                             payload = _tool_payload(result)
-                            self._quota_finish(search_quota_token, status="succeeded")
                             quota_report = payload.get("_quota") if isinstance(payload, dict) else None
                             quota_report = quota_report if isinstance(quota_report, dict) else {}
                             def reported_nonnegative_int(key: str) -> int | None:
@@ -910,6 +909,7 @@ class YouTubeResearchExecutor:
                                 )
                             items = payload["items"]
                             _validate_search_items(items)
+                            self._quota_finish(search_quota_token, status="succeeded")
                             query.metadata["request_status"] = "succeeded"
                             query.metadata["api_items_count"] = len(items)
                             query.metadata["results_status"] = "received" if items else "empty"
@@ -1098,7 +1098,6 @@ class YouTubeResearchExecutor:
                                         {"channel_id": channel.channel_id},
                                     )
                                     stats_payload = _tool_payload(stats_result)
-                                    self._quota_finish(quota_token, status="succeeded")
                                     if stats_payload.get("error"):
                                         raise ValueError(str(stats_payload["error"]))
                                     items = stats_payload.get("items")
@@ -1111,6 +1110,7 @@ class YouTubeResearchExecutor:
                                     )
                                     if item is None:
                                         raise ValueError("get_channel_stats returned no matching channel")
+                                    self._quota_finish(quota_token, status="succeeded")
                                     channel_stats_calls += 1
                                     snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
                                     statistics = item.get("statistics") if isinstance(item.get("statistics"), dict) else {}

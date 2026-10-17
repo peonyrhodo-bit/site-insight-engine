@@ -79,7 +79,7 @@ FRESHNESS_MAX_AGE_SECONDS: dict[str, int] = {
 }
 
 _TIMESTAMP_KEYS = (
-    "checked_at", "captured_at", "updated_at", "completed_at",
+    "checked_at", "captured_at", "updated_at", "completed_at", "finished_at",
     "created_at", "last_seen", "observed_at", "timestamp", "run_at",
 )
 
@@ -222,7 +222,8 @@ def _latest_successful_run(
             continue
         nested = _dict(row.get("data_json")) or _dict(row.get("data"))
         completed_at = (
-            row.get("completed_at") or nested.get("completed_at")
+            row.get("finished_at") or nested.get("finished_at")
+            or row.get("completed_at") or nested.get("completed_at")
             or row.get("updated_at") or nested.get("updated_at")
         )
         run_id = row.get("id") or row.get("run_id") or nested.get("id") or nested.get("run_id")
@@ -234,8 +235,9 @@ def _latest_successful_run(
     return max(
         successful,
         key=lambda item: str(
-            item.get("completed_at") or item.get("updated_at")
+            item.get("finished_at") or item.get("completed_at") or item.get("updated_at")
             or item.get("created_at")
+            or _dict(item.get("data_json")).get("finished_at")
             or _dict(item.get("data_json")).get("completed_at")
             or _dict(item.get("data_json")).get("updated_at")
             or _dict(item.get("data_json")).get("created_at") or ""
@@ -464,8 +466,8 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
         if last_success:
             nested_run = _dict(last_success.get("data_json")) or _dict(last_success.get("data"))
             last_success_at = (
-                last_success.get("completed_at") or last_success.get("updated_at")
-                or nested_run.get("completed_at") or nested_run.get("updated_at")
+                last_success.get("finished_at") or last_success.get("completed_at") or last_success.get("updated_at")
+                or nested_run.get("finished_at") or nested_run.get("completed_at") or nested_run.get("updated_at")
                 or last_success.get("created_at") or nested_run.get("created_at")
             )
         latest_observation_at = None

@@ -2348,10 +2348,17 @@ class DataAdapter:
                             "niche_count": 0,
                             "niche_snapshot_count": 0,
                         }
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to load youtube observations"
                 )
+                result["data_load_status"] = "unavailable"
+                result["data_load_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                result["data_load_status"] = "available"
+        else:
+            result["data_load_status"] = "unavailable"
+            result["data_load_error"] = "YouTube data registry unavailable"
 
         if self.research_manager is not None:
             try:

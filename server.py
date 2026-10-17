@@ -2373,6 +2373,11 @@ class DataAdapter:
                     result["research_sets"] = serialize(
                         research_sets
                     )
+                    # DirectorContext consumes research_history, not an
+                    # unrecognized research_sets metadata key. Preserve prior
+                    # research in the strategic context so repeated work can be
+                    # avoided and the wake snapshot reflects actual history.
+                    result["research_history"] = serialize(research_sets)
             except Exception:
                 logger.exception(
                     "Failed to load research sets"

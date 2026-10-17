@@ -413,10 +413,13 @@ async def persist_typed_director_records(
                 or record.get("statement") or record.get("metric") or result_type
             ).strip()
             saved_id = memory.save_result(
-                result_type=result_type,
-                summary=summary,
+                project_id=project_id,
+                result={
+                    "type": result_type,
+                    "summary": summary,
+                    **data,
+                },
                 run_id=run_id,
-                data=data,
             )
             if hasattr(saved_id, "__await__"):
                 saved_id = await saved_id

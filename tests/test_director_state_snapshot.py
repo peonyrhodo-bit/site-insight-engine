@@ -295,3 +295,46 @@ async def test_runtime_health_probes_explicit_website_endpoint_without_claiming_
     assert health["website"]["status"] == "healthy"
     assert health["website"]["http_status"] == 200
     assert health["website"]["recommendation_persistence"] == "not_probed_by_http_health_check"
+
+
+def test_snapshot_reads_measurement_due_time_from_scheduler_and_raw_action_history():
+    context = SimpleNamespace(
+        project_id="test-project",
+        metadata={
+            "actions": [
+                {"action_type": "user_confirmation", "status": "waiting_for_user", "description": "Approve research batch"}
+            ],
+        },
+        decisions=[],
+        recommendations=[],
+        research_history=[],
+        observations=[],
+        constraints=[],
+        feedback=[],
+        topics={},
+        ai_service=None,
+    )
+    runtime_health = {
+        "scheduler": {
+            "status": "available",
+            "queue_inspection": "successful",
+            "scheduled_items": [
+                {
+                    "schedule_id": "measurement-1",
+                    "reason": "repeat measurement: channel growth",
+                    "run_at": "2020-01-01T00:00:00+00:00",
+                    "status": "active",
+                    "metadata": {"task_type": "repeat_measurement"},
+                }
+            ],
+            "durable_across_restart": False,
+        }
+    }
+
+    snapshot = build_unified_state_snapshot(context, runtime_health=runtime_health)
+    params = snapshot["parameters"]
+
+    assert params["due_measurements"]["status"] == STATUS_KNOWN
+    assert params["due_measurements"]["value"]["due"][0]["schedule_id"] == "measurement-1"
+    assert params["pending_user_tasks"]["status"] == STATUS_KNOWN
+    assert params["pending_user_tasks"]["value"][0]["action_type"] == "user_confirmation"

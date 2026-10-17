@@ -6,7 +6,7 @@ is not. This module is pure and does not make network calls.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 
@@ -44,6 +44,105 @@ REQUIRED_PARAMETERS: tuple[tuple[int, str, str], ...] = (
     (26, "pending_user_tasks", "Ожидающие пользовательские задачи"),
     (27, "end_of_day_plan", "Выполнение плана до конца суток"),
 )
+
+
+# Freshness limits are part of the snapshot contract. They measure age of the
+# primary evidence, not how recently the snapshot itself was generated.
+FRESHNESS_MAX_AGE_SECONDS: dict[str, int] = {
+    "ai_availability": 300,
+    "youtube_api_and_sources": 300,
+    "persistence_and_memory": 300,
+    "website_and_recommendation_persistence": 300,
+    "scheduler_health": 300,
+    "last_successful_cycle": 86400,
+    "errors_and_unfinished_operations": 3600,
+    "concurrent_cycle": 300,
+    "research_completion": 86400,
+    "result_reuse": 86400,
+    "under_researched_directions": 86400,
+    "hypotheses": 86400,
+    "forecasts": 86400,
+    "due_measurements": 3600,
+    "new_data_since_last_cycle": 86400,
+    "created_recommendations": 86400,
+    "recommendations_awaiting_user": 3600,
+    "recommendations_under_discussion": 3600,
+    "accepted_rejected_decisions": 86400,
+    "video_preparation_tasks": 3600,
+    "changed_conclusions": 86400,
+    "unified_quota": 300,
+    "free_tools": 604800,
+    "source_restrictions": 3600,
+    "production_budget_mode": 86400,
+    "pending_user_tasks": 3600,
+    "end_of_day_plan": 86400,
+}
+
+_TIMESTAMP_KEYS = (
+    "checked_at", "captured_at", "updated_at", "completed_at",
+    "created_at", "last_seen", "observed_at", "timestamp", "run_at",
+)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_evidence_timestamp(value: Any) -> datetime | None:
+    """Find the newest explicit evidence timestamp without treating absence as fresh."""
+    candidates: list[datetime] = []
+    if isinstance(value, dict):
+        for key in _TIMESTAMP_KEYS:
+            parsed = _parse_timestamp(value.get(key))
+            if parsed is not None:
+                candidates.append(parsed)
+        for key in ("data_json", "data", "metadata", "value", "result"):
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                parsed = _latest_evidence_timestamp(nested)
+                if parsed is not None:
+                    candidates.append(parsed)
+    elif isinstance(value, list):
+        for item in value:
+            parsed = _latest_evidence_timestamp(item)
+            if parsed is not None:
+                candidates.append(parsed)
+    return max(candidates) if candidates else None
+
+
+def assess_freshness(
+    value: Any,
+    *,
+    max_age_seconds: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Assess evidence freshness; missing/invalid timestamps remain unknown."""
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    checked_at = checked_at.astimezone(timezone.utc)
+    observed_at = _latest_evidence_timestamp(value)
+    result: dict[str, Any] = {
+        "snapshot_checked_at": checked_at.isoformat(),
+        "source_observed_at": observed_at.isoformat() if observed_at else None,
+        "max_age_seconds": max(0, int(max_age_seconds)),
+        "age_seconds": None,
+        "status": "unknown",
+        "on_unavailable": "mark unknown; do not substitute a healthy/default value",
+    }
+    if observed_at is not None:
+        age = max(0.0, (checked_at - observed_at).total_seconds())
+        result["age_seconds"] = int(age)
+        result["status"] = "fresh" if age <= max_age_seconds else "stale"
+    return result
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -428,9 +527,12 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     budget = metadata.get("production_budget_mode")
     if budget is None:
         budget = health.get("production_budget_mode")
-    put("production_budget_mode", budget, known=budget is not None,
+    budget_mode = budget.get("mode") if isinstance(budget, dict) else budget
+    valid_budget_modes = {"zero", "minimal", "medium", "high"}
+    budget_is_known = budget_mode in valid_budget_modes
+    put("production_budget_mode", budget, known=budget_is_known,
         evidence="metadata.production_budget_mode/runtime_health.production_budget_mode",
-        reason="Режим бюджета производства не передан в контекст или runtime health.")
+        reason="Нужен явный PRODUCTION_BUDGET_MODE: zero/minimal/medium/high; FREE_MODE относится только к режиму бесплатного ИИ и не является бюджетом производства.")
     pending_tasks = metadata.get("pending_user_tasks")
     if pending_tasks is None:
         pending_tasks = [
@@ -450,6 +552,10 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
             "id": number,
             "label": label,
             **entries.get(key, _entry(reason="Параметр не был собран конструктором снимка.")),
+            "freshness": assess_freshness(
+                entries.get(key, {}).get("value"),
+                max_age_seconds=FRESHNESS_MAX_AGE_SECONDS[key],
+            ),
         }
         for number, key, label in REQUIRED_PARAMETERS
     }

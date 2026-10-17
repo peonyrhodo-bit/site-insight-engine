@@ -57,3 +57,25 @@ def test_exhausted_quota_does_not_manufacture_evidence_sufficiency():
 
     assert assessment["evidence_sufficient"] is False
     assert director.state.evidence_sufficient is False
+
+def test_persisted_research_sets_are_mapped_into_director_research_history():
+    class FakeResearchManager:
+        def all(self):
+            return [
+                {
+                    "research_id": "previous-research",
+                    "name": "Prior search",
+                    "status": "complete",
+                    "objective": "avoid repeating the same research",
+                }
+            ]
+
+    adapter = DataAdapter(storage=None)
+    adapter.research_manager = FakeResearchManager()
+    state = __import__("asyncio").run(adapter.get_project_state(project_id="history-project"))
+
+    director = Director(project_id="history-project", mode=DirectorMode.AUTONOMOUS)
+    director._merge_context(state)
+
+    assert len(director.context.research_history) == 1
+    assert director.context.research_history[0]["research_id"] == "previous-research"

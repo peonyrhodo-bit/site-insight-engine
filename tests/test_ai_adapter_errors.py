@@ -22,6 +22,9 @@ class FakeProvider:
 @pytest.mark.asyncio
 async def test_ai_timeout_is_logged_and_propagated(monkeypatch, caplog):
     monkeypatch.setattr(server, "FREE_MODE", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test-model:free")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setattr(
         server,
         "create_ai_provider",
@@ -57,6 +60,9 @@ async def test_malformed_ai_response_is_not_silently_converted_to_empty_dict(
 @pytest.mark.asyncio
 async def test_unavailable_provider_reports_reason(monkeypatch):
     monkeypatch.setattr(server, "FREE_MODE", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test-model:free")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
 
     def fail_provider_creation():
         raise RuntimeError("provider startup failed")
@@ -94,3 +100,46 @@ async def test_director_logs_ai_failure_and_keeps_deterministic_decision(caplog)
         enriched.metadata["ai_enrichment_error"]
     )
     assert "continuing with deterministic Director decision" in caplog.text
+
+
+@pytest.mark.parametrize("free_mode", [True, False])
+def test_paid_model_is_disabled_even_when_api_key_exists(monkeypatch, free_mode):
+    provider_factory_called = False
+
+    def create_provider():
+        nonlocal provider_factory_called
+        provider_factory_called = True
+        raise AssertionError("paid provider must not be initialized")
+
+    monkeypatch.setattr(server, "FREE_MODE", free_mode)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(server, "create_ai_provider", create_provider)
+
+    adapter = server.AIAdapter()
+
+    assert adapter.enabled is False
+    assert "paid inference is prohibited" in adapter.provider_error
+    assert provider_factory_called is False
+
+
+def test_custom_openrouter_endpoint_is_not_assumed_free(monkeypatch):
+    provider_factory_called = False
+
+    def create_provider():
+        nonlocal provider_factory_called
+        provider_factory_called = True
+        raise AssertionError("unverified endpoint must not be initialized")
+
+    monkeypatch.setattr(server, "FREE_MODE", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test-model:free")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://unknown.example/api/v1")
+    monkeypatch.setattr(server, "create_ai_provider", create_provider)
+
+    adapter = server.AIAdapter()
+
+    assert adapter.enabled is False
+    assert "custom endpoint cost is unverified" in adapter.provider_error
+    assert provider_factory_called is False

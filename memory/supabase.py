@@ -24,10 +24,29 @@ Rich Memory 2.0 fields are stored inside data_json where possible.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on some platforms
+    resource = None
+
 from supabase import Client, create_client
+
+logger = logging.getLogger(__name__)
+
+
+def _peak_rss_raw() -> int | None:
+    """Return the platform's raw process peak-RSS counter when available."""
+    if resource is None:
+        return None
+    try:
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (AttributeError, OSError, ValueError):
+        return None
 
 class SupabaseMemoryBackend:
     """Supabase implementation of MemoryBackend."""
@@ -289,6 +308,9 @@ class SupabaseMemoryBackend:
             YouTubeVideo,
         )
 
+        started_at = time.monotonic()
+        video_rows_scanned = 0
+        snapshot_rows_scanned = 0
         expected_project = (
             str(project_id)
             if project_id is not None
@@ -304,6 +326,7 @@ class SupabaseMemoryBackend:
         video_ids: set[str] = set()
 
         for row in video_rows:
+            video_rows_scanned += 1
             row_project = self._project_id_from_row(row)
 
             if (
@@ -356,6 +379,7 @@ class SupabaseMemoryBackend:
             order_key="id",
             descending=True,
         ):
+            snapshot_rows_scanned += 1
             row_project = self._project_id_from_row(row)
 
             if expected_project is not None:
@@ -404,6 +428,19 @@ class SupabaseMemoryBackend:
 
             snapshots.append(snapshot.to_dict())
 
+        logger.info(
+            "SUPABASE YOUTUBE DATA LOADED: project_id=%s video_rows_scanned=%d "
+            "videos_loaded=%d snapshot_rows_scanned=%d snapshots_loaded=%d "
+            "snapshots_per_video=%d elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            video_rows_scanned,
+            len(videos),
+            snapshot_rows_scanned,
+            len(snapshots),
+            snapshots_per_video,
+            time.monotonic() - started_at,
+            _peak_rss_raw(),
+        )
         return {
             "queries": [],
             "videos": videos,

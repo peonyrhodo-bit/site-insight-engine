@@ -4292,13 +4292,35 @@ async def recommendation_action(
                     feedback=feedback_payload,
                 )
             )
+            if saved is None:
+                raise RuntimeError("Recommendation feedback/status change was not persisted.")
+
+        decision_saved = None
+        if action in {"accept", "reject"}:
+            # A real user decision is an explicit accept/reject action, not
+            # merely discussion/feedback. Persist it in the decisions source
+            # of truth as well as updating recommendation status.
+            decision_saved = await runtime.memory.save_decision(
+                project_id=project_id,
+                decision={
+                    "decision": f"user_{action}_recommendation",
+                    "decision_type": "user_recommendation_decision",
+                    "recommendation_id": memory_id,
+                    "recommendation_title": getattr(updated, "title", None),
+                    "action": action,
+                    "message": request.message,
+                    "recorded_at": utc_now(),
+                    "source": "explicit_recommendation_action",
+                },
+            )
+            if decision_saved is None:
+                raise RuntimeError("Explicit user decision was not persisted.")
 
         return {
             "success": True,
-            "recommendation": serialize(
-                updated,
-            ),
+            "recommendation": serialize(updated),
             "saved": serialize(saved),
+            "decision_saved": serialize(decision_saved),
         }
 
     except HTTPException:

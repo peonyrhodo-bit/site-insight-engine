@@ -9,6 +9,10 @@ from memory.supabase import SupabaseMemoryBackend
 class OpportunityStorageTests(unittest.TestCase):
     def test_save_opportunity_data_returns_counts_for_valid_rows(self):
         client = MagicMock()
+        # The active implementation counts rows only when Supabase returns an id.
+        # Model the response from upsert(...).select("id").execute(). A bare
+        # MagicMock has a non-list .data attribute and correctly counts as no rows.
+        client.table.return_value.upsert.return_value.select.return_value.execute.return_value.data = [{"id": 1}]
         backend = SupabaseMemoryBackend(client=client)
 
         counts = backend.save_opportunity_data(

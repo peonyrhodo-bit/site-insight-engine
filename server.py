@@ -59,10 +59,15 @@ ENVIRONMENT = os.getenv(
     "production",
 )
 
+# FREE_MODE controls free-AI/fallback behavior only. It is not a
+# production spending budget and must never be used as that budget's source.
 FREE_MODE = (
     os.getenv("FREE_MODE", "true").lower()
     in {"1", "true", "yes", "on"}
 )
+
+PRODUCTION_BUDGET_MODES = {"zero", "minimal", "medium", "high"}
+PRODUCTION_BUDGET_MODE = os.getenv("PRODUCTION_BUDGET_MODE", "").strip().lower()
 
 AUTONOMOUS_ENABLED = (
     os.getenv("AUTONOMOUS_ENABLED", "false").lower()
@@ -2792,11 +2797,22 @@ class Runtime:
             "note": "This lock is process-local; persisted cross-process run status is read separately from memory.",
         }
 
+        budget_mode_valid = PRODUCTION_BUDGET_MODE in PRODUCTION_BUDGET_MODES
         health["production_budget_mode"] = {
-            "mode": "free" if FREE_MODE else "production",
-            "free_mode": bool(FREE_MODE),
-            "configured_at_runtime": True,
-            "source": "server FREE_MODE configuration",
+            "status": "available" if budget_mode_valid else "unknown",
+            "mode": PRODUCTION_BUDGET_MODE if budget_mode_valid else None,
+            "checked_at": checked_at,
+            "source": "PRODUCTION_BUDGET_MODE environment configuration",
+            "allowed_modes": sorted(PRODUCTION_BUDGET_MODES),
+            "reason": None if budget_mode_valid else (
+                "PRODUCTION_BUDGET_MODE must be explicitly set to zero, minimal, medium, or high."
+            ),
+        }
+        health["free_ai_mode"] = {
+            "enabled": bool(FREE_MODE),
+            "checked_at": checked_at,
+            "source": "FREE_MODE environment configuration",
+            "purpose": "AI/provider and in-memory fallback behavior only; not a production budget.",
         }
 
         # The deployed UI/website is not this API process and must be probed

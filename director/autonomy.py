@@ -7,6 +7,7 @@ It must never research forever or execute uncontrolled actions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -97,6 +98,7 @@ class AutonomyConfig:
     max_steps_per_cycle: int = 32
     max_research_steps: int = 10
     max_action_steps: int = 3
+    step_timeout_seconds: float = 120.0
     allow_external_actions: bool = False
     sleep_after_recommendation: bool = True
     sleep_after_insufficient_data: bool = False
@@ -209,7 +211,10 @@ class DirectorAutonomy:
             result = handler(state, payload)
 
             if hasattr(result, "__await__"):
-                result = await result
+                result = await asyncio.wait_for(
+                    result,
+                    timeout=max(0.01, float(self.config.step_timeout_seconds)),
+                )
 
             logger.info(
                 "DIRECTOR STEP FINISH: handler=%s phase=%s cycle=%s",
@@ -421,11 +426,14 @@ class DirectorAutonomy:
             # (or the bounded research budget is exhausted), don't spin on
             # ASSESS -> RESEARCH. Analyze what exists and let the Director
             # choose another task or wait safely.
-            if not sufficient and (
+            research_exhausted = bool(
                 cycle.state.metadata.get("research_task_exhausted")
                 or research_steps >= self.config.max_research_steps
-            ):
-                sufficient = True
+            )
+            if not sufficient and research_exhausted:
+                # Exhausting this wake's research budget is not evidence that
+                # the evidence itself is sufficient. Analyze what is available
+                # without overwriting the assessment's factual result.
                 cycle.state.metadata["analyze_available_evidence"] = True
 
             cycle.state.evidence_sufficient = sufficient
@@ -433,7 +441,7 @@ class DirectorAutonomy:
             # -----------------------------------------------------
             # RESEARCH
             # -----------------------------------------------------
-            if not sufficient:
+            if not sufficient and not research_exhausted:
                 if research_steps < self.config.max_research_steps:
                     self._set_phase(
                         cycle,

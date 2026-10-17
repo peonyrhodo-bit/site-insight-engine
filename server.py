@@ -3254,6 +3254,15 @@ async def _run_director_once(
         )
 
         serialized = serialize(result)
+        # Keep the exact pre-cycle snapshot alongside the cycle result so it
+        # survives process restarts and can be compared with later cycles.
+        snapshot_reader = getattr(director, "get_unified_state_snapshot", None)
+        if callable(snapshot_reader):
+            state_snapshot = serialize(snapshot_reader())
+            if isinstance(serialized, dict):
+                serialized["state_snapshot"] = state_snapshot
+            else:
+                serialized = {"result": serialized, "state_snapshot": state_snapshot}
 
         # ---------------------------------------------------------------
         # Persist the strategic outputs through Memory 2.0 so that the

@@ -191,8 +191,6 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     else:
         put("result_reuse", None, reason="Не измерено, переиспользуются ли сохранённые результаты вместо повторных запросов.")
 
-    topics = _dict(getattr(context, "topics", {}))
-    coverage = _dict(project_state.get("coverage"))
     under_researched = metadata.get("under_researched_directions")
     put("under_researched_directions", under_researched,
         known=under_researched is not None, evidence="metadata.under_researched_directions",

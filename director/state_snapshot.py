@@ -202,20 +202,42 @@ def _status_of(item: Any) -> str:
     return str(row.get("status") or nested.get("status") or "").strip().lower()
 
 
-def _latest_successful_run(runs: list[Any]) -> dict[str, Any] | None:
-    successful = [
-        _dict(item) for item in runs
-        if _status_of(item) in {"completed", "complete", "success", "succeeded"}
-    ]
+def _latest_successful_run(
+    runs: list[Any],
+    results: list[Any] | None = None,
+) -> dict[str, Any] | None:
+    """A successful cycle needs a terminal success status and a persisted result."""
+    results = results or []
+    persisted_result_run_ids = set()
+    for result in results:
+        row = _record_payload(result)
+        run_id = row.get("run_id") or _dict(row.get("data_json")).get("run_id")
+        if run_id is not None:
+            persisted_result_run_ids.add(str(run_id))
+
+    successful = []
+    for item in runs:
+        row = _dict(item)
+        if _status_of(row) not in {"completed", "complete", "success", "succeeded"}:
+            continue
+        nested = _dict(row.get("data_json")) or _dict(row.get("data"))
+        completed_at = (
+            row.get("completed_at") or nested.get("completed_at")
+            or row.get("updated_at") or nested.get("updated_at")
+        )
+        run_id = row.get("id") or row.get("run_id") or nested.get("id") or nested.get("run_id")
+        if not completed_at or run_id is None or str(run_id) not in persisted_result_run_ids:
+            continue
+        successful.append(row)
     if not successful:
         return None
     return max(
         successful,
         key=lambda item: str(
-            item.get("updated_at") or item.get("completed_at")
+            item.get("completed_at") or item.get("updated_at")
             or item.get("created_at")
-            or _dict(item.get("data_json")).get("updated_at")
             or _dict(item.get("data_json")).get("completed_at")
+            or _dict(item.get("data_json")).get("updated_at")
             or _dict(item.get("data_json")).get("created_at") or ""
         ),
     )
@@ -315,7 +337,7 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     else:
         put("concurrent_cycle", None, reason="Нет подтверждённого снимка блокировки и истории активных запусков.")
 
-    last_success = _latest_successful_run(runs)
+    last_success = _latest_successful_run(runs, results)
     if last_success:
         put("last_successful_cycle", last_success, known=True, evidence="memory_state.recent_runs")
     else:

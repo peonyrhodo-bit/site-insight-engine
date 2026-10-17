@@ -229,6 +229,7 @@ def test_snapshot_reads_typed_strategy_records_from_existing_memory_results():
 
 @pytest.mark.asyncio
 async def test_runtime_health_preserves_mcp_upstream_configuration_status(monkeypatch):
+    import server
     import json
     class Response:
         status = 200
@@ -267,6 +268,7 @@ async def test_runtime_health_preserves_mcp_upstream_configuration_status(monkey
 
 @pytest.mark.asyncio
 async def test_runtime_health_probes_explicit_website_endpoint_without_claiming_write_health(monkeypatch):
+    import server
     class Response:
         status = 200
 

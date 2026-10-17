@@ -3236,7 +3236,11 @@ async def _run_director_once(
 
         # Collect read-only service health before the cycle's inspect phase.
         # The Director snapshot keeps unknowns explicit when no safe probe exists.
-        director.context.metadata["runtime_health"] = await runtime.collect_runtime_health(project_id)
+        runtime_health = await runtime.collect_runtime_health(project_id)
+        director_context = getattr(director, "context", None)
+        director_metadata = getattr(director_context, "metadata", None)
+        if isinstance(director_metadata, dict):
+            director_metadata["runtime_health"] = runtime_health
 
         result = await call_maybe_async(
             director.run_once,

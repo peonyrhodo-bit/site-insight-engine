@@ -642,6 +642,8 @@ class SupabaseMemoryBackend:
             self.client.table("niche_snapshots").upsert(payload, on_conflict="project_id,niche_id,captured_at").execute()
             counts["niche_snapshots"] += 1
 
+        return counts
+
     # DATA / RESEARCH
     # ------------------------------------------------------------------
 

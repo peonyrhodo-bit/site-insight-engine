@@ -350,6 +350,89 @@ def serialize(value: Any) -> Any:
     return str(value)
 
 
+async def persist_typed_director_records(
+    memory: Any,
+    project_id: str,
+    run_id: int | None,
+    payload: Any,
+) -> list[int]:
+    """Persist structured strategy records separately from the generic cycle result.
+
+    The generic director_results row remains the cycle envelope. Typed rows are
+    written only when the cycle actually produced structured records; absence is
+    not fabricated into an empty/successful record.
+    """
+    if memory is None or not isinstance(payload, dict):
+        return []
+
+    containers: list[dict[str, Any]] = [payload]
+    for key in ("data", "result"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+            if isinstance(nested.get("data"), dict):
+                containers.append(nested["data"])
+            if isinstance(nested.get("result"), dict):
+                containers.append(nested["result"])
+
+    record_fields = {
+        "hypothesis": ("hypotheses", "hypothesis"),
+        "forecast": ("forecasts", "forecast"),
+        "due_measurement": ("due_measurements", "repeat_measurements", "measurement_schedule"),
+        "changed_conclusion": ("changed_conclusions", "conclusion_revisions", "reassessments"),
+        "end_of_day_plan": ("end_of_day_plan", "daily_plan", "production_plan"),
+    }
+    saved_ids: list[int] = []
+    seen: set[tuple[str, str]] = set()
+    for result_type, keys in record_fields.items():
+        raw: Any = None
+        for container in containers:
+            raw = next((container[key] for key in keys if container.get(key) is not None), None)
+            if raw is not None:
+                break
+        if raw is None:
+            continue
+        records = raw if isinstance(raw, list) else [raw]
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            identity = json.dumps(record, sort_keys=True, default=str)
+            dedupe_key = (result_type, identity)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            data = dict(record)
+            data.update({
+                "project_id": project_id,
+                "source": "director_cycle_result",
+                "source_run_id": run_id,
+                "record_type": result_type,
+            })
+            summary = str(
+                record.get("summary") or record.get("title")
+                or record.get("statement") or record.get("metric") or result_type
+            ).strip()
+            saved_id = memory.save_result(
+                result_type=result_type,
+                summary=summary,
+                run_id=run_id,
+                data=data,
+            )
+            if hasattr(saved_id, "__await__"):
+                saved_id = await saved_id
+            if saved_id is None:
+                raise RuntimeError(
+                    f"Could not persist typed Director record {result_type} for run_id={run_id}"
+                )
+            try:
+                saved_ids.append(int(saved_id))
+            except (TypeError, ValueError):
+                # Some adapters return a row object; the non-None response is
+                # still evidence of a successful persistence operation.
+                continue
+    return saved_ids
+
+
 # ---------------------------------------------------------------------------
 # Safe async/sync invocation
 # ---------------------------------------------------------------------------
@@ -3484,6 +3567,9 @@ async def _run_director_once(
             raise RuntimeError(
                 "Director result was not persisted: save_result returned no ID."
             )
+        await persist_typed_director_records(
+            runtime.memory, project_id, run_id, serialized
+        )
 
         event_id = await runtime.memory.save_event(
             project_id=project_id,
@@ -3729,6 +3815,9 @@ async def _execute_autonomous_cycle_locked(
             raise RuntimeError(
                 f"Director result was not persisted for run_id={run_id}"
             )
+        await persist_typed_director_records(
+            runtime.memory, project_id, run_id, serialized
+        )
 
         event_id = await runtime.memory.save_event(
             project_id=project_id,

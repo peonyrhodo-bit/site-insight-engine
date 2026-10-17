@@ -2717,6 +2717,13 @@ class Runtime:
             "note": "This lock is process-local; persisted cross-process run status is read separately from memory.",
         }
 
+        health["production_budget_mode"] = {
+            "mode": "free" if FREE_MODE else "production",
+            "free_mode": bool(FREE_MODE),
+            "configured_at_runtime": True,
+            "source": "server FREE_MODE configuration",
+        }
+
         # The deployed UI/website is not this API process and must be probed
         # independently; do not infer it from the API being alive.
         health["website"] = {

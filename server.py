@@ -2741,11 +2741,48 @@ class Runtime:
 
         # The deployed UI/website is not this API process and must be probed
         # independently; do not infer it from the API being alive.
-        health["website"] = {
-            "status": "unknown",
-            "checked_at": checked_at,
-            "reason": "Website/UI endpoint is not configured as a health probe in this service.",
-        }
+        website_health_url = os.getenv("DIRECTOR_WEBSITE_HEALTH_URL", "").strip()
+        if not website_health_url:
+            health["website"] = {
+                "status": "unknown",
+                "checked_at": checked_at,
+                "reason": "DIRECTOR_WEBSITE_HEALTH_URL is not configured; UI reachability cannot be inferred from API health.",
+            }
+        else:
+            def _probe_website() -> dict[str, Any]:
+                request = urllib.request.Request(
+                    website_health_url,
+                    headers={"Accept": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    body = response.read(2048).decode("utf-8", errors="replace")
+                    return {"http_status": int(response.status), "body": body}
+            try:
+                website_response = await asyncio.to_thread(_probe_website)
+                try:
+                    website_payload = json.loads(website_response["body"])
+                except (TypeError, ValueError):
+                    website_payload = {}
+                website_status = str(website_payload.get("status") or "").lower()
+                http_ok = 200 <= website_response["http_status"] < 300
+                app_ok = website_status not in {"degraded", "error", "unavailable", "failed"}
+                health["website"] = {
+                    "status": "healthy" if http_ok and app_ok else "degraded",
+                    "checked_at": utc_now(),
+                    "endpoint": website_health_url,
+                    "http_status": website_response["http_status"],
+                    "service_status": website_status or "unknown",
+                    "recommendation_persistence": "not_probed_by_http_health_check",
+                    "note": "Website HTTP health does not prove recommendation writes are durable.",
+                }
+            except Exception as exc:
+                health["website"] = {
+                    "status": "unavailable",
+                    "checked_at": utc_now(),
+                    "endpoint": website_health_url,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "recommendation_persistence": "not_probed",
+                }
         return health
 
     def get_director(

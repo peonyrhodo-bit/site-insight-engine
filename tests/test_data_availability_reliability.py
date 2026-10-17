@@ -2,6 +2,7 @@ import pytest
 
 from director.director import Director, DirectorMode
 from server import DataAdapter
+from data.youtube import YouTubeQuery
 
 
 class FailingYouTubeStorage:
@@ -79,3 +80,20 @@ def test_persisted_research_sets_are_mapped_into_director_research_history():
 
     assert len(director.context.research_history) == 1
     assert director.context.research_history[0]["research_id"] == "previous-research"
+
+@pytest.mark.asyncio
+async def test_malformed_quota_metadata_does_not_zero_the_entire_data_inventory():
+    adapter = DataAdapter(storage=None)
+    adapter.youtube_registry.add_query(
+        YouTubeQuery(
+            query_id="bad-quota",
+            text="sample query",
+            metadata={"quota": {"other_units": "not-a-number", "search_calls": None}},
+        )
+    )
+
+    state = await adapter.get_project_state(project_id="malformed-quota-project")
+
+    assert state["data_inventory"]["query_count"] == 1
+    assert state["data_inventory"]["youtube_other_units_today"] == 0
+    assert state["data_inventory"]["youtube_search_calls_today"] == 0

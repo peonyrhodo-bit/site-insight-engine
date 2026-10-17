@@ -3368,6 +3368,37 @@ async def _execute_autonomous_cycle_locked(
         serialized = serialize(result)
         if not isinstance(serialized, dict):
             serialized = {"value": serialized}
+
+        # Normalize the Director's cycle outcome once, before persisting it.
+        # The autonomy layer uses completed/error while the durable run
+        # lifecycle uses succeeded/failed. Waiting and sleeping are valid
+        # terminal outcomes, not unknown/partial results.
+        director_status = str(serialized.get("status") or "").strip().lower()
+        status_aliases = {
+            "completed": "succeeded",
+            "error": "failed",
+        }
+        final_status = status_aliases.get(director_status, director_status)
+        valid_statuses = {
+            "succeeded", "failed", "partial", "blocked", "skipped",
+            "waiting", "sleeping", "stopped",
+        }
+        if final_status not in valid_statuses:
+            final_status = "partial"
+
+        state = serialized.get("state", {})
+        state_metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
+        failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}
+        failure_phase = failure.get("phase") if isinstance(failure, dict) else None
+        failure_message = failure.get("error") if isinstance(failure, dict) else None
+        if failure_message:
+            final_status = "failed"
+
+        # The response, nested cycle state, saved result, and durable run
+        # row must agree on the canonical outcome name.
+        serialized["status"] = final_status
+        if isinstance(state, dict) and "status" in state:
+            state["status"] = final_status
         serialized["run_id"] = run_id
 
         current_step = "persisting_result"
@@ -3448,19 +3479,8 @@ async def _execute_autonomous_cycle_locked(
                 f"Director run event was not persisted for run_id={run_id}"
             )
 
-        final_status = str(serialized.get("status") or "succeeded").strip().lower()
-        state = serialized.get("state", {})
-        state_metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
-        failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}
-        failure_phase = failure.get("phase") if isinstance(failure, dict) else None
-        failure_message = failure.get("error") if isinstance(failure, dict) else None
-        if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:
-            # An unknown Director result state is not proof of success.
-            final_status = "partial"
-        if failure_message:
-            # Internal Director errors are returned as a cycle result. Preserve
-            # the actual failing phase and diagnostic instead of only "partial".
-            final_status = "partial"
+        # final_status and failure diagnostics were normalized before the
+        # first result persistence so all representations use the same status.
         await runtime.memory.update_run(
             run_id, project_id=project_id,
             fields={

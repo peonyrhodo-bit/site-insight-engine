@@ -110,6 +110,11 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(research_calls), 2)
         self.assertEqual(len(analyze_calls), 1)
         self.assertTrue(cycle.state.metadata["research_task_exhausted"])
+        self.assertFalse(
+            cycle.state.evidence_sufficient,
+            "exhausting a research task must not be reported as sufficient evidence",
+        )
+        self.assertTrue(cycle.state.metadata["analyze_available_evidence"])
         self.assertEqual(cycle.status, CycleStatus.SLEEPING)
 
     async def test_task_ledger_is_reset_for_each_wake(self):

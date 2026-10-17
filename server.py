@@ -2901,6 +2901,64 @@ class Runtime:
             "purpose": "AI/provider and in-memory fallback behavior only; not a production budget.",
         }
 
+        # A tool is not considered free or available merely because it is
+        # installed/configured. FREE_TOOLS_JSON is the explicit cost catalog;
+        # availability is confirmed only by the linked service's live probe.
+        raw_free_tools = os.getenv("FREE_TOOLS_JSON", "").strip()
+        if not raw_free_tools:
+            health["free_tools"] = {
+                "status": "unknown",
+                "checked_at": checked_at,
+                "source": "FREE_TOOLS_JSON",
+                "reason": "No explicit free-tool cost catalog is configured.",
+            }
+        else:
+            try:
+                catalog = json.loads(raw_free_tools)
+                if not isinstance(catalog, list) or any(
+                    not isinstance(item, dict)
+                    or not str(item.get("name") or "").strip()
+                    or item.get("cost") not in {"free", "paid", "unknown"}
+                    for item in catalog
+                ):
+                    raise ValueError("Expected a list of objects with name and cost=free|paid|unknown.")
+                checked_tools = []
+                for item in catalog:
+                    service_key = str(item.get("service_health_key") or "").strip()
+                    service_health = health.get(service_key) if service_key else None
+                    service_status = (
+                        str(service_health.get("status") or "unknown")
+                        if isinstance(service_health, dict)
+                        else "unknown"
+                    )
+                    checked_tools.append({
+                        "name": str(item["name"]).strip(),
+                        "cost": item["cost"],
+                        "service_health_key": service_key or None,
+                        "availability": (
+                            "available" if service_status in {"healthy", "available"}
+                            else service_status
+                        ),
+                        "checked_at": (
+                            service_health.get("checked_at")
+                            if isinstance(service_health, dict) else None
+                        ),
+                    })
+                health["free_tools"] = {
+                    "status": "available",
+                    "checked_at": checked_at,
+                    "source": "FREE_TOOLS_JSON",
+                    "tools": checked_tools,
+                    "note": "Only entries marked cost=free and availability=available are currently available free tools.",
+                }
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                health["free_tools"] = {
+                    "status": "degraded",
+                    "checked_at": checked_at,
+                    "source": "FREE_TOOLS_JSON",
+                    "reason": f"Invalid free-tool catalog: {type(exc).__name__}: {exc}",
+                }
+
         # The deployed UI/website is not this API process and must be probed
         # independently; do not infer it from the API being alive.
         website_health_url = os.getenv("DIRECTOR_WEBSITE_HEALTH_URL", "").strip()

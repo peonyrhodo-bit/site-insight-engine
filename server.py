@@ -59,10 +59,15 @@ ENVIRONMENT = os.getenv(
     "production",
 )
 
+# FREE_MODE controls free-AI/fallback behavior only. It is not a
+# production spending budget and must never be used as that budget's source.
 FREE_MODE = (
     os.getenv("FREE_MODE", "true").lower()
     in {"1", "true", "yes", "on"}
 )
+
+PRODUCTION_BUDGET_MODES = {"zero", "minimal", "medium", "high"}
+PRODUCTION_BUDGET_MODE = os.getenv("PRODUCTION_BUDGET_MODE", "").strip().lower()
 
 AUTONOMOUS_ENABLED = (
     os.getenv("AUTONOMOUS_ENABLED", "false").lower()
@@ -343,6 +348,92 @@ def serialize(value: Any) -> Any:
             pass
 
     return str(value)
+
+
+async def persist_typed_director_records(
+    memory: Any,
+    project_id: str,
+    run_id: int | None,
+    payload: Any,
+) -> list[int]:
+    """Persist structured strategy records separately from the generic cycle result.
+
+    The generic director_results row remains the cycle envelope. Typed rows are
+    written only when the cycle actually produced structured records; absence is
+    not fabricated into an empty/successful record.
+    """
+    if memory is None or not isinstance(payload, dict):
+        return []
+
+    containers: list[dict[str, Any]] = [payload]
+    for key in ("data", "result"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+            if isinstance(nested.get("data"), dict):
+                containers.append(nested["data"])
+            if isinstance(nested.get("result"), dict):
+                containers.append(nested["result"])
+
+    record_fields = {
+        "hypothesis": ("hypotheses", "hypothesis"),
+        "forecast": ("forecasts", "forecast"),
+        "due_measurement": ("due_measurements", "repeat_measurements", "measurement_schedule"),
+        "changed_conclusion": ("changed_conclusions", "conclusion_revisions", "reassessments"),
+        "end_of_day_plan": ("end_of_day_plan", "daily_plan", "production_plan"),
+    }
+    saved_ids: list[int] = []
+    seen: set[tuple[str, str]] = set()
+    for result_type, keys in record_fields.items():
+        raw: Any = None
+        for container in containers:
+            raw = next((container[key] for key in keys if container.get(key) is not None), None)
+            if raw is not None:
+                break
+        if raw is None:
+            continue
+        records = raw if isinstance(raw, list) else [raw]
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            identity = json.dumps(record, sort_keys=True, default=str)
+            dedupe_key = (result_type, identity)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            data = dict(record)
+            data.update({
+                "project_id": project_id,
+                "source": "director_cycle_result",
+                "source_run_id": run_id,
+                "record_type": result_type,
+            })
+            summary = str(
+                record.get("summary") or record.get("title")
+                or record.get("statement") or record.get("metric") or result_type
+            ).strip()
+            saved_id = memory.save_result(
+                project_id=project_id,
+                result={
+                    "type": result_type,
+                    "summary": summary,
+                    **data,
+                },
+                run_id=run_id,
+            )
+            if hasattr(saved_id, "__await__"):
+                saved_id = await saved_id
+            if saved_id is None:
+                raise RuntimeError(
+                    f"Could not persist typed Director record {result_type} for run_id={run_id}"
+                )
+            try:
+                saved_ids.append(int(saved_id))
+            except (TypeError, ValueError):
+                # Some adapters return a row object; the non-None response is
+                # still evidence of a successful persistence operation.
+                continue
+    return saved_ids
 
 
 # ---------------------------------------------------------------------------
@@ -2792,12 +2883,81 @@ class Runtime:
             "note": "This lock is process-local; persisted cross-process run status is read separately from memory.",
         }
 
+        budget_mode_valid = PRODUCTION_BUDGET_MODE in PRODUCTION_BUDGET_MODES
         health["production_budget_mode"] = {
-            "mode": "free" if FREE_MODE else "production",
-            "free_mode": bool(FREE_MODE),
-            "configured_at_runtime": True,
-            "source": "server FREE_MODE configuration",
+            "status": "available" if budget_mode_valid else "unknown",
+            "mode": PRODUCTION_BUDGET_MODE if budget_mode_valid else None,
+            "checked_at": checked_at,
+            "source": "PRODUCTION_BUDGET_MODE environment configuration",
+            "allowed_modes": sorted(PRODUCTION_BUDGET_MODES),
+            "reason": None if budget_mode_valid else (
+                "PRODUCTION_BUDGET_MODE must be explicitly set to zero, minimal, medium, or high."
+            ),
         }
+        health["free_ai_mode"] = {
+            "enabled": bool(FREE_MODE),
+            "checked_at": checked_at,
+            "source": "FREE_MODE environment configuration",
+            "purpose": "AI/provider and in-memory fallback behavior only; not a production budget.",
+        }
+
+        # A tool is not considered free or available merely because it is
+        # installed/configured. FREE_TOOLS_JSON is the explicit cost catalog;
+        # availability is confirmed only by the linked service's live probe.
+        raw_free_tools = os.getenv("FREE_TOOLS_JSON", "").strip()
+        if not raw_free_tools:
+            health["free_tools"] = {
+                "status": "unknown",
+                "checked_at": checked_at,
+                "source": "FREE_TOOLS_JSON",
+                "reason": "No explicit free-tool cost catalog is configured.",
+            }
+        else:
+            try:
+                catalog = json.loads(raw_free_tools)
+                if not isinstance(catalog, list) or any(
+                    not isinstance(item, dict)
+                    or not str(item.get("name") or "").strip()
+                    or item.get("cost") not in {"free", "paid", "unknown"}
+                    for item in catalog
+                ):
+                    raise ValueError("Expected a list of objects with name and cost=free|paid|unknown.")
+                checked_tools = []
+                for item in catalog:
+                    service_key = str(item.get("service_health_key") or "").strip()
+                    service_health = health.get(service_key) if service_key else None
+                    service_status = (
+                        str(service_health.get("status") or "unknown")
+                        if isinstance(service_health, dict)
+                        else "unknown"
+                    )
+                    checked_tools.append({
+                        "name": str(item["name"]).strip(),
+                        "cost": item["cost"],
+                        "service_health_key": service_key or None,
+                        "availability": (
+                            "available" if service_status in {"healthy", "available"}
+                            else service_status
+                        ),
+                        "checked_at": (
+                            service_health.get("checked_at")
+                            if isinstance(service_health, dict) else None
+                        ),
+                    })
+                health["free_tools"] = {
+                    "status": "available",
+                    "checked_at": checked_at,
+                    "source": "FREE_TOOLS_JSON",
+                    "tools": checked_tools,
+                    "note": "Only entries marked cost=free and availability=available are currently available free tools.",
+                }
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                health["free_tools"] = {
+                    "status": "degraded",
+                    "checked_at": checked_at,
+                    "source": "FREE_TOOLS_JSON",
+                    "reason": f"Invalid free-tool catalog: {type(exc).__name__}: {exc}",
+                }
 
         # The deployed UI/website is not this API process and must be probed
         # independently; do not infer it from the API being alive.
@@ -3468,6 +3628,9 @@ async def _run_director_once(
             raise RuntimeError(
                 "Director result was not persisted: save_result returned no ID."
             )
+        await persist_typed_director_records(
+            runtime.memory, project_id, run_id, serialized
+        )
 
         event_id = await runtime.memory.save_event(
             project_id=project_id,
@@ -3713,6 +3876,9 @@ async def _execute_autonomous_cycle_locked(
             raise RuntimeError(
                 f"Director result was not persisted for run_id={run_id}"
             )
+        await persist_typed_director_records(
+            runtime.memory, project_id, run_id, serialized
+        )
 
         event_id = await runtime.memory.save_event(
             project_id=project_id,
@@ -4187,13 +4353,35 @@ async def recommendation_action(
                     feedback=feedback_payload,
                 )
             )
+            if saved is None:
+                raise RuntimeError("Recommendation feedback/status change was not persisted.")
+
+        decision_saved = None
+        if action in {"accept", "reject"}:
+            # A real user decision is an explicit accept/reject action, not
+            # merely discussion/feedback. Persist it in the decisions source
+            # of truth as well as updating recommendation status.
+            decision_saved = await runtime.memory.save_decision(
+                project_id=project_id,
+                decision={
+                    "decision": f"user_{action}_recommendation",
+                    "decision_type": "user_recommendation_decision",
+                    "recommendation_id": memory_id,
+                    "recommendation_title": getattr(updated, "title", None),
+                    "action": action,
+                    "message": request.message,
+                    "recorded_at": utc_now(),
+                    "source": "explicit_recommendation_action",
+                },
+            )
+            if decision_saved is None:
+                raise RuntimeError("Explicit user decision was not persisted.")
 
         return {
             "success": True,
-            "recommendation": serialize(
-                updated,
-            ),
+            "recommendation": serialize(updated),
             "saved": serialize(saved),
+            "decision_saved": serialize(decision_saved),
         }
 
     except HTTPException:

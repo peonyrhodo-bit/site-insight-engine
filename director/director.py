@@ -2045,14 +2045,19 @@ class Director:
                 "end_of_day_feasibility": "unknown",
             },
         }
+        def contains_unknown(value: Any) -> bool:
+            if value == "unknown":
+                return True
+            if isinstance(value, dict):
+                return any(contains_unknown(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(contains_unknown(item) for item in value)
+            return False
+
         return {
             "schema_version": 1,
             "captured_at": datetime.now(timezone.utc).isoformat(),
-            "status": "partial" if any(
-                value == "unknown"
-                for block in blocks.values()
-                for value in block.values()
-            ) else "assessed",
+            "status": "partial" if contains_unknown(blocks) else "assessed",
             "blocks": blocks,
         }
 

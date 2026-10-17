@@ -230,8 +230,6 @@ def test_snapshot_reads_typed_strategy_records_from_existing_memory_results():
 @pytest.mark.asyncio
 async def test_runtime_health_preserves_mcp_upstream_configuration_status(monkeypatch):
     import json
-    import server
-
     class Response:
         status = 200
 
@@ -269,8 +267,6 @@ async def test_runtime_health_preserves_mcp_upstream_configuration_status(monkey
 
 @pytest.mark.asyncio
 async def test_runtime_health_probes_explicit_website_endpoint_without_claiming_write_health(monkeypatch):
-    import server
-
     class Response:
         status = 200
 
@@ -497,3 +493,54 @@ async def test_typed_director_records_are_persisted_with_run_provenance():
     assert all(row["run_id"] == 44 for row in memory.rows)
     assert all(row["result"]["project_id"] == "test-project" for row in memory.rows)
     assert all(row["result"]["source_run_id"] == 44 for row in memory.rows)
+
+
+
+@pytest.mark.asyncio
+async def test_free_tool_catalog_requires_explicit_cost_and_live_service_probe(monkeypatch):
+    import server
+
+    class QuotaManager:
+        def get_status(self):
+            return {"search_remaining": 10, "other_remaining": 100}
+
+    runtime = Runtime.__new__(Runtime)
+    runtime.ai = SimpleNamespace(provider=None, provider_error="not configured")
+    runtime.scheduler = SimpleNamespace(enabled=True)
+    runtime.quota_manager = QuotaManager()
+    monkeypatch.setenv(
+        "FREE_TOOLS_JSON",
+        '[{"name":"quota status","cost":"free","service_health_key":"quota_manager"}]',
+    )
+    monkeypatch.delenv("YOUTUBE_MCP_URL", raising=False)
+    monkeypatch.delenv("MCP_URL", raising=False)
+    monkeypatch.delenv("DIRECTOR_WEBSITE_HEALTH_URL", raising=False)
+
+    health = await runtime.collect_runtime_health("test-project")
+
+    assert health["free_tools"]["status"] == "available"
+    assert health["free_tools"]["tools"][0]["cost"] == "free"
+    assert health["free_tools"]["tools"][0]["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_free_tool_catalog_absence_is_unknown_not_empty(monkeypatch):
+    import server
+
+    class QuotaManager:
+        def get_status(self):
+            return {"search_remaining": 10, "other_remaining": 100}
+
+    runtime = Runtime.__new__(Runtime)
+    runtime.ai = SimpleNamespace(provider=None, provider_error="not configured")
+    runtime.scheduler = SimpleNamespace(enabled=True)
+    runtime.quota_manager = QuotaManager()
+    monkeypatch.delenv("FREE_TOOLS_JSON", raising=False)
+    monkeypatch.delenv("YOUTUBE_MCP_URL", raising=False)
+    monkeypatch.delenv("MCP_URL", raising=False)
+    monkeypatch.delenv("DIRECTOR_WEBSITE_HEALTH_URL", raising=False)
+
+    health = await runtime.collect_runtime_health("test-project")
+
+    assert health["free_tools"]["status"] == "unknown"
+    assert "No explicit free-tool cost catalog" in health["free_tools"]["reason"]

@@ -46,6 +46,9 @@ async def test_malformed_ai_response_is_not_silently_converted_to_empty_dict(
     monkeypatch,
 ):
     monkeypatch.setattr(server, "FREE_MODE", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test-model:free")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setattr(
         server,
         "create_ai_provider",

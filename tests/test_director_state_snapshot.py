@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from director.director import Director
+from server import Runtime
 from director.state_snapshot import (
     REQUIRED_PARAMETERS,
     STATUS_KNOWN,
@@ -149,3 +150,27 @@ async def test_inspect_records_memory_failure_instead_of_claiming_health():
     assert context.metadata["runtime_health"]["memory"]["status"] == "unavailable"
     assert snapshot["parameters"]["persistence_and_memory"]["status"] == STATUS_KNOWN
     assert snapshot["parameters"]["persistence_and_memory"]["value"]["status"] == "unavailable"
+
+
+
+@pytest.mark.asyncio
+async def test_runtime_health_uses_read_only_quota_probe_and_does_not_infer_ai_health(monkeypatch):
+    class QuotaManager:
+        def get_status(self):
+            return {"search_remaining": 12, "other_remaining": 90}
+
+    runtime = Runtime.__new__(Runtime)
+    runtime.ai = SimpleNamespace(provider=object(), provider_error=None)
+    runtime.scheduler = SimpleNamespace(enabled=True)
+    runtime.quota_manager = QuotaManager()
+    monkeypatch.delenv("YOUTUBE_MCP_URL", raising=False)
+    monkeypatch.delenv("MCP_URL", raising=False)
+
+    health = await runtime.collect_runtime_health("test-project")
+
+    assert health["ai"]["status"] == "unknown"
+    assert health["scheduler"]["status"] == "available"
+    assert health["quota_manager"]["status"] == "healthy"
+    assert health["active_cycle"]["active"] is False
+    assert health["youtube_sources"]["status"] == "unknown"
+    assert health["website"]["status"] == "unknown"

@@ -1457,6 +1457,11 @@ class YouTubeResearchExecutor:
                 for query in collected_queries
             ],
             "videos_collected": len(research.video_ids),
+            "channels_collected": len({
+                str(getattr(channel, "channel_id", "") or "")
+                for channel in channels
+                if str(getattr(channel, "channel_id", "") or "")
+            }),
             "video_ids": list(research.video_ids),
             "snapshots_collected": len(research.snapshot_ids),
             "snapshot_ids": list(research.snapshot_ids),
@@ -1753,14 +1758,26 @@ class YouTubeResearchExecutor:
                     "persisted": persisted,
                 }
             elif name == "collect_channels":
-                # The current collection path derives channel identities from found videos.
-                if video_count > 0 and persisted:
+                # This operation currently enriches channel identities from video
+                # search results; it does not perform a dedicated search_channels call.
+                # Report success only when at least one channel identity was actually
+                # captured and the opportunity-data write was included in persistence.
+                channels_collected = int(summary.get("channels_collected", 0) or 0)
+                if channels_collected > 0 and persisted:
+                    status = ResearchOperationStatus.SUCCEEDED
+                elif channels_collected > 0:
                     status = ResearchOperationStatus.PARTIAL
-                    error = "channel_identity_enrichment_only; dedicated channel search is not implemented"
+                    error = "channel_identities_collected_but_persistence_not_confirmed"
                 else:
                     status = ResearchOperationStatus.BLOCKED
-                    error = "dedicated_channel_collection_not_implemented"
-                result = {"videos_collected": video_count, "persisted": persisted}
+                    error = "no_channel_identities_collected_from_video_results"
+                result = {
+                    "videos_collected": video_count,
+                    "channels_collected": channels_collected,
+                    "persistence_confirmed": persisted,
+                    "collection_method": "video_result_channel_enrichment",
+                    "dedicated_channel_search_implemented": False,
+                }
             elif name == "collect_channel_snapshots":
                 collected = int(summary.get("channel_snapshots_collected", 0) or 0)
                 if collected > 0 and persisted:

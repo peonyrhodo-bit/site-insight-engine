@@ -66,6 +66,37 @@ def _entry(value: Any = None, *, known: bool = False, evidence: str = "",
     }
 
 
+
+def _record_payload(item: Any) -> dict[str, Any]:
+    """Flatten a persisted result/action row without discarding its provenance."""
+    row = _dict(item)
+    nested = _dict(row.get("data_json")) or _dict(row.get("data")) or _dict(row.get("source_data"))
+    return {**nested, **row}
+
+
+def _record_kind(item: Any) -> str:
+    row = _record_payload(item)
+    return str(row.get("result_type") or row.get("type") or row.get("kind")
+               or row.get("action_type") or row.get("event_type") or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _typed_records(records: list[Any], *kinds: str) -> list[dict[str, Any]]:
+    accepted = {kind.lower().replace("-", "_").replace(" ", "_") for kind in kinds}
+    result: list[dict[str, Any]] = []
+    for item in records:
+        payload = _record_payload(item)
+        kind = _record_kind(item)
+        if kind in accepted or any(kind.endswith("_" + candidate) for candidate in accepted):
+            result.append(payload)
+    return result
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "" and value != [] and value != {}:
+            return value
+    return None
+
 def _status_of(item: Any) -> str:
     row = _dict(item)
     nested = _dict(row.get("data_json")) or _dict(row.get("data"))
@@ -106,16 +137,19 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     if not inventory:
         inventory = _dict(project_state.get("inventory"))
     memory_state = _dict(metadata.get("memory_state"))
-    runs = _list(memory_state.get("recent_runs"))
+    runs = _list(memory_state.get("recent_runs")) or _list(metadata.get("recent_runs"))
     decisions = _list(getattr(context, "decisions", []))
     recommendations = _list(getattr(context, "recommendations", []))
     actions = _list(memory_state.get("unfinished_actions"))
     if not actions:
-        actions = _list(memory_state.get("recent_actions"))
-    events = _list(memory_state.get("recent_events"))
+        actions = _list(memory_state.get("recent_actions")) or _list(metadata.get("recent_actions"))
+    events = _list(memory_state.get("recent_events")) or _list(metadata.get("recent_events"))
+    results = _list(memory_state.get("recent_results")) or _list(metadata.get("recent_results"))
+    pending_memory_recommendations = _list(memory_state.get("pending_recommendations"))
+    unresolved_memory_decisions = _list(memory_state.get("unresolved_decisions"))
     research = _list(getattr(context, "research_history", []))
     if not research:
-        research = _list(metadata.get("research_sets")) or _list(memory_state.get("recent_results"))
+        research = _list(metadata.get("research_sets")) or results
     observations = _list(getattr(context, "observations", []))
     constraints = _list(getattr(context, "constraints", []))
     feedback = _list(getattr(context, "feedback", []))
@@ -207,26 +241,60 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
     if result_reuse.get("status") in {"healthy", "available", "unavailable", "degraded"}:
         put("result_reuse", result_reuse, known=True, evidence="runtime_health.result_reuse")
     else:
-        put("result_reuse", None, reason="Не измерено, переиспользуются ли сохранённые результаты вместо повторных запросов.")
+        reuse_rows = []
+        for item in research:
+            row = _record_payload(item)
+            if any(key in row for key in ("reused_video_ids", "reusable_video_ids", "reuse_count", "reused_count")):
+                reuse_rows.append({
+                    "research_id": row.get("research_id") or row.get("id"),
+                    "reused_video_ids": row.get("reused_video_ids", []),
+                    "reusable_video_ids": row.get("reusable_video_ids", []),
+                    "reuse_count": row.get("reuse_count", row.get("reused_count")),
+                })
+        put("result_reuse", {"records": reuse_rows, "measured": True} if reuse_rows else None,
+            known=bool(reuse_rows), evidence="persisted research-set reuse fields",
+            reason="Не измерено, переиспользуются ли сохранённые результаты вместо повторных запросов.")
 
     under_researched = metadata.get("under_researched_directions")
+    gap_records = []
+    if under_researched is None:
+        for item in research:
+            row = _record_payload(item)
+            gaps = row.get("gaps") or row.get("missing_data") or row.get("data_gaps")
+            if gaps:
+                gap_records.append({"research_id": row.get("research_id") or row.get("id"), "gaps": gaps})
+        if gap_records:
+            under_researched = {"research_gaps": gap_records, "derived_from": "persisted research records; gaps are proxies, not a full topic coverage score"}
     put("under_researched_directions", under_researched,
-        known=under_researched is not None, evidence="metadata.under_researched_directions",
-        reason="Инвентарь тем и число запросов не показывают, какие именно направления недостаточно изучены.")
+        known=under_researched is not None, evidence="metadata.under_researched_directions or persisted research gaps",
+        reason="Инвентарь тем и число запросов не показывают, какие именно направления недостаточно изучены; в сохранённых исследованиях нет явных gaps.")
 
     hypothesis = metadata.get("current_hypothesis")
     hypotheses = metadata.get("hypotheses")
+    if hypotheses is None and hypothesis is None:
+        persisted_hypotheses = _typed_records(results, "hypothesis", "director_hypothesis", "hypothesis_result")
+        if not persisted_hypotheses:
+            persisted_hypotheses = [
+                _record_payload(item) for item in decisions
+                if _first_present(_dict(_record_payload(item).get("data_json")).get("hypothesis"), _record_payload(item).get("hypothesis")) is not None
+            ]
+        if persisted_hypotheses:
+            hypotheses = persisted_hypotheses
     put("hypotheses", hypotheses if hypotheses is not None else hypothesis,
         known=hypotheses is not None or isinstance(hypothesis, dict),
-        evidence="metadata.hypotheses/current_hypothesis",
-        reason="Нет устойчивого реестра гипотез со статусами проверки.")
+        evidence="metadata.hypotheses/current_hypothesis or typed persisted Director results",
+        reason="Нет устойчивого реестра гипотез со статусами проверки и в истории результатов не найдены записи типа hypothesis.")
 
     forecasts = metadata.get("forecasts")
-    put("forecasts", forecasts, known=forecasts is not None, evidence="metadata.forecasts",
+    if forecasts is None:
+        forecasts = _typed_records(results, "forecast", "director_forecast", "forecast_result") or None
+    put("forecasts", forecasts, known=forecasts is not None, evidence="metadata.forecasts or typed persisted Director results",
         reason="Нет реестра прогнозов и результатов их сравнения с фактами.")
     due = metadata.get("due_measurements")
-    put("due_measurements", due, known=due is not None, evidence="metadata.due_measurements",
-        reason="Нет вычисленного списка наступивших повторных измерений.")
+    if due is None:
+        due = _typed_records(results, "due_measurement", "repeat_measurement", "measurement_schedule") or None
+    put("due_measurements", due, known=due is not None, evidence="metadata.due_measurements or typed persisted measurement records",
+        reason="Нет вычисленного списка наступивших повторных измерений или сохранённого расписания измерений.")
     changes = metadata.get("new_data_since_last_cycle")
     if changes is not None:
         put("new_data_since_last_cycle", changes, known=True, evidence="metadata.new_data_since_last_cycle")
@@ -264,25 +332,37 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
                 evidence="project_state.freshness" if freshness else "",
                 reason="Нет сопоставимых временных меток последнего успешного цикла и последнего наблюдения.")
 
+    if not recommendations:
+        recommendations = pending_memory_recommendations
     put("created_recommendations", recommendations, known=bool(recommendations),
-        evidence="DirectorContext.recommendations", reason="Рекомендации не загружены в контекст.")
-    awaiting = [r for r in recommendations if _status_of(r) in {"new", "draft", "pending", "proposed"}]
+        evidence="DirectorContext.recommendations or memory_state.pending_recommendations", reason="Рекомендации не загружены в контекст.")
+    awaiting = [r for r in recommendations if _status_of(r) in {"new", "draft", "pending", "proposed", "deferred"}]
     discussed = [r for r in recommendations if _status_of(r) in {"discussed", "under_discussion"}]
     put("recommendations_awaiting_user", awaiting, known=bool(recommendations),
-        evidence="recommendation status values", reason="Нельзя определить очередь решений без загруженных рекомендаций.")
+        evidence="persisted recommendation status values", reason="Нельзя определить очередь решений без загруженных рекомендаций.")
     put("recommendations_under_discussion", discussed, known=bool(recommendations),
-        evidence="recommendation status values", reason="Нельзя определить обсуждаемые рекомендации без загруженных рекомендаций.")
+        evidence="persisted recommendation status values", reason="Нельзя определить обсуждаемые рекомендации без загруженных рекомендаций.")
+    if not decisions:
+        decisions = unresolved_memory_decisions
     put("accepted_rejected_decisions",
         {"decisions": decisions, "feedback": feedback},
-        known=bool(decisions or feedback), evidence="DirectorContext.decisions/feedback",
+        known=bool(decisions or feedback), evidence="DirectorContext.decisions/feedback or memory_state.unresolved_decisions",
         reason="Решения и обратная связь пользователя не загружены.")
     video_tasks = metadata.get("video_preparation_tasks")
+    if video_tasks is None:
+        video_tasks = [
+            _record_payload(item) for item in actions
+            if any(token in (_record_kind(item) + " " + str(_record_payload(item).get("description") or "").lower())
+                   for token in ("video", "script", "thumbnail", "production", "подготов", "сценар", "облож"))
+        ] or None
     put("video_preparation_tasks", video_tasks, known=video_tasks is not None,
-        evidence="metadata.video_preparation_tasks",
-        reason="Нет отдельного реестра задач подготовки видео и статусов.")
+        evidence="metadata.video_preparation_tasks or persisted actions matched to video-production work",
+        reason="В истории действий нет записей подготовки видео, а отдельный реестр задач не подключён.")
     changed_conclusions = metadata.get("changed_conclusions")
+    if changed_conclusions is None:
+        changed_conclusions = _typed_records(results, "changed_conclusion", "conclusion_revision", "reassessment") or None
     put("changed_conclusions", changed_conclusions, known=changed_conclusions is not None,
-        evidence="metadata.changed_conclusions",
+        evidence="metadata.changed_conclusions or typed persisted conclusion revisions",
         reason="Нет реестра выводов, пересмотренных из-за новых данных.")
 
     # Resources and constraints. Do not treat estimated environment-based quota
@@ -313,11 +393,18 @@ def build_unified_state_snapshot(context: Any, *, runtime_health: Mapping[str, A
         evidence="metadata.production_budget_mode/runtime_health.production_budget_mode",
         reason="Режим бюджета производства не передан в контекст или runtime health.")
     pending_tasks = metadata.get("pending_user_tasks")
-    put("pending_user_tasks", pending_tasks, known=pending_tasks is not None, evidence="metadata.pending_user_tasks",
-        reason="Нет полного списка задач, ожидающих пользователя.")
+    if pending_tasks is None:
+        pending_tasks = [
+            _record_payload(item) for item in actions
+            if _status_of(item) in {"awaiting_user", "needs_user", "blocked_on_user", "waiting_for_user", "user_input_required"}
+        ] or None
+    put("pending_user_tasks", pending_tasks, known=pending_tasks is not None, evidence="metadata.pending_user_tasks or persisted actions explicitly awaiting user input",
+        reason="В истории действий нет явных статусов ожидания пользователя, отдельный реестр пользовательских задач не подключён.")
     end_of_day = metadata.get("end_of_day_plan")
-    put("end_of_day_plan", end_of_day, known=end_of_day is not None, evidence="metadata.end_of_day_plan",
-        reason="Нет расчёта дневного плана, сроков и доступных ресурсов.")
+    if end_of_day is None:
+        end_of_day = _typed_records(results, "end_of_day_plan", "daily_plan", "production_plan") or None
+    put("end_of_day_plan", end_of_day, known=end_of_day is not None, evidence="metadata.end_of_day_plan or typed persisted daily/production plan",
+        reason="Нет сохранённого дневного плана с задачами, сроками и доступными ресурсами.")
 
     parameters = {
         key: {

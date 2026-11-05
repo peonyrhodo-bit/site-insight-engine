@@ -1,2651 +1,323 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>Аналитика для Дашули</title>
-
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-
-        :root {
-            --bg: #f5f6fa;
-            --card: #ffffff;
-            --border: #e7e8ee;
-            --text: #202124;
-            --muted: #70757d;
-            --soft: #f0f1f5;
-            --dark: #202124;
-            --success: #1f8f55;
-            --warning: #b7791f;
-            --danger: #c53d3d;
-        }
-
-        body {
-            margin: 0;
-            font-family: Arial, Helvetica, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-        }
-
-        button,
-        input,
-        select,
-        textarea {
-            font: inherit;
-        }
-
-        button {
-            cursor: pointer;
-        }
-
-        .container {
-            max-width: 1500px;
-            margin: 0 auto;
-            padding: 28px;
-        }
-
-        .page-header {
-            margin-bottom: 24px;
-        }
-
-        .page-header h1 {
-            margin: 0 0 8px;
-            font-size: 32px;
-        }
-
-        .subtitle {
-            color: var(--muted);
-            font-size: 15px;
-        }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
-            gap: 20px;
-            align-items: start;
-        }
-
-        .card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
-        }
-
-        .card h2 {
-            margin: 0 0 14px;
-            font-size: 20px;
-        }
-
-        .card h3 {
-            margin: 0 0 10px;
-            font-size: 17px;
-        }
-
-        .muted {
-            color: var(--muted);
-        }
-
-        .chat-card {
-            min-height: 620px;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .chat-header {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: center;
-            margin-bottom: 14px;
-        }
-
-        .chat-status {
-            font-size: 13px;
-            color: var(--muted);
-        }
-
-        .chat-messages {
-            flex: 1;
-            min-height: 390px;
-            max-height: 520px;
-            overflow-y: auto;
-            padding: 8px 2px 12px;
-        }
-
-        .message {
-            display: flex;
-            margin-bottom: 14px;
-        }
-
-        .message.user {
-            justify-content: flex-end;
-        }
-
-        .message-bubble {
-            max-width: 82%;
-            padding: 12px 15px;
-            border-radius: 14px;
-            white-space: pre-wrap;
-            line-height: 1.5;
-        }
-
-        .message.assistant .message-bubble {
-            background: var(--soft);
-        }
-
-        .message.user .message-bubble {
-            background: var(--dark);
-            color: #fff;
-        }
-
-        .chat-input-row {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 10px;
-            margin-top: auto;
-        }
-
-        .chat-input {
-            min-height: 48px;
-            max-height: 140px;
-            resize: vertical;
-            padding: 12px 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            outline: none;
-        }
-
-        .chat-input:focus {
-            border-color: #b5b8c2;
-        }
-
-        .primary-button {
-            border: 0;
-            border-radius: 11px;
-            background: var(--dark);
-            color: white;
-            padding: 12px 18px;
-        }
-
-        .secondary-button {
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: white;
-            color: var(--text);
-            padding: 10px 14px;
-        }
-
-        .secondary-button:hover,
-        .primary-button:hover {
-            opacity: 0.88;
-        }
-
-        .side-column {
-            display: grid;
-            gap: 20px;
-        }
-
-        .status-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-
-        .status-item {
-            background: var(--soft);
-            border-radius: 11px;
-            padding: 12px;
-        }
-
-        .status-label {
-            font-size: 12px;
-            color: var(--muted);
-            margin-bottom: 5px;
-        }
-
-        .status-value {
-            font-size: 15px;
-            font-weight: 600;
-        }
-
-        .status-ok {
-            color: var(--success);
-        }
-
-        .status-bad {
-            color: var(--danger);
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-        }
-
-        .stat {
-            background: var(--soft);
-            border-radius: 11px;
-            padding: 14px;
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-        }
-
-        .stat-label {
-            margin-top: 4px;
-            color: var(--muted);
-            font-size: 12px;
-        }
-
-        .list {
-            display: grid;
-            gap: 9px;
-        }
-
-        .list-item {
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 11px 12px;
-            background: #fff;
-        }
-
-        .list-item-title {
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .list-item-meta {
-            color: var(--muted);
-            font-size: 12px;
-        }
-
-        .suggestions-list {
-            max-height: 430px;
-            overflow-y: auto;
-            padding-right: 4px;
-        }
-
-        .suggestion {
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            padding: 12px;
-            margin-bottom: 10px;
-        }
-
-        .suggestion:last-child {
-            margin-bottom: 0;
-        }
-
-        .suggestion-status {
-            display: inline-block;
-            margin-top: 8px;
-            padding: 4px 8px;
-            border-radius: 7px;
-            background: var(--soft);
-            color: var(--muted);
-            font-size: 12px;
-        }
-
-        .suggestion-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-top: 12px;
-        }
-
-        .suggestion-action {
-            flex: 1;
-            min-width: 100px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 9px;
-            background: white;
-        }
-
-        .suggestion-action:hover {
-            background: var(--soft);
-        }
-
-        .suggestion-action:disabled {
-            cursor: default;
-            opacity: 0.55;
-        }
-
-        .reports-card {
-            margin-top: 20px;
-        }
-
-        .reports-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .report-empty {
-            padding: 28px;
-            text-align: center;
-            border: 1px dashed var(--border);
-            border-radius: 12px;
-            color: var(--muted);
-        }
-
-        .report-note {
-            margin-top: 8px;
-            font-size: 13px;
-        }
-
-        .research-card {
-            margin-top: 20px;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 16px;
-        }
-
-        .tab {
-            border: 1px solid var(--border);
-            background: white;
-            border-radius: 10px;
-            padding: 9px 13px;
-        }
-
-        .tab.active {
-            background: var(--dark);
-            color: white;
-            border-color: var(--dark);
-        }
-
-        .controls {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-        }
-
-        input,
-        select {
-            padding: 11px 13px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: white;
-        }
-
-        .search-row {
-            display: grid;
-            grid-template-columns: auto 1fr auto;
-            gap: 10px;
-        }
-
-        .search-row input {
-            width: 100%;
-        }
-
-        .research-status {
-            margin-top: 10px;
-            color: var(--muted);
-            font-size: 13px;
-        }
-
-        .table-wrapper {
-            overflow-x: auto;
-            margin-top: 16px;
-        }
-
-        table {
-            width: 100%;
-            min-width: 850px;
-            border-collapse: collapse;
-        }
-
-        th,
-        td {
-            padding: 10px;
-            border-bottom: 1px solid var(--border);
-            text-align: left;
-            vertical-align: top;
-        }
-
-        th {
-            background: #fafafa;
-        }
-
-        td a {
-            color: var(--text);
-            text-decoration: none;
-        }
-
-        td a:hover {
-            text-decoration: underline;
-        }
-
-        .badge {
-            display: inline-block;
-            background: var(--soft);
-            border-radius: 7px;
-            padding: 5px 8px;
-            font-size: 12px;
-        }
-
-        .empty {
-            padding: 16px 0;
-            color: var(--muted);
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        .footer-note {
-            margin-top: 22px;
-            color: var(--muted);
-            font-size: 12px;
-            text-align: center;
-        }
-
-        @media (max-width: 980px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .chat-card {
-                min-height: auto;
-            }
-
-            .stats-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-
-        @media (max-width: 700px) {
-            .container {
-                padding: 16px;
-            }
-
-            .chat-input-row,
-            .search-row {
-                grid-template-columns: 1fr;
-            }
-
-            .status-grid,
-            .stats-grid {
-                grid-template-columns: 1fr 1fr;
-            }
-
-            .message-bubble {
-                max-width: 92%;
-            }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Director — YouTube Research</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f8;
+      --surface: #fff;
+      --text: #20232a;
+      --muted: #707784;
+      --border: #e3e6ec;
+      --soft: #f1f3f7;
+      --accent: #252a34;
+      --green: #18794e;
+      --amber: #946200;
+      --red: #b42318;
+      --shadow: 0 8px 28px rgba(25, 32, 45, .06);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .container { width: min(1480px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 48px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: clamp(26px, 4vw, 36px); letter-spacing: -.04em; }
+    h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+    h3 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 8px 0; }
+    .subtitle, .muted, .meta { color: var(--muted); }
+    .subtitle { margin-top: 5px; }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); padding: 22px; min-width: 0; }
+    .recommendations-panel { margin-bottom: 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 16px; }
+    .panel-head p { margin: 4px 0 0; color: var(--muted); }
+    .recommendations-scroll { height: min(68vh, 760px); min-height: 430px; overflow-y: auto; padding: 2px 8px 2px 2px; scrollbar-gutter: stable; }
+    .recommendations-list { display: grid; gap: 13px; }
+    .recommendation { border: 1px solid var(--border); border-radius: 14px; padding: 18px; background: #fff; }
+    .recommendation h3 { font-size: 18px; margin: 0 0 8px; }
+    .recommendation p { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .recommendation .action-text { margin-top: 12px; padding: 12px 14px; background: var(--soft); border-radius: 10px; }
+    .recommendation-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .pill { display: inline-flex; padding: 4px 9px; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .pill.green { background: #e8f5ee; color: var(--green); }
+    .pill.amber { background: #fff4d6; color: var(--amber); }
+    .pill.red { background: #fdecea; color: var(--red); }
+    .recommendation-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .lower-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    textarea { width: 100%; min-height: 150px; resize: vertical; border: 1px solid var(--border); border-radius: 12px; padding: 14px; font: inherit; line-height: 1.5; outline: none; }
+    textarea:focus { border-color: #858d9b; box-shadow: 0 0 0 3px rgba(80, 95, 120, .1); }
+    button { font: inherit; cursor: pointer; border-radius: 10px; padding: 10px 14px; border: 1px solid var(--border); background: white; color: var(--text); }
+    button:hover { filter: brightness(.97); }
+    button:disabled { opacity: .55; cursor: wait; }
+    .primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 600; }
+    .panel-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+    .status-line { color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .result-box { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-height: 240px; overflow: auto; }
+    .tasks-list { display: grid; gap: 10px; }
+    .task { padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; }
+    .task-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .task-name { font-weight: 600; }
+    .task-reason { margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .empty { padding: 28px 16px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; }
+    .footer-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 18px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 850px) { .lower-grid { grid-template-columns: 1fr; } .recommendations-scroll { height: 58vh; min-height: 350px; } }
+    @media (max-width: 560px) { .container { width: min(100% - 24px, 1480px); padding-top: 20px; } header { align-items: flex-start; flex-direction: column; } .panel { padding: 16px; } .panel-head { align-items: flex-start; } .recommendations-scroll { min-height: 300px; } }
+  </style>
 </head>
-
 <body>
-
-<div class="container">
-
-    <header class="page-header">
-        <h1>📊 Аналитика для Дашули</h1>
-        <div class="subtitle">
-            AI Director для анализа YouTube, стратегии и развития канала.
-        </div>
+  <main class="container">
+    <header>
+      <div>
+        <h1>AI Director</h1>
+        <div class="subtitle">Исследование YouTube · стратегия · рекомендации</div>
+      </div>
+      <button type="button" onclick="refreshDashboard()">↻ Обновить данные</button>
     </header>
 
-
-    <!-- =====================================================
-         MAIN DASHBOARD
-    ====================================================== -->
-
-    <div class="dashboard-grid">
-
-        <!-- =================================================
-             CHAT
-        ================================================== -->
-
-        <section class="card chat-card">
-
-            <div class="chat-header">
-                <div>
-                    <h2>💬 AI Director</h2>
-                    <div id="chatStatus" class="chat-status">
-                        Подключаемся к Director...
-                    </div>
-                </div>
-
-                <button
-                    class="secondary-button"
-                    onclick="refreshDashboard()"
-                >
-                    ↻ Обновить
-                </button>
-            </div>
-
-            <div
-                id="chatMessages"
-                class="chat-messages"
-            >
-                <div class="message assistant">
-                    <div class="message-bubble">
-                        Привет! Я готова анализировать данные системы,
-                        обсуждать стратегию и отвечать на вопросы.
-                    </div>
-                </div>
-            </div>
-
-            <div class="chat-input-row">
-
-                <textarea
-                    id="chatInput"
-                    class="chat-input"
-                    placeholder="Напиши вопрос AI Director..."
-                    onkeydown="handleChatKeydown(event)"
-                ></textarea>
-
-                <button
-                    class="primary-button"
-                    onclick="sendChat()"
-                >
-                    Отправить
-                </button>
-
-            </div>
-
-        </section>
-
-
-        <!-- =================================================
-             SIDE
-        ================================================== -->
-
-        <div class="side-column">
-
-            <!-- SYSTEM STATUS -->
-
-            <section class="card">
-
-                <h2>🟢 Состояние системы</h2>
-
-                <div class="status-grid">
-
-                    <div class="status-item">
-                        <div class="status-label">
-                            AI
-                        </div>
-                        <div
-                            id="statusAi"
-                            class="status-value"
-                        >
-                            Проверка...
-                        </div>
-                    </div>
-
-                    <div class="status-item">
-                        <div class="status-label">
-                            MCP
-                        </div>
-                        <div
-                            id="statusMcp"
-                            class="status-value"
-                        >
-                            Проверка...
-                        </div>
-                    </div>
-
-                    <div class="status-item">
-                        <div class="status-label">
-                            Режим
-                        </div>
-                        <div
-                            id="statusMode"
-                            class="status-value"
-                        >
-                            Проверка...
-                        </div>
-                    </div>
-
-                    <div class="status-item">
-                        <div class="status-label">
-                            Автономность
-                        </div>
-                        <div
-                            id="statusAutonomous"
-                            class="status-value"
-                        >
-                            Проверка...
-                        </div>
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            <!-- STATISTICS -->
-
-            <section class="card">
-
-                <h2>📈 Краткая статистика</h2>
-
-                <div class="stats-grid">
-
-                    <div class="stat">
-                        <div
-                            id="statRuns"
-                            class="stat-value"
-                        >
-                            0
-                        </div>
-                        <div class="stat-label">
-                            анализов
-                        </div>
-                    </div>
-
-                    <div class="stat">
-                        <div
-                            id="statEvents"
-                            class="stat-value"
-                        >
-                            0
-                        </div>
-                        <div class="stat-label">
-                            событий
-                        </div>
-                    </div>
-
-                    <div class="stat">
-                        <div
-                            id="statSuggestions"
-                            class="stat-value"
-                        >
-                            0
-                        </div>
-                        <div class="stat-label">
-                            предложений
-                        </div>
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            <!-- TASKS -->
-
-            <section class="card">
-
-                <h2>🎯 Текущие задачи</h2>
-
-                <div
-                    id="tasksList"
-                    class="list"
-                >
-                    <div class="empty">
-                        Загружаем...
-                    </div>
-                </div>
-
-            </section>
-
-
-            <!-- AI SUGGESTIONS -->
-
-            <section class="card">
-
-                <h2>💡 Предложения AI</h2>
-
-                <div
-                    id="suggestionsList"
-                    class="suggestions-list"
-                >
-                    <div class="empty">
-                        Загружаем...
-                    </div>
-                </div>
-
-                <div
-                    id="decisionStatus"
-                    class="research-status"
-                ></div>
-
-            </section>
-
-
-            <!-- EVENTS -->
-
-            <section class="card">
-
-                <h2>🕒 Последние события</h2>
-
-                <div
-                    id="eventsList"
-                    class="list"
-                >
-                    <div class="empty">
-                        Загружаем...
-                    </div>
-                </div>
-
-            </section>
-
+    <section class="panel recommendations-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Рекомендации директора</h2>
+          <p>Каждая рекомендация сохраняется отдельно и остаётся здесь после обновления страницы.</p>
         </div>
-
-    </div>
-
-
-    <!-- =====================================================
-         WEEKLY REPORTS
-    ====================================================== -->
-
-    <section class="card reports-card">
-
-        <div class="reports-header">
-
-            <div>
-                <h2>📊 Еженедельные отчёты</h2>
-
-                <div class="muted">
-                    Отдельное пространство для анализа недели.
-                </div>
-            </div>
-
-            <button
-                class="secondary-button"
-                onclick="showReportMessage()"
-            >
-                Обновить
-            </button>
-
+        <span class="pill" id="recommendationCount">Загрузка…</span>
+      </div>
+      <div class="recommendations-scroll">
+        <div class="recommendations-list" id="recommendationsList">
+          <div class="empty">Загружаем сохранённые рекомендации…</div>
         </div>
-
-        <div
-            id="weeklyReports"
-            style="margin-top: 16px;"
-        >
-            <div class="report-empty">
-                Еженедельный отчёт пока не сформирован.
-                <div class="report-note">
-                    Weekly Report Engine подключим после завершения
-                    памяти Director.
-                </div>
-            </div>
-        </div>
-
+      </div>
+      <div class="footer-row">
+        <span id="recommendationStatus">Данные загружаются из памяти директора.</span>
+        <span>Прокручивай список внутри блока</span>
+      </div>
     </section>
 
-
-    <!-- =====================================================
-         RESEARCH TOOLS
-    ====================================================== -->
-
-    <section class="card research-card">
-
-        <h2>🔎 Исследовательские инструменты</h2>
-
-        <div class="tabs">
-
-            <button
-                id="searchTab"
-                class="tab active"
-                onclick="showResearchTool('search')"
-            >
-                Поиск
-            </button>
-
-            <button
-                id="radarTab"
-                class="tab"
-                onclick="showResearchTool('radar')"
-            >
-                Радар роста
-            </button>
-
-            <button
-                id="trendsTab"
-                class="tab"
-                onclick="showResearchTool('trends')"
-            >
-                Тренды
-            </button>
-
+    <div class="lower-grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Запустить цикл директора</h2>
+            <p>Задай цель — директор выполнит автономный цикл.</p>
+          </div>
         </div>
+        <form id="runForm">
+          <label for="objective" class="muted">Цель исследования</label>
+          <textarea id="objective" name="objective" placeholder="Например: исследуй перспективные ниши YouTube для новых каналов, сравни спрос, конкуренцию и потенциал монетизации; сохрани выводы и предложи приоритетные действия."></textarea>
+          <div class="panel-actions">
+            <span class="status-line" id="runStatus">Готов к запуску.</span>
+            <button class="primary" id="runButton" type="submit">Запустить цикл</button>
+          </div>
+        </form>
+        <div id="runResult" class="result-box" hidden></div>
+      </section>
 
-
-        <!-- SEARCH TOOL -->
-
-        <div id="searchTool">
-
-            <div class="search-row">
-
-                <select id="searchMode">
-                    <option value="channels">
-                        📺 Каналы
-                    </option>
-
-                    <option value="videos">
-                        🎬 Видео
-                    </option>
-                </select>
-
-                <input
-                    id="searchInput"
-                    type="text"
-                    placeholder="Например: AI, fitness, технологии..."
-                    onkeydown="if (event.key === 'Enter') runSearch()"
-                >
-
-                <button
-                    class="primary-button"
-                    onclick="runSearch()"
-                >
-                    🔎 Найти
-                </button>
-
-            </div>
-
-            <div
-                id="searchStatus"
-                class="research-status"
-            ></div>
-
-            <div
-                id="searchResults"
-            ></div>
-
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Текущие задачи</h2>
+            <p>Рабочий план, который директор сформировал для себя.</p>
+          </div>
+          <button type="button" onclick="loadTasks()">Обновить</button>
         </div>
-
-
-        <!-- RADAR TOOL -->
-
-        <div
-            id="radarTool"
-            class="hidden"
-        >
-
-            <div class="controls">
-
-                <select id="radarLanguage">
-
-                    <option value="ru">
-                        🇷🇺 Русский
-                    </option>
-
-                    <option value="en">
-                        🇺🇸 English
-                    </option>
-
-                    <option value="hi">
-                        🇮🇳 हिन्दी
-                    </option>
-
-                    <option value="zh-Hans">
-                        🇨🇳 中文
-                    </option>
-
-                </select>
-
-                <select id="radarHours">
-
-                    <option value="24">
-                        24 часа
-                    </option>
-
-                    <option value="48">
-                        48 часов
-                    </option>
-
-                    <option value="72" selected>
-                        72 часа
-                    </option>
-
-                    <option value="168">
-                        7 дней
-                    </option>
-
-                </select>
-
-                <button
-                    class="primary-button"
-                    onclick="runRadar()"
-                >
-                    🚀 Запустить
-                </button>
-
-            </div>
-
-            <div
-                id="radarStatus"
-                class="research-status"
-            ></div>
-
-            <div
-                id="radarResults"
-            ></div>
-
+        <div id="tasksGoal" class="muted" style="margin-bottom:12px"></div>
+        <div id="tasksList" class="tasks-list">
+          <div class="empty">Загружаем рабочий план директора…</div>
         </div>
-
-
-        <!-- TRENDS TOOL -->
-
-        <div
-            id="trendsTool"
-            class="hidden"
-        >
-
-            <div class="controls">
-
-                <select id="trendRegion">
-
-                    <option value="RU">
-                        🇷🇺 Россия
-                    </option>
-
-                    <option value="US">
-                        🇺🇸 США
-                    </option>
-
-                    <option value="IN">
-                        🇮🇳 Индия
-                    </option>
-
-                    <option value="ZA">
-                        🇿🇦 Южная Африка
-                    </option>
-
-                    <option value="CN">
-                        🇨🇳 Китай
-                    </option>
-
-                </select>
-
-                <button
-                    class="primary-button"
-                    onclick="runTrends()"
-                >
-                    🔥 Показать тренды
-                </button>
-
-            </div>
-
-            <div
-                id="trendStatus"
-                class="research-status"
-            ></div>
-
-            <div
-                id="trendResults"
-            ></div>
-
-        </div>
-
-    </section>
-
-
-    <div class="footer-note">
-        Технические endpoints системы остаются доступны отдельно.
+        <div id="tasksMeta" class="footer-row"></div>
+      </section>
     </div>
 
-</div>
+    <div class="footer-row">
+      <span id="pageStatus">Подключение к серверу…</span>
+      <span>AI Director · YouTube Research</span>
+    </div>
+  </main>
 
-
-<script>
-
-    // ========================================================
-    // STATE
-    // ========================================================
-
-    let latestRun = null;
-    let latestSuggestions = [];
-
-
-    // ========================================================
-    // HELPERS
-    // ========================================================
+  <script>
+    const $ = (id) => document.getElementById(id);
 
     function escapeHtml(value) {
-
-        if (
-            value === null ||
-            value === undefined
-        ) {
-            return "";
-        }
-
-        return String(value)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
+      if (value === null || value === undefined) return "";
+      return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     }
-
 
     function formatDate(value) {
-
-        if (!value) {
-            return "—";
-        }
-
-        const date = new Date(value);
-
-        if (Number.isNaN(date.getTime())) {
-            return value;
-        }
-
-        return date.toLocaleString("ru-RU");
+      if (!value) return "";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("ru-RU");
     }
 
-
-    function formatNumber(value) {
-
-        if (
-            value === null ||
-            value === undefined ||
-            value === ""
-        ) {
-            return "0";
-        }
-
-        const number = Number(value);
-
-        if (Number.isNaN(number)) {
-            return String(value);
-        }
-
-        return number.toLocaleString("ru-RU");
+    function statusLabel(status) {
+      const key = String(status || "new").toLowerCase();
+      const labels = {
+        new: "Новая", pending: "Новая", created: "Новая",
+        accepted: "Одобрена", rejected: "Отклонена",
+        discussed: "Обсуждается", clarify: "Обсуждается",
+        required: "Нужно выполнить", satisfied: "Выполнена",
+        next: "Следующий этап", blocked: "Заблокирована",
+        running: "Выполняется", completed: "Завершена"
+      };
+      return labels[key] || key;
     }
 
-
-    function getNestedData(object, path, fallback = null) {
-
-        let current = object;
-
-        for (const key of path) {
-
-            if (
-                current === null ||
-                current === undefined ||
-                current[key] === undefined
-            ) {
-                return fallback;
-            }
-
-            current = current[key];
-        }
-
-        return current;
+    function statusClass(status) {
+      const key = String(status || "").toLowerCase();
+      if (["accepted", "satisfied", "completed"].includes(key)) return "green";
+      if (["blocked", "rejected", "failed"].includes(key)) return "red";
+      if (["required", "running", "next"].includes(key)) return "amber";
+      return "";
     }
 
-
-    // ========================================================
-    // CHAT
-    // ========================================================
-
-    function addChatMessage(
-        role,
-        text
-    ) {
-
-        const container =
-            document.getElementById(
-                "chatMessages"
-            );
-
-        const message =
-            document.createElement(
-                "div"
-            );
-
-        message.className =
-            "message " + role;
-
-        const bubble =
-            document.createElement(
-                "div"
-            );
-
-        bubble.className =
-            "message-bubble";
-
-        bubble.textContent =
-            text;
-
-        message.appendChild(
-            bubble
-        );
-
-        container.appendChild(
-            message
-        );
-
-        container.scrollTop =
-            container.scrollHeight;
+    async function readJson(response) {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || ("HTTP " + response.status));
+      }
+      return data;
     }
 
-
-    function handleChatKeydown(event) {
-
-        if (
-            event.key === "Enter" &&
-            !event.shiftKey
-        ) {
-            event.preventDefault();
-            sendChat();
+    async function loadRecommendations() {
+      const list = $("recommendationsList");
+      try {
+        const data = await readJson(await fetch("/director/recommendations?limit=100"));
+        const items = Array.isArray(data.recommendations) ? data.recommendations : [];
+        items.sort((a, b) => new Date(b.created_at || b.updated_at || 0) - new Date(a.created_at || a.updated_at || 0));
+        $("recommendationCount").textContent = items.length + " шт.";
+        $("recommendationStatus").textContent = "Сохранено в памяти директора.";
+        if (!items.length) {
+          list.innerHTML = '<div class="empty">Пока нет сохранённых рекомендаций. Запусти цикл директора — готовые рекомендации появятся здесь.</div>';
+          return;
         }
+        list.innerHTML = "";
+        items.forEach((item) => {
+          const id = item.recommendation_id || item.id || "";
+          const title = item.title || item.name || "Рекомендация директора";
+          const summary = item.description || item.summary || item.rationale || "";
+          const action = item.suggested_action || item.proposed_action || item.action || "";
+          const status = item.status || "new";
+          const card = document.createElement("article");
+          card.className = "recommendation";
+          card.innerHTML =
+            '<div class="recommendation-top"><h3>' + escapeHtml(title) + '</h3>' +
+            '<span class="pill ' + statusClass(status) + '">' + escapeHtml(statusLabel(status)) + '</span></div>' +
+            (summary ? '<p>' + escapeHtml(summary) + '</p>' : '') +
+            (action ? '<div class="action-text"><strong>Предлагаемое действие:</strong><br>' + escapeHtml(action) + '</div>' : '') +
+            (item.confidence !== undefined && item.confidence !== null ? '<div class="meta" style="margin-top:10px">Уверенность: ' + escapeHtml(Math.round(Number(item.confidence) * 100)) + '%</div>' : '') +
+            (item.created_at ? '<div class="meta" style="margin-top:6px;font-size:12px">' + escapeHtml(formatDate(item.created_at)) + '</div>' : '') +
+            (id ? '<div class="recommendation-actions">' +
+              '<button type="button" data-id="' + escapeHtml(id) + '" data-action="accept">Одобрить</button>' +
+              '<button type="button" data-id="' + escapeHtml(id) + '" data-action="discuss">Обсудить</button>' +
+              '<button type="button" data-id="' + escapeHtml(id) + '" data-action="reject">Отклонить</button>' +
+              '</div>' : '');
+          list.appendChild(card);
+        });
+        list.querySelectorAll("button[data-action]").forEach((button) => {
+          button.addEventListener("click", () => recommendationAction(button.dataset.id, button.dataset.action, button));
+        });
+      } catch (error) {
+        $("recommendationCount").textContent = "Ошибка";
+        $("recommendationStatus").textContent = error.message;
+        list.innerHTML = '<div class="empty">Не удалось загрузить рекомендации: ' + escapeHtml(error.message) + '</div>';
+      }
     }
 
-
-    async function sendChat() {
-
-        const input =
-            document.getElementById(
-                "chatInput"
-            );
-
-        const message =
-            input.value.trim();
-
-        if (!message) {
-            return;
-        }
-
-        addChatMessage(
-            "user",
-            message
-        );
-
-        input.value = "";
-
-        const status =
-            document.getElementById(
-                "chatStatus"
-            );
-
-        status.textContent =
-            "Director думает...";
-
-        try {
-
-            const response =
-                await fetch(
-                    "/director/chat",
-                    {
-                        method: "POST",
-
-                        headers: {
-                            "Content-Type":
-                                "application/json"
-                        },
-
-                        body: JSON.stringify({
-                            message: message
-                        })
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    getNestedData(
-                        data,
-                        [
-                            "detail",
-                            "response"
-                        ],
-                        "Ошибка Chat API"
-                    )
-                );
-            }
-
-            const answer =
-                getNestedData(
-                    data,
-                    [
-                        "result",
-                        "answer"
-                    ],
-                    null
-                );
-
-            if (!answer) {
-
-                throw new Error(
-                    "AI не вернул ответ"
-                );
-            }
-
-            addChatMessage(
-                "assistant",
-                answer
-            );
-
-            status.textContent =
-                "AI Director подключён";
-
-            await refreshDashboard();
-
-        } catch (error) {
-
-            addChatMessage(
-                "assistant",
-                "Не удалось получить ответ: " +
-                error.message
-            );
-
-            status.textContent =
-                "Ошибка соединения";
-        }
+    async function recommendationAction(id, action, button) {
+      button.disabled = true;
+      try {
+        await readJson(await fetch("/director/recommendations/" + encodeURIComponent(id) + "/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: action })
+        }));
+        $("recommendationStatus").textContent = "Решение сохранено.";
+        await loadRecommendations();
+      } catch (error) {
+        $("recommendationStatus").textContent = "Не удалось сохранить решение: " + error.message;
+        button.disabled = false;
+      }
     }
 
+    async function loadTasks() {
+      const list = $("tasksList");
+      try {
+        const data = await readJson(await fetch("/director-debug"));
+        const plan = data.current_work_plan || {};
+        const tasks = Array.isArray(plan.tasks) ? plan.tasks : [];
+        $("tasksGoal").textContent = plan.goal ? "Цель: " + plan.goal : "Директор ещё не сформировал рабочий план.";
+        if (!tasks.length) {
+          list.innerHTML = '<div class="empty">Задачи появятся после того, как директор проведёт оценку проекта и сформирует рабочий план.</div>';
+        } else {
+          list.innerHTML = "";
+          tasks.forEach((task) => {
+            const item = document.createElement("article");
+            item.className = "task";
+            item.innerHTML =
+              '<div class="task-head"><div class="task-name">' + escapeHtml(task.task || task.objective || task.id || "Задача") + '</div>' +
+              '<span class="pill ' + statusClass(task.status) + '">' + escapeHtml(statusLabel(task.status)) + '</span></div>' +
+              (task.reason ? '<div class="task-reason">' + escapeHtml(task.reason) + '</div>' : '');
+            list.appendChild(item);
+          });
+        }
+        const blockers = Array.isArray(plan.blockers) ? plan.blockers.length : 0;
+        $("tasksMeta").textContent = (plan.created_at ? "План обновлён: " + formatDate(plan.created_at) : "") +
+          (blockers ? " · Блокировок: " + blockers : "");
+      } catch (error) {
+        list.innerHTML = '<div class="empty">Не удалось загрузить задачи: ' + escapeHtml(error.message) + '</div>';
+      }
+    }
 
-    // ========================================================
-    // DASHBOARD
-    // ========================================================
+    async function startCycle(event) {
+      event.preventDefault();
+      const objective = $("objective").value.trim();
+      const button = $("runButton");
+      const status = $("runStatus");
+      const result = $("runResult");
+      if (!objective) {
+        status.textContent = "Сначала укажи цель исследования.";
+        $("objective").focus();
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "Директор работает…";
+      status.textContent = "Запускаем автономный цикл. Не закрывай страницу.";
+      result.hidden = true;
+      result.textContent = "";
+      try {
+        const url = "/director/autonomous/run?objective=" + encodeURIComponent(objective);
+        const data = await readJson(await fetch(url, { method: "POST" }));
+        status.textContent = "Цикл завершён. Статус: " + (data.status || "ответ получен") +
+          (data.run_id ? " · Run #" + data.run_id : "");
+        result.hidden = false;
+        result.textContent = JSON.stringify(data, null, 2);
+        await refreshDashboard();
+      } catch (error) {
+        status.textContent = "Запуск не завершился успешно: " + error.message;
+        result.hidden = false;
+        result.textContent = "Проверь историю и логи директора. Ошибка: " + error.message;
+        await loadTasks();
+        await loadRecommendations();
+      } finally {
+        button.disabled = false;
+        button.textContent = "Запустить цикл";
+      }
+    }
 
     async function refreshDashboard() {
-
-        await Promise.all([
-            loadSystemStatus(),
-            loadHistory(),
-            loadRecommendations(),
-            loadEvents()
-        ]);
+      $("pageStatus").textContent = "Обновляем данные…";
+      await Promise.all([loadRecommendations(), loadTasks()]);
+      $("pageStatus").textContent = "Данные обновлены: " + new Date().toLocaleTimeString("ru-RU");
     }
 
-
-   async function loadSystemStatus() {
-
-    try {
-
-        const [
-            systemResponse,
-            aiResponse
-        ] = await Promise.all([
-            fetch("/system/status"),
-            fetch("/ai/status")
-        ]);
-
-        const systemData =
-            await systemResponse.json();
-
-        const aiData =
-            await aiResponse.json();
-
-        if (!systemResponse.ok) {
-            throw new Error(
-                "Не удалось получить состояние системы"
-            );
-        }
-
-        if (!aiResponse.ok) {
-            throw new Error(
-                "Не удалось получить состояние AI"
-            );
-        }
-
-        const aiEnabled =
-            aiData.enabled === true;
-
-        const mcpConfigured =
-            typeof systemData.mcp_url === "string" &&
-            (
-                systemData.mcp_url.startsWith("http://") ||
-                systemData.mcp_url.startsWith("https://")
-            );
-
-        const freeMode =
-            systemData.free_mode === true;
-
-        const autonomous =
-            systemData.autonomous === true;
-
-        setStatus(
-            "statusAi",
-            aiEnabled
-                ? "OpenRouter ✓"
-                : "AI выключен",
-            aiEnabled
-        );
-
-        setStatus(
-            "statusMcp",
-            mcpConfigured
-                ? "Подключён ✓"
-                : "Не настроен",
-            mcpConfigured
-        );
-
-        setStatus(
-            "statusMode",
-            freeMode
-                ? "FREE"
-                : "Другой",
-            true
-        );
-
-        setStatus(
-            "statusAutonomous",
-            autonomous
-                ? "Включена"
-                : "Выключена",
-            !autonomous
-        );
-
-        document.getElementById(
-            "chatStatus"
-        ).textContent =
-            aiEnabled
-                ? "AI Director подключён"
-                : "AI Director недоступен";
-
-    } catch (error) {
-
-        setStatus(
-            "statusAi",
-            "Ошибка проверки",
-            false
-        );
-
-        setStatus(
-            "statusMcp",
-            "Ошибка проверки",
-            false
-        );
-
-        document.getElementById(
-            "chatStatus"
-        ).textContent =
-            "Не удалось проверить состояние системы";
-    }
-}
-    
-
-    function setStatus(
-        elementId,
-        text,
-        ok
-    ) {
-
-        const element =
-            document.getElementById(
-                elementId
-            );
-
-        element.textContent =
-            text;
-
-        element.classList.toggle(
-            "status-ok",
-            ok
-        );
-
-        element.classList.toggle(
-            "status-bad",
-            !ok
-        );
-    }
-
-
-    async function loadHistory() {
-
-        try {
-
-            const response =
-                await fetch(
-                    "/director/history"
-                );
-
-            const data =
-                await response.json();
-
-            const runs =
-                Array.isArray(data)
-                    ? data
-                    : (
-                        Array.isArray(
-                            data.runs
-                        )
-                            ? data.runs
-                            : []
-                    );
-
-            document.getElementById(
-                "statRuns"
-            ).textContent =
-                formatNumber(
-                    runs.length
-                );
-
-            renderTasks(
-                runs
-            );
-
-            latestRun = runs.length ? runs[0] : null;
-
-        } catch (error) {
-
-            document.getElementById(
-                "statRuns"
-            ).textContent = "0";
-
-            renderTasks([]);
-            renderSuggestions([]);
-        }
-    }
-
-
-    function renderTasks(
-        runs
-    ) {
-
-        const container =
-            document.getElementById(
-                "tasksList"
-            );
-
-        container.innerHTML = "";
-
-        if (!runs.length) {
-
-            container.innerHTML =
-                `
-                <div class="empty">
-                    Пока нет завершённых Director runs.
-                </div>
-                `;
-
-            return;
-        }
-
-        const latest =
-            runs[0];
-
-        const data =
-            latest.data || {};
-
-        const nextAction =
-            data.next_action ||
-            "requires_user_decision";
-
-        const item =
-            document.createElement(
-                "div"
-            );
-
-        item.className =
-            "list-item";
-
-        item.innerHTML =
-            `
-            <div class="list-item-title">
-                Последний цикл Director
-            </div>
-
-            <div class="list-item-meta">
-                ${escapeHtml(
-                    nextAction
-                )}
-            </div>
-            `;
-
-        container.appendChild(
-            item
-        );
-    }
-
-
-    function renderSuggestions(
-        runs
-    ) {
-
-        const container =
-            document.getElementById(
-                "suggestionsList"
-            );
-
-        async function loadRecommendations() {
-
-        const container =
-            document.getElementById(
-                "suggestionsList"
-            );
-
-        try {
-
-            const response =
-                await fetch(
-                    "/director/recommendations?limit=100"
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-                throw new Error(
-                    data.error ||
-                    getNestedData(
-                        data,
-                        ["detail"],
-                        "Не удалось загрузить рекомендации"
-                    )
-                );
-            }
-
-            const recommendations =
-                Array.isArray(data.recommendations)
-                    ? data.recommendations
-                    : [];
-
-            recommendations.sort(
-                (a, b) => {
-                    const aDate = new Date(
-                        a.created_at || a.updated_at || 0
-                    ).getTime();
-
-                    const bDate = new Date(
-                        b.created_at || b.updated_at || 0
-                    ).getTime();
-
-                    return bDate - aDate;
-                }
-            );
-
-            latestSuggestions =
-                recommendations;
-
-            document.getElementById(
-                "statSuggestions"
-            ).textContent =
-                formatNumber(
-                    recommendations.length
-                );
-
-            renderRecommendations(
-                recommendations,
-                container
-            );
-
-        } catch (error) {
-
-            latestSuggestions = [];
-
-            document.getElementById(
-                "statSuggestions"
-            ).textContent = "0";
-
-            container.innerHTML =
-                `
-                <div class="empty">
-                    Не удалось загрузить рекомендации.
-                </div>
-                `;
-        }
-    }
-
-
-    function renderRecommendations(
-        recommendations,
-        container
-    ) {
-
-        container.innerHTML = "";
-
-        if (!recommendations.length) {
-
-            container.innerHTML =
-                `
-                <div class="empty">
-                    Пока нет сохранённых рекомендаций Director.
-                </div>
-                `;
-
-            return;
-        }
-
-        recommendations.forEach(
-            recommendation => {
-
-                const block =
-                    document.createElement(
-                        "div"
-                    );
-
-                block.className =
-                    "suggestion";
-
-                const title =
-                    recommendation.title ||
-                    "Рекомендация Director";
-
-                const summary =
-                    recommendation.description ||
-                    recommendation.summary ||
-                    "";
-
-                const action =
-                    recommendation.suggested_action ||
-                    recommendation.proposed_action ||
-                    "";
-
-                const confidence =
-                    recommendation.confidence !== undefined &&
-                    recommendation.confidence !== null
-                        ? "Уверенность: " +
-                          Math.round(
-                              Number(recommendation.confidence) * 100
-                          ) +
-                          "%"
-                        : "";
-
-                const recommendationId =
-                    recommendation.recommendation_id ||
-                    recommendation.id ||
-                    "";
-
-                const status =
-                    recommendation.status ||
-                    "new";
-
-                const statusLabel = {
-                    new: "Новая",
-                    pending: "Новая",
-                    created: "Новая",
-                    published: "Опубликована",
-                    accepted: "Одобрена",
-                    rejected: "Отказано",
-                    discussed: "Обсуждается",
-                    clarify: "Обсуждается"
-                }[String(status).toLowerCase()] ||
-                    String(status);
-
-                block.innerHTML =
-                    `
-                    <div class="list-item-title">
-                        ${escapeHtml(title)}
-                    </div>
-
-                    ${summary
-                        ? `<div class="list-item-meta">
-                            ${escapeHtml(summary)}
-                          </div>`
-                        : ""}
-
-                    ${action
-                        ? `<div style="margin-top:8px;">
-                            <strong>Действие:</strong>
-                            ${escapeHtml(action)}
-                          </div>`
-                        : ""}
-
-                    ${confidence
-                        ? `<div class="list-item-meta" style="margin-top:6px;">
-                            ${escapeHtml(confidence)}
-                          </div>`
-                        : ""}
-
-                    <div class="suggestion-status">
-                        ${escapeHtml(statusLabel)}
-                    </div>
-
-                    <div class="suggestion-actions">
-                        <button
-                            class="suggestion-action"
-                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'accept')"
-                            ${recommendationId ? "" : "disabled"}
-                        >
-                            Одобрить
-                        </button>
-
-                        <button
-                            class="suggestion-action"
-                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'discuss')"
-                            ${recommendationId ? "" : "disabled"}
-                        >
-                            Обсудить
-                        </button>
-
-                        <button
-                            class="suggestion-action"
-                            onclick="sendRecommendationAction('${escapeHtml(recommendationId)}', 'reject')"
-                            ${recommendationId ? "" : "disabled"}
-                        >
-                            Отказать
-                        </button>
-                    </div>
-                    `;
-
-                container.appendChild(
-                    block
-                );
-            }
-        );
-    }
-
-
-    async function sendRecommendationAction(
-        recommendationId,
-        action
-    ) {
-
-        const status =
-            document.getElementById(
-                "decisionStatus"
-            );
-
-        if (!recommendationId) {
-            status.textContent =
-                "У этой рекомендации нет идентификатора.";
-            return;
-        }
-
-        status.textContent =
-            "Сохраняем решение...";
-
-        try {
-
-            const response =
-                await fetch(
-                    "/director/recommendations/" +
-                    encodeURIComponent(
-                        recommendationId
-                    ) +
-                    "/action",
-                    {
-                        method: "POST",
-
-                        headers: {
-                            "Content-Type":
-                                "application/json"
-                        },
-
-                        body: JSON.stringify({
-                            action: action
-                        })
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-                throw new Error(
-                    data.error ||
-                    getNestedData(
-                        data,
-                        ["detail"],
-                        "Не удалось сохранить решение"
-                    )
-                );
-            }
-
-            status.textContent =
-                "✓ Решение сохранено";
-
-            await loadRecommendations();
-            await loadEvents();
-
-        } catch (error) {
-
-            status.textContent =
-                "Не удалось сохранить решение: " +
-                error.message;
-        }
-    } const data =
-                await response.json();
-
-            const events =
-                Array.isArray(data)
-                    ? data
-                    : (
-                        Array.isArray(
-                            data.events
-                        )
-                            ? data.events
-                            : []
-                    );
-
-            document.getElementById(
-                "statEvents"
-            ).textContent =
-                formatNumber(
-                    events.length
-                );
-
-            const container =
-                document.getElementById(
-                    "eventsList"
-                );
-
-            container.innerHTML = "";
-
-            if (!events.length) {
-
-                container.innerHTML =
-                    `
-                    <div class="empty">
-                        Событий пока нет.
-                    </div>
-                    `;
-
-                return;
-            }
-
-            events.slice(
-                0,
-                5
-            ).forEach(
-                event => {
-
-                    const item =
-                        document.createElement(
-                            "div"
-                        );
-
-                    item.className =
-                        "list-item";
-
-                    item.innerHTML =
-                        `
-                        <div class="list-item-title">
-                            ${escapeHtml(
-                                event.event_type ||
-                                "Событие"
-                            )}
-                        </div>
-
-                        <div class="list-item-meta">
-                            ${formatDate(
-                                event.created_at
-                            )}
-                        </div>
-                        `;
-
-                    container.appendChild(
-                        item
-                    );
-                }
-            );
-
-        } catch (error) {
-
-            document.getElementById(
-                "statEvents"
-            ).textContent = "0";
-        }
-    }
-
-
-    function showReportMessage() {
-
-        const container =
-            document.getElementById(
-                "weeklyReports"
-            );
-
-        container.innerHTML =
-            `
-            <div class="report-empty">
-                Weekly Report Engine ещё не подключён.
-                <div class="report-note">
-                    Сначала завершаем память Director,
-                    затем подключаем автоматические недельные отчёты.
-                </div>
-            </div>
-            `;
-    }
-
-
-    // ========================================================
-    // DECISIONS
-    // ========================================================
-
-    async function sendDecision(
-        decision
-    ) {
-
-        const status =
-            document.getElementById(
-                "decisionStatus"
-            );
-
-        status.textContent =
-            "Сохраняем решение...";
-
-        try {
-
-            const response =
-                await fetch(
-                    "/director/decision",
-                    {
-                        method: "POST",
-
-                        headers: {
-                            "Content-Type":
-                                "application/json"
-                        },
-
-                        body: JSON.stringify({
-                            decision: decision,
-                            run_id:
-                                latestRun
-                                    ? latestRun.id
-                                    : null
-                        })
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    getNestedData(
-                        data,
-                        [
-                            "detail",
-                            "error"
-                        ],
-                        "Не удалось сохранить решение"
-                    )
-                );
-            }
-
-            status.textContent =
-                "✓ Решение сохранено";
-
-            await loadHistory();
-            await loadEvents();
-
-        } catch (error) {
-
-            status.textContent =
-                "Решение пока не подключено: " +
-                error.message;
-        }
-    }
-
-
-    // ========================================================
-    // RESEARCH TABS
-    // ========================================================
-
-    function showResearchTool(
-        tool
-    ) {
-
-        const tools = {
-            search: "searchTool",
-            radar: "radarTool",
-            trends: "trendsTool"
-        };
-
-        const tabs = {
-            search: "searchTab",
-            radar: "radarTab",
-            trends: "trendsTab"
-        };
-
-        Object.values(
-            tools
-        ).forEach(
-            id =>
-                document
-                    .getElementById(id)
-                    .classList.add("hidden")
-        );
-
-        Object.values(
-            tabs
-        ).forEach(
-            id =>
-                document
-                    .getElementById(id)
-                    .classList.remove("active")
-        );
-
-        document
-            .getElementById(
-                tools[tool]
-            )
-            .classList.remove(
-                "hidden"
-            );
-
-        document
-            .getElementById(
-                tabs[tool]
-            )
-            .classList.add(
-                "active"
-            );
-    }
-
-
-    // ========================================================
-    // SEARCH
-    // ========================================================
-
-    async function runSearch() {
-
-        const mode =
-            document.getElementById(
-                "searchMode"
-            ).value;
-
-        const query =
-            document.getElementById(
-                "searchInput"
-            ).value.trim();
-
-        const status =
-            document.getElementById(
-                "searchStatus"
-            );
-
-        const results =
-            document.getElementById(
-                "searchResults"
-            );
-
-        if (!query) {
-
-            status.textContent =
-                "Введите поисковый запрос.";
-
-            return;
-        }
-
-        status.textContent =
-            "Ищем...";
-
-        results.innerHTML = "";
-
-        try {
-
-            const endpoint =
-                mode === "channels"
-                    ? "/search-channels"
-                    : "/search-videos";
-
-            const response =
-                await fetch(
-                    endpoint +
-                    "?query=" +
-                    encodeURIComponent(query) +
-                    "&max_results=20"
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    "Ошибка поиска"
-                );
-            }
-
-            const items =
-                Array.isArray(data)
-                    ? data
-                    : (
-                        data.items ||
-                        data.channels ||
-                        data.videos ||
-                        []
-                    );
-
-            status.textContent =
-                "Найдено: " +
-                items.length;
-
-            renderSearchTable(
-                items,
-                mode
-            );
-
-        } catch (error) {
-
-            status.textContent =
-                "Ошибка: " +
-                error.message;
-        }
-    }
-
-
-function renderSearchTable(
-    items,
-    mode
-) {
-
-    const results =
-        document.getElementById(
-            "searchResults"
-        );
-
-    if (!items.length) {
-
-        results.innerHTML =
-            `
-            <div class="empty">
-                Ничего не найдено.
-            </div>
-            `;
-
-        return;
-    }
-
-    let html =
-        `
-        <div class="table-wrapper">
-        <table>
-        <thead>
-        <tr>
-            <th>№</th>
-            <th>Название</th>
-            <th>Канал</th>
-            <th>Просмотры</th>
-            <th>Дата</th>
-        </tr>
-        </thead>
-        <tbody>
-        `;
-
-    items.forEach(
-        (item, index) => {
-
-            const snippet =
-                item.snippet &&
-                typeof item.snippet === "object"
-                    ? item.snippet
-                    : {};
-
-            const statistics =
-                item.statistics &&
-                typeof item.statistics === "object"
-                    ? item.statistics
-                    : {};
-
-            const itemId =
-                item.id &&
-                typeof item.id === "object"
-                    ? item.id
-                    : {};
-
-            const title =
-                item.title ||
-                snippet.title ||
-                "Без названия";
-
-            const channel =
-                item.channel_title ||
-                item.channelTitle ||
-                snippet.channelTitle ||
-                "—";
-
-            const views =
-                item.views ??
-                item.viewCount ??
-                statistics.viewCount ??
-                0;
-
-            const published =
-                item.published_at ||
-                item.publishedAt ||
-                snippet.publishedAt ||
-                null;
-
-            let link = "#";
-
-            if (mode === "videos") {
-
-                const videoId =
-                    item.video_id ||
-                    (
-                        typeof item.id === "string"
-                            ? item.id
-                            : itemId.videoId
-                    );
-
-                if (videoId) {
-
-                    link =
-                        "https://www.youtube.com/watch?v=" +
-                        videoId;
-                }
-            }
-
-            if (mode === "channels") {
-
-                const channelId =
-                    item.channel_id ||
-                    item.channelId ||
-                    snippet.channelId ||
-                    itemId.channelId ||
-                    (
-                        typeof item.id === "string"
-                            ? item.id
-                            : null
-                    );
-
-                if (channelId) {
-
-                    link =
-                        "https://www.youtube.com/channel/" +
-                        channelId;
-                }
-            }
-
-            html +=
-                `
-                <tr>
-
-                    <td>
-                        ${index + 1}
-                    </td>
-
-                    <td>
-                        <a
-                            href="${escapeHtml(link)}"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                        >
-                            ${escapeHtml(title)}
-                        </a>
-                    </td>
-
-                    <td>
-                        ${escapeHtml(channel)}
-                    </td>
-
-                    <td>
-                        ${formatNumber(views)}
-                    </td>
-
-                    <td>
-                        ${formatDate(published)}
-                    </td>
-
-                </tr>
-                `;
-        }
-    );
-
-    html +=
-        `
-        </tbody>
-        </table>
-        </div>
-        `;
-
-    results.innerHTML =
-        html;
-}
-
-    // ========================================================
-    // RADAR
-    // ========================================================
-
-    async function runRadar() {
-
-        const language =
-            document.getElementById(
-                "radarLanguage"
-            ).value;
-
-        const hours =
-            document.getElementById(
-                "radarHours"
-            ).value;
-
-        const status =
-            document.getElementById(
-                "radarStatus"
-            );
-
-        const results =
-            document.getElementById(
-                "radarResults"
-            );
-
-        status.textContent =
-            "Запускаем радар...";
-
-        results.innerHTML = "";
-
-        try {
-
-            const response =
-                await fetch(
-                    "/radar?language=" +
-                    encodeURIComponent(language) +
-                    "&hours_back=" +
-                    encodeURIComponent(hours) +
-                    "&max_results=50"
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    "Ошибка радара"
-                );
-            }
-
-            const items =
-                Array.isArray(data)
-                    ? data
-                    : (
-                        data.items ||
-                        data.videos ||
-                        []
-                    );
-
-            status.textContent =
-                "Найдено: " +
-                items.length;
-
-            renderResearchVideos(
-                items,
-                results
-            );
-
-        } catch (error) {
-
-            status.textContent =
-                "Ошибка: " +
-                error.message;
-        }
-    }
-
-
-    // ========================================================
-    // TRENDS
-    // ========================================================
-
-    async function runTrends() {
-
-        const region =
-            document.getElementById(
-                "trendRegion"
-            ).value;
-
-        const status =
-            document.getElementById(
-                "trendStatus"
-            );
-
-        const results =
-            document.getElementById(
-                "trendResults"
-            );
-
-        status.textContent =
-            "Загружаем тренды...";
-
-        results.innerHTML = "";
-
-        try {
-
-            const response =
-                await fetch(
-                    "/trending-videos?region_code=" +
-                    encodeURIComponent(region) +
-                    "&max_results=50"
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    "Ошибка трендов"
-                );
-            }
-
-            const items =
-                Array.isArray(data)
-                    ? data
-                    : (
-                        data.items ||
-                        data.videos ||
-                        []
-                    );
-
-            status.textContent =
-                "Загружено: " +
-                items.length;
-
-            renderResearchVideos(
-                items,
-                results
-            );
-
-        } catch (error) {
-
-            status.textContent =
-                "Ошибка: " +
-                error.message;
-        }
-    }
-
-
-    function renderResearchVideos(
-        items,
-        container
-    ) {
-
-        if (!items.length) {
-
-            container.innerHTML =
-                `
-                <div class="empty">
-                    Данные не найдены.
-                </div>
-                `;
-
-            return;
-        }
-
-        let html =
-            `
-            <div class="table-wrapper">
-            <table>
-            <thead>
-            <tr>
-                <th>№</th>
-                <th>Видео</th>
-                <th>Канал</th>
-                <th>Просмотры</th>
-                <th>Лайки</th>
-                <th>Комментарии</th>
-                <th>Просм./час</th>
-                <th>Дата</th>
-            </tr>
-            </thead>
-            <tbody>
-            `;
-
-        items.forEach(
-            (video, index) => {
-
-                const title =
-                    video.title ||
-                    getNestedData(
-                        video,
-                        [
-                            "snippet",
-                            "title"
-                        ],
-                        "Без названия"
-                    );
-
-                const channel =
-                    video.channel_title ||
-                    getNestedData(
-                        video,
-                        [
-                            "snippet",
-                            "channelTitle"
-                        ],
-                        "—"
-                    );
-
-                const views =
-                    video.views ||
-                    getNestedData(
-                        video,
-                        [
-                            "statistics",
-                            "viewCount"
-                        ],
-                        0
-                    );
-
-                const likes =
-                    video.likes ||
-                    getNestedData(
-                        video,
-                        [
-                            "statistics",
-                            "likeCount"
-                        ],
-                        0
-                    );
-
-                const comments =
-                    video.comments ||
-                    getNestedData(
-                        video,
-                        [
-                            "statistics",
-                            "commentCount"
-                        ],
-                        0
-                    );
-
-                const viewsPerHour =
-                    video.views_per_hour ||
-                    "—";
-
-                const published =
-                    video.published_at ||
-                    getNestedData(
-                        video,
-                        [
-                            "snippet",
-                            "publishedAt"
-                        ],
-                        null
-                    );
-
-                const videoId =
-                    video.video_id ||
-                    (
-                        video.id &&
-                        typeof video.id === "string"
-                            ? video.id
-                            : (
-                                video.id
-                                    ? video.id.videoId
-                                    : null
-                            )
-                    );
-
-                const link =
-                    videoId
-                        ? "https://www.youtube.com/watch?v=" +
-                          videoId
-                        : "#";
-
-                html +=
-                    `
-                    <tr>
-
-                        <td>
-                            ${index + 1}
-                        </td>
-
-                        <td>
-                            <a
-                                href="${escapeHtml(link)}"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                ${escapeHtml(title)}
-                            </a>
-                        </td>
-
-                        <td>
-                            ${escapeHtml(channel)}
-                        </td>
-
-                        <td>
-                            ${formatNumber(views)}
-                        </td>
-
-                        <td>
-                            ${formatNumber(likes)}
-                        </td>
-
-                        <td>
-                            ${formatNumber(comments)}
-                        </td>
-
-                        <td>
-                            ${formatNumber(viewsPerHour)}
-                        </td>
-
-                        <td>
-                            ${formatDate(published)}
-                        </td>
-
-                    </tr>
-                    `;
-            }
-        );
-
-        html +=
-            `
-            </tbody>
-            </table>
-            </div>
-            `;
-
-        container.innerHTML =
-            html;
-    }
-
-
-    // ========================================================
-    // INITIAL LOAD
-    // ========================================================
-
+    $("runForm").addEventListener("submit", startCycle);
     refreshDashboard();
-
-</script>
-
+    window.setInterval(() => {
+      loadRecommendations();
+      loadTasks();
+    }, 30000);
+  </script>
 </body>
 </html>

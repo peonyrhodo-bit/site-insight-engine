@@ -1,4 +1,4 @@
-from director.director import (
+from director.director import _needs_broad_discovery, (
     _apply_work_plan_task_to_research_plan,
     _work_plan_search_gaps,
     _select_work_plan_task,
@@ -91,3 +91,19 @@ def test_bulk_refresh_is_not_added_without_explicit_refresh_task():
     assert "refresh_existing_video_stats" not in {
         operation.operation for operation in plan.operations
     }
+
+
+def test_broad_discovery_is_required_when_topic_coverage_is_empty_even_with_many_queries():
+    assert _needs_broad_discovery(
+        stored_query_count=714,
+        known_topic_labels=0,
+        freshness_status="fresh",
+    )
+
+
+def test_broad_discovery_can_pause_when_topic_coverage_is_established():
+    assert not _needs_broad_discovery(
+        stored_query_count=714,
+        known_topic_labels=6,
+        freshness_status="fresh",
+    )

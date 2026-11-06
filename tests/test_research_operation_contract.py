@@ -68,14 +68,14 @@ def test_sync_plan_operations_tracks_queries_added_after_planning():
     assert plan.metadata["operation_contract_version"] == 1
 
 
-def test_sync_plan_operations_skips_automatic_refresh_when_another_task_is_selected():
+def test_sync_plan_operations_removes_preplanned_refresh_when_another_task_is_selected():
     plan = build_research_plan(
         objective="discover broadly",
         queries=[
             build_query(query="new YouTube topics", language="en", purpose="discovery")
         ],
     )
-    plan.operations.append(
+    plan.operations.extend([
         ResearchOperation(
             operation_id="snapshots",
             operation="collect_video_snapshots",
@@ -84,8 +84,17 @@ def test_sync_plan_operations_skips_automatic_refresh_when_another_task_is_selec
             dependencies=[],
             expected_result="video metric snapshots",
             completion_criterion="snapshots are saved",
-        )
-    )
+        ),
+        ResearchOperation(
+            operation_id="refresh",
+            operation="refresh_existing_video_stats",
+            requirement_key="video_snapshots",
+            inputs={},
+            dependencies=[],
+            expected_result="fresh snapshots",
+            completion_criterion="old metrics refreshed",
+        ),
+    ])
     plan.metadata["work_plan_task"] = {"id": "discover_broadly"}
 
     YouTubeResearchExecutor.sync_plan_operations(plan)

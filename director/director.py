@@ -542,7 +542,15 @@ class Director:
         if not isinstance(inventory, dict):
             inventory = {}
 
+        analysis_summary = self.context.metadata
         observation_count = len(observations)
+        try:
+            observation_count = max(
+                observation_count,
+                int(analysis_summary.get("last_analysis_observation_count") or 0),
+            )
+        except (TypeError, ValueError):
+            pass
         try:
             snapshot_count = int(inventory.get("snapshot_count") or 0)
         except (TypeError, ValueError):
@@ -576,6 +584,18 @@ class Director:
                 for key in ("views_per_hour", "velocity", "growth_rate")
             ):
                 velocity_observations += 1
+
+        try:
+            metric_observations = max(
+                metric_observations,
+                int(analysis_summary.get("last_analysis_metric_observation_count") or 0),
+            )
+            velocity_observations = max(
+                velocity_observations,
+                int(analysis_summary.get("last_analysis_velocity_observation_count") or 0),
+            )
+        except (TypeError, ValueError):
+            pass
 
         gaps: list[str] = []
 
@@ -661,6 +681,16 @@ class Director:
             except (TypeError, ValueError):
                 continue
         latest_snapshot = max(snapshot_times) if snapshot_times else None
+        stored_latest_snapshot = analysis_summary.get("last_analysis_latest_snapshot_at")
+        if stored_latest_snapshot:
+            try:
+                stored_latest = datetime.fromisoformat(str(stored_latest_snapshot).replace("Z", "+00:00"))
+                if stored_latest.tzinfo is None:
+                    stored_latest = stored_latest.replace(tzinfo=timezone.utc)
+                if latest_snapshot is None or stored_latest > latest_snapshot:
+                    latest_snapshot = stored_latest.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                pass
         now_utc = datetime.now(timezone.utc)
         snapshot_age_hours = (
             max((now_utc - latest_snapshot).total_seconds() / 3600, 0)
@@ -706,7 +736,10 @@ class Director:
                 "threshold_hours": 24,
             },
             "coverage": {
-                "known_topic_labels": len(topic_names),
+                "known_topic_labels": max(
+                    len(topic_names),
+                    int(analysis_summary.get("last_analysis_known_topic_label_count") or 0),
+                ),
                 "stored_search_queries": inventory_counts["queries"],
                 "known_channels": inventory_counts["channels"],
             },

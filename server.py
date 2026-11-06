@@ -1527,7 +1527,9 @@ def _analyze_research_in_batches(observations: list[dict[str, Any]], *, batch_si
     # Signals must describe the merged collection, not the union of
     # batch-local decisions (for example, each one-channel batch must not
     # imply that the whole project depends on a single channel).
-    if callable(detect_signals):
+    if total_count == 0:
+        merged_signals = {"insufficient_data"}
+    elif callable(detect_signals):
         merged_signals = set(detect_signals(top_videos or [{}], metrics=metrics))
     else:
         merged_signals = set(signals)

@@ -66,8 +66,8 @@ def test_research_analytics_runs_in_bounded_batches(monkeypatch):
         return SimpleNamespace(
             metrics=Metrics(count),
             topic_distribution={"gardening": count},
-            channel_distribution={"channel-1": count},
-            top_videos=[], signals=["measurable_momentum"], confidence=0.8,
+            channel_distribution={f"channel-{len(calls)}": count},
+            top_videos=[], signals=["single_channel_dependency"], confidence=0.8,
         )
 
     monkeypatch.setattr(server, "analyze_research", fake_analyze)
@@ -85,6 +85,8 @@ def test_research_analytics_runs_in_bounded_batches(monkeypatch):
     assert result.metrics.count == 1200
     assert result.metadata["batch_count"] == 12
     assert result.metadata["processing"] == "bounded_batches"
+    assert "single_channel_dependency" not in result.signals
+    assert "broad_creator_distribution" in result.signals
 
 
 @pytest.mark.asyncio

@@ -274,6 +274,17 @@ class YouTubeResearchExecutor:
             return item
 
         selected_work_plan_task = plan.metadata.get("work_plan_task")
+        if (
+            isinstance(selected_work_plan_task, dict)
+            and selected_work_plan_task.get("id") != "refresh_evidence"
+        ):
+            # The planner may have added this operation before the Director
+            # selected its work-plan task. Remove it here so an unrelated
+            # discovery task does not refresh thousands of stale video IDs.
+            plan.operations = [
+                operation for operation in plan.operations
+                if operation.operation != "refresh_existing_video_stats"
+            ]
         refresh_task_selected = (
             not isinstance(selected_work_plan_task, dict)
             or selected_work_plan_task.get("id") == "refresh_evidence"

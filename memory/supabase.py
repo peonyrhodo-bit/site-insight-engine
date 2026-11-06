@@ -265,6 +265,7 @@ class SupabaseMemoryBackend:
         order_key: str,
         descending: bool = False,
         page_size: int = 500,
+        columns: str = "*",
     ):
         """Yield one page at a time instead of retaining an entire table in RAM.
 
@@ -278,7 +279,7 @@ class SupabaseMemoryBackend:
             response = (
                 self.client
                 .table(table_name)
-                .select("*")
+                .select(columns)
                 .order(order_key, desc=descending)
                 .range(offset, offset + page_size - 1)
                 .execute()
@@ -447,6 +448,172 @@ class SupabaseMemoryBackend:
             "snapshots": snapshots,
         }
 
+    @staticmethod
+    def _analysis_metadata(data: dict[str, Any]) -> dict[str, Any]:
+        """Keep bounded fields needed for topic, channel and recency analysis."""
+        result: dict[str, Any] = {}
+        snippet = data.get("snippet")
+        if isinstance(snippet, dict):
+            compact_snippet: dict[str, Any] = {}
+            for key in ("title", "channelId", "channelTitle", "publishedAt", "categoryId"):
+                value = snippet.get(key)
+                if value is not None:
+                    compact_snippet[key] = str(value)[:500] if isinstance(value, str) else value
+            tags = snippet.get("tags")
+            if isinstance(tags, (list, tuple)):
+                compact_tags = [str(tag)[:120] for tag in tags[:30] if tag]
+                if compact_tags:
+                    compact_snippet["tags"] = compact_tags
+                    result["tags"] = compact_tags
+            if compact_snippet:
+                result["snippet"] = compact_snippet
+
+        list_fields = {
+            "topics", "categories", "niches", "thematic_directions",
+            "keywords", "tags", "search_terms", "search_keywords",
+            "subtopics", "sub_topics",
+        }
+        scalar_fields = {
+            "topic", "category", "niche", "thematic_direction",
+            "duration_seconds", "duration",
+        }
+        for key in list_fields | scalar_fields:
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in list_fields:
+                values = value if isinstance(value, (list, tuple, set)) else [value]
+                result[key] = [str(item)[:120] for item in list(values)[:30] if item is not None]
+            elif isinstance(value, str):
+                result[key] = value[:500]
+            else:
+                result[key] = value
+        return result
+
+    def load_youtube_analysis_data(
+        self,
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Load a compact Director working set without retaining full video payloads.
+
+        Rows are streamed from Supabase page by page. Only topic metadata and
+        the newest configured number of numeric snapshots per video are kept
+        in memory. Full source records and older history remain in Supabase.
+        """
+        from data.youtube import YouTubeSnapshot, YouTubeVideo
+
+        started_at = time.monotonic()
+        expected_project = str(project_id) if project_id is not None else None
+        try:
+            configured_page_size = int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500"))
+        except (TypeError, ValueError):
+            configured_page_size = 500
+        page_size = max(50, min(configured_page_size, 1000))
+        videos: list[dict[str, Any]] = []
+        video_ids: set[str] = set()
+        video_rows_scanned = 0
+
+        for row in self._iter_paginated_rows(
+            "videos",
+            order_key="video_id",
+            page_size=page_size,
+            columns="video_id,data_json,first_seen,last_seen",
+        ):
+            video_rows_scanned += 1
+            if expected_project is not None and self._project_id_from_row(row) != expected_project:
+                continue
+
+            data = self._safe_dict(row.get("data_json"))
+            snippet = self._safe_dict(data.get("snippet"))
+            video_id = row.get("video_id") or data.get("id")
+            if video_id is None:
+                continue
+
+            compact_metadata = self._analysis_metadata(data)
+            video = YouTubeVideo(
+                video_id=video_id,
+                youtube_id=str(video_id),
+                title=str(snippet.get("title") or data.get("title") or ""),
+                channel_id=snippet.get("channelId") or data.get("channel_id"),
+                channel_title=snippet.get("channelTitle") or data.get("channel_title"),
+                description=None,
+                published_at=snippet.get("publishedAt") or data.get("published_at"),
+                first_seen_at=row.get("first_seen"),
+                last_seen_at=row.get("last_seen"),
+                source="supabase",
+                metadata=compact_metadata,
+            )
+            videos.append(video.to_dict())
+            video_ids.add(str(video_id))
+
+        try:
+            snapshots_per_video = max(
+                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "2")), 20)
+            )
+        except (TypeError, ValueError):
+            snapshots_per_video = 2
+
+        snapshots: list[dict[str, Any]] = []
+        snapshot_counts: dict[str, int] = {}
+        snapshot_rows_scanned = 0
+
+        for row in self._iter_paginated_rows(
+            "video_snapshots",
+            order_key="id",
+            descending=True,
+            page_size=page_size,
+            columns="id,video_id,created_at,data_json",
+        ):
+            snapshot_rows_scanned += 1
+            row_project = self._project_id_from_row(row)
+            if expected_project is not None:
+                if row_project is not None and row_project != expected_project:
+                    continue
+                if row_project is None and str(row.get("video_id")) not in video_ids:
+                    continue
+
+            video_key = str(row.get("video_id") or "")
+            if not video_key:
+                continue
+            seen = snapshot_counts.get(video_key, 0)
+            if seen >= snapshots_per_video:
+                continue
+
+            data = self._safe_dict(row.get("data_json"))
+            statistics = self._safe_dict(data.get("statistics"))
+            radar = self._safe_dict(data.get("_radar"))
+            metrics = dict(statistics)
+            for key in ("views", "age_hours", "engagement", "views_per_hour"):
+                if key in radar:
+                    metrics[key] = radar[key]
+
+            snapshot_id = data.get("snapshot_id") or row.get("id")
+            if snapshot_id is None:
+                continue
+
+            snapshot = YouTubeSnapshot(
+                snapshot_id=snapshot_id,
+                video_id=row.get("video_id"),
+                captured_at=row.get("created_at"),
+                metrics=metrics,
+                metadata={},
+                source="supabase",
+            )
+            snapshots.append(snapshot.to_dict())
+            snapshot_counts[video_key] = seen + 1
+
+        logger.info(
+            "SUPABASE COMPACT ANALYSIS DATA LOADED: project_id=%s "
+            "video_rows_scanned=%d videos=%d snapshot_rows_scanned=%d "
+            "snapshots=%d snapshots_per_video=%d page_size=%d "
+            "elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all", video_rows_scanned, len(videos),
+            snapshot_rows_scanned, len(snapshots), snapshots_per_video,
+            page_size, time.monotonic() - started_at, _peak_rss_raw(),
+        )
+        return {"queries": [], "videos": videos, "snapshots": snapshots}
+
     def save_youtube_data(
         self,
         *,
@@ -531,36 +698,6 @@ class SupabaseMemoryBackend:
     # ------------------------------------------------------------------
     # OPPORTUNITY DATA
     # ------------------------------------------------------------------
-
-    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
-        result = {
-            "channels": [],
-            "channel_snapshots": [],
-            "niches": [],
-            "niche_snapshots": [],
-        }
-        tables = {
-            "channels": "channels",
-            "channel_snapshots": "channel_snapshots",
-            "niches": "niches",
-            "niche_snapshots": "niche_snapshots",
-        }
-        for key, table in tables.items():
-            try:
-                rows = self._recent_for_project(
-                    table,
-                    limit=None,
-                    project_id=project_id,
-                    order_key="id",
-                    default_limit=1000,
-                )
-                for row in rows:
-                    if isinstance(row.get("data_json"), dict):
-                        row["data"] = row["data_json"]
-                result[key] = rows
-            except Exception:
-                result[key] = []
-        return result
 
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
         counts = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
@@ -725,14 +862,54 @@ class SupabaseMemoryBackend:
     TABLE_NICHE_SNAPSHOTS = "niche_snapshots"
 
     def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, Any]:
-        """Load channel/niche identities and historical snapshots for a project."""
+        """Load a bounded working set; Supabase remains the complete history."""
         expected_project = str(project_id) if project_id is not None else None
-        return {
-            "channels": self._recent_for_project(self.TABLE_CHANNELS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "channel_snapshots": self._recent_for_project(self.TABLE_CHANNEL_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
-            "niches": self._recent_for_project(self.TABLE_NICHES, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "niche_snapshots": self._recent_for_project(self.TABLE_NICHE_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
+
+        def configured_limit(name: str, default: int, maximum: int) -> int:
+            try:
+                value = int(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                value = default
+            return max(1, min(value, maximum))
+
+        limits = {
+            "channels": configured_limit("DIRECTOR_CHANNELS_IN_MEMORY", 500, 2000),
+            "channel_snapshots": configured_limit("DIRECTOR_CHANNEL_SNAPSHOTS_IN_MEMORY", 500, 5000),
+            "niches": configured_limit("DIRECTOR_NICHES_IN_MEMORY", 250, 1000),
+            "niche_snapshots": configured_limit("DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY", 500, 5000),
         }
+        started_at = time.monotonic()
+        result = {
+            "channels": self._recent_for_project(
+                self.TABLE_CHANNELS, limit=limits["channels"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["channels"],
+            ),
+            "channel_snapshots": self._recent_for_project(
+                self.TABLE_CHANNEL_SNAPSHOTS, limit=limits["channel_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["channel_snapshots"],
+            ),
+            "niches": self._recent_for_project(
+                self.TABLE_NICHES, limit=limits["niches"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["niches"],
+            ),
+            "niche_snapshots": self._recent_for_project(
+                self.TABLE_NICHE_SNAPSHOTS, limit=limits["niche_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["niche_snapshots"],
+            ),
+        }
+        logger.info(
+            "SUPABASE OPPORTUNITY DATA LOADED: project_id=%s counts=%s limits=%s elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            {key: len(rows) for key, rows in result.items()},
+            limits,
+            time.monotonic() - started_at,
+            _peak_rss_raw(),
+        )
+        return result
 
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
         """Persist channel/niche identities and snapshots idempotently."""

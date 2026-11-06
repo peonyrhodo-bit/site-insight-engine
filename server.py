@@ -45,6 +45,22 @@ logging.basicConfig(
 logger = logging.getLogger("site-insight-engine")
 
 
+def _process_memory_mb() -> dict[str, float]:
+    """Read Linux process RSS counters without adding a runtime dependency."""
+    values: dict[str, float] = {}
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+            for line in status_file:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    key, raw, *_ = line.split()
+                    values[key.rstrip(":").lower() + "_mb"] = round(
+                        int(raw) / 1024, 1
+                    )
+    except (OSError, ValueError):
+        pass
+    return values
+
+
 # ---------------------------------------------------------------------------
 # Optional environment / compatibility helpers
 # ---------------------------------------------------------------------------
@@ -1402,6 +1418,10 @@ class AnalyticsAdapter:
             "previous_observations",
             [],
         )
+        trend_current = (
+            context.get("trend_current_observations")
+            or observations
+        )
 
         analytics_data: dict[str, Any] = {}
 
@@ -1481,7 +1501,7 @@ class AnalyticsAdapter:
         ):
             try:
                 trend_analysis = analyze_trend(
-                    current=observations,
+                    current=trend_current,
                     previous=previous,
                 )
 
@@ -2033,6 +2053,8 @@ class DataAdapter:
         result: dict[str, Any] = {
             "project_id": project_id,
             "observations": [],
+            "previous_observations": [],
+            "trend_current_observations": [],
             "research_sets": [],
             "relations": [],
             "channels": [],
@@ -2054,11 +2076,20 @@ class DataAdapter:
 
         if self.youtube_registry is not None:
             try:
+                # Director analytics needs compact evidence, not the full
+                # persisted YouTube payload. Keep the legacy loader as a
+                # compatibility fallback for alternate storage backends.
                 loader = getattr(
                     self.storage,
-                    "load_youtube_data",
+                    "load_youtube_analysis_data",
                     None,
                 )
+                if not callable(loader):
+                    loader = getattr(
+                        self.storage,
+                        "load_youtube_data",
+                        None,
+                    )
 
                 if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted = loader(
@@ -2166,6 +2197,15 @@ class DataAdapter:
                                         )
 
                 self._loaded_project_id = project_id
+                logger.info(
+                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube=%s opportunities=%s relations=%s research_sets=%s",
+                    project_id,
+                    _process_memory_mb(),
+                    len(self.youtube_registry.videos()) if self.youtube_registry is not None else 0,
+                    self.opportunity_registry.counts() if self.opportunity_registry is not None else {},
+                    len(self.relations.all_relations()) if self.relations is not None else 0,
+                    len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
+                )
 
                 if hasattr(
                     self.youtube_registry,
@@ -2176,6 +2216,8 @@ class DataAdapter:
                     )
 
                     observations: list[Any] = []
+                    previous_observations: list[dict[str, Any]] = []
+                    trend_current_observations: list[dict[str, Any]] = []
 
                     for video in videos:
                         observation = (
@@ -2216,29 +2258,24 @@ class DataAdapter:
                                 meta_value,
                             )
 
-                        # Enrich with the latest snapshot metrics so the
-                        # analytics layer receives numeric observations.
-                        snapshot = None
-
-                        if hasattr(
-                            self.youtube_registry,
-                            "latest_snapshot",
-                        ):
+                        # Keep only the two newest observations per video
+                        # in the working set. The older one supplies a matched
+                        # comparison point for trend analysis.
+                        snapshot_history = []
+                        video_key = getattr(video, "video_id", None)
+                        if hasattr(self.youtube_registry, "snapshots_for_video"):
                             try:
-                                snapshot = (
-                                    self.youtube_registry
-                                    .latest_snapshot(
-                                        video_id=(
-                                            getattr(
-                                                video,
-                                                "video_id",
-                                                None,
-                                            )
-                                        )
-                                    )
+                                snapshot_history = self.youtube_registry.snapshots_for_video(
+                                    video_id=video_key
                                 )
                             except Exception:
-                                snapshot = None
+                                snapshot_history = []
+                        snapshot = snapshot_history[-1] if snapshot_history else None
+                        previous_snapshot = (
+                            snapshot_history[-2]
+                            if len(snapshot_history) >= 2
+                            else None
+                        )
 
                         if snapshot is not None:
                             metrics = (
@@ -2279,12 +2316,54 @@ class DataAdapter:
                                         value,
                                     )
 
-                        observations.append(
-                            observation
-                        )
+                        observations.append(observation)
 
-                    result["observations"] = (
-                        observations
+                        if previous_snapshot is not None:
+                            current_for_trend = dict(observation)
+                            trend_current_observations.append(current_for_trend)
+
+                            previous_observation = dict(observation)
+                            previous_metrics = (
+                                previous_snapshot.metrics
+                                if hasattr(previous_snapshot, "metrics")
+                                else (
+                                    previous_snapshot.get("metrics", {})
+                                    if isinstance(previous_snapshot, dict)
+                                    else {}
+                                )
+                            )
+                            if isinstance(previous_metrics, dict):
+                                previous_observation.update(previous_metrics)
+                                metric_aliases = {
+                                    "viewCount": "views",
+                                    "view_count": "views",
+                                    "likeCount": "likes",
+                                    "like_count": "likes",
+                                    "commentCount": "comments",
+                                    "comment_count": "comments",
+                                }
+                                for source_key, target_key in metric_aliases.items():
+                                    if source_key in previous_metrics and target_key not in previous_metrics:
+                                        previous_observation[target_key] = previous_metrics[source_key]
+                            previous_captured_at = (
+                                getattr(previous_snapshot, "captured_at", None)
+                                if not isinstance(previous_snapshot, dict)
+                                else previous_snapshot.get("captured_at")
+                            )
+                            if previous_captured_at:
+                                previous_observation["snapshot_captured_at"] = str(
+                                    previous_captured_at
+                                )
+                            previous_observations.append(previous_observation)
+
+                    result["observations"] = observations
+                    result["previous_observations"] = previous_observations
+                    result["trend_current_observations"] = trend_current_observations
+                    logger.info(
+                        "DIRECTOR MEMORY phase=observations_built project_id=%s memory=%s observations=%s",
+                        project_id,
+                        _process_memory_mb(),
+                        len(observations),
                     )
 
                     quota_timezone = ZoneInfo("America/Los_Angeles")

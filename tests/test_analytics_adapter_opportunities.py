@@ -176,3 +176,25 @@ def test_director_state_keeps_full_counts_after_evidence_compaction():
     assert project_state["metric_observation_count"] == 1100
     assert project_state["velocity_observation_count"] == 900
     assert project_state["coverage"]["known_topic_labels"] == 12
+
+
+
+def test_empty_research_batches_report_insufficient_data(monkeypatch):
+    from types import SimpleNamespace
+
+    class Aggregate:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class Research:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(server, "analyze_research", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "AggregateMetrics", Aggregate)
+    monkeypatch.setattr(server, "ResearchAnalytics", Research)
+
+    result = server._analyze_research_in_batches([])
+
+    assert result.metrics.count == 0
+    assert result.signals == ["insufficient_data"]

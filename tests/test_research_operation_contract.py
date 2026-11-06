@@ -68,6 +68,60 @@ def test_sync_plan_operations_tracks_queries_added_after_planning():
     assert plan.metadata["operation_contract_version"] == 1
 
 
+def test_sync_plan_operations_skips_automatic_refresh_when_another_task_is_selected():
+    plan = build_research_plan(
+        objective="discover broadly",
+        queries=[
+            build_query(query="new YouTube topics", language="en", purpose="discovery")
+        ],
+    )
+    plan.operations.append(
+        ResearchOperation(
+            operation_id="snapshots",
+            operation="collect_video_snapshots",
+            requirement_key="video_snapshots",
+            inputs={},
+            dependencies=[],
+            expected_result="video metric snapshots",
+            completion_criterion="snapshots are saved",
+        )
+    )
+    plan.metadata["work_plan_task"] = {"id": "discover_broadly"}
+
+    YouTubeResearchExecutor.sync_plan_operations(plan)
+
+    assert "refresh_existing_video_stats" not in {
+        operation.operation for operation in plan.operations
+    }
+
+
+def test_sync_plan_operations_keeps_refresh_when_refresh_task_is_selected():
+    plan = build_research_plan(
+        objective="refresh stale video stats",
+        queries=[
+            build_query(query="existing videos", language="en", purpose="refresh")
+        ],
+    )
+    plan.operations.append(
+        ResearchOperation(
+            operation_id="snapshots",
+            operation="collect_video_snapshots",
+            requirement_key="video_snapshots",
+            inputs={},
+            dependencies=[],
+            expected_result="video metric snapshots",
+            completion_criterion="snapshots are saved",
+        )
+    )
+    plan.metadata["work_plan_task"] = {"id": "refresh_evidence"}
+
+    YouTubeResearchExecutor.sync_plan_operations(plan)
+
+    assert "refresh_existing_video_stats" in {
+        operation.operation for operation in plan.operations
+    }
+
+
 def test_executor_selects_queries_from_pending_operations_only():
     plan = build_research_plan(
         objective="discover",

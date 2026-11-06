@@ -273,7 +273,15 @@ class YouTubeResearchExecutor:
             plan.operations.append(item)
             return item
 
-        if any(item.operation == "collect_video_snapshots" for item in plan.operations):
+        selected_work_plan_task = plan.metadata.get("work_plan_task")
+        refresh_task_selected = (
+            not isinstance(selected_work_plan_task, dict)
+            or selected_work_plan_task.get("id") == "refresh_evidence"
+        )
+        if (
+            refresh_task_selected
+            and any(item.operation == "collect_video_snapshots" for item in plan.operations)
+        ):
             ensure_operation(
                 "refresh_existing_video_stats",
                 "video_snapshots",

@@ -74,6 +74,19 @@ def test_compact_analysis_loader_keeps_signals_and_drops_long_payloads():
                             "commentCount": "12",
                         },
                     },
+                },
+                {
+                    "id": 9,
+                    "video_id": "video-1",
+                    "created_at": "2026-01-01T12:00:00Z",
+                    "data_json": {
+                        "project_id": "project-a",
+                        "statistics": {
+                            "viewCount": "900",
+                            "likeCount": "60",
+                            "commentCount": "8",
+                        },
+                    },
                 }
             ],
         }
@@ -89,8 +102,9 @@ def test_compact_analysis_loader_keeps_signals_and_drops_long_payloads():
     assert video["metadata"]["topics"] == ["science", "education"]
     assert len(video["metadata"]["tags"]) == 30
     assert "description" not in video["metadata"]
-    assert len(result["snapshots"]) == 1
+    assert len(result["snapshots"]) == 2
     assert result["snapshots"][0]["metrics"]["viewCount"] == "1200"
+    assert result["snapshots"][1]["metrics"]["viewCount"] == "900"
     assert result["snapshots"][0]["metadata"] == {}
     assert client.selected_columns["videos"] == "video_id,data_json,first_seen,last_seen"
     assert client.selected_columns["video_snapshots"] == "id,video_id,created_at,data_json"

@@ -1746,6 +1746,21 @@ class AnalyticsAdapter:
                     if not isinstance(item, dict):
                         continue
 
+                    topic_video_ids = {
+                        str(value) for value in (item.get("video_ids") or [])
+                    }
+                    topic_evidence_videos = [
+                        video for video in observations
+                        if str(
+                            video.get("video_id")
+                            or video.get("id")
+                            or video.get("youtube_id")
+                            or ""
+                        ) in topic_video_ids
+                    ][:100]
+                    if not topic_evidence_videos:
+                        topic_evidence_videos = observations[:100]
+
                     title = (
                         item.get("name")
                         or item.get("title")
@@ -1772,7 +1787,7 @@ class AnalyticsAdapter:
                                 )
                                 else trend_payload
                             ),
-                            videos=observations[:100],
+                            videos=topic_evidence_videos,
                             constraints=(
                                 constraint_texts
                                 or None
@@ -1815,16 +1830,83 @@ class AnalyticsAdapter:
             sorted(analytics_data.keys()),
         )
 
-        # Raw observations are no longer needed by decision enrichment.
-        # Keep the count for Director state and release the shared list.
+        # Keep a compact evidence sample for subsequent Director/AI reasoning.
+        # The full collection has already contributed to aggregate analytics.
         processed_count = len(observations)
         metadata = context.get("metadata")
         if isinstance(metadata, dict):
+            metric_keys = {
+                "views", "viewCount", "views_per_hour",
+                "likes", "likeCount", "comments", "commentCount",
+                "engagement",
+            }
+            metric_count = 0
+            velocity_count = 0
+            known_topics: set[str] = set()
+            latest_snapshot_at = None
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    continue
+                metrics = observation.get("metrics")
+                merged = dict(observation)
+                if isinstance(metrics, dict):
+                    merged.update(metrics)
+                if any(key in merged and merged.get(key) is not None for key in metric_keys):
+                    metric_count += 1
+                if any(
+                    key in merged and merged.get(key) is not None
+                    for key in ("views_per_hour", "velocity", "growth_rate")
+                ):
+                    velocity_count += 1
+                for key in ("topic", "category", "niche"):
+                    value = observation.get(key)
+                    if isinstance(value, str) and value.strip():
+                        known_topics.add(value.strip().lower())
+                video_metadata = observation.get("metadata")
+                if isinstance(video_metadata, dict):
+                    for key in ("topic", "category", "niche"):
+                        value = video_metadata.get(key)
+                        if isinstance(value, str) and value.strip():
+                            known_topics.add(value.strip().lower())
+                captured = observation.get("snapshot_captured_at") or observation.get("captured_at")
+                if captured and (latest_snapshot_at is None or str(captured) > str(latest_snapshot_at)):
+                    latest_snapshot_at = str(captured)
+
             metadata["last_analysis_observation_count"] = processed_count
-        observations.clear()
+            metadata["last_analysis_metric_observation_count"] = metric_count
+            metadata["last_analysis_velocity_observation_count"] = velocity_count
+            metadata["last_analysis_known_topic_label_count"] = len(known_topics)
+            metadata["last_analysis_latest_snapshot_at"] = latest_snapshot_at
+
+        def _evidence_rank(observation: dict[str, Any]) -> tuple[float, float]:
+            analytics = observation.get("analytics")
+            analytics = analytics if isinstance(analytics, dict) else {}
+            metrics = observation.get("metrics")
+            metrics = metrics if isinstance(metrics, dict) else {}
+            views = observation.get("views") or observation.get("view_count") or observation.get("viewCount")
+            if views is None:
+                views = metrics.get("views") or metrics.get("view_count") or metrics.get("viewCount")
+            try:
+                views_value = float(views or 0)
+            except (TypeError, ValueError):
+                views_value = 0.0
+            try:
+                score_value = float(analytics.get("performance_score") or 0)
+            except (TypeError, ValueError):
+                score_value = 0.0
+            return score_value, views_value
+
+        observations[:] = sorted(
+            (item for item in observations if isinstance(item, dict)),
+            key=_evidence_rank,
+            reverse=True,
+        )[:100]
+        if isinstance(metadata, dict):
+            metadata["last_analysis_context_sample_size"] = len(observations)
         logger.info(
-            "DIRECTOR MEMORY phase=analysis_evidence_released observations=%s memory=%s",
+            "DIRECTOR MEMORY phase=analysis_evidence_compacted observations=%s retained=%s memory=%s",
             processed_count,
+            len(observations),
             _process_memory_mb(),
         )
         return analytics_data

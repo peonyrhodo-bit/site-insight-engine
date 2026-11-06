@@ -2070,11 +2070,20 @@ class DataAdapter:
 
         if self.youtube_registry is not None:
             try:
+                # Director analytics needs compact evidence, not the full
+                # persisted YouTube payload. Keep the legacy loader as a
+                # compatibility fallback for alternate storage backends.
                 loader = getattr(
                     self.storage,
-                    "load_youtube_data",
+                    "load_youtube_analysis_data",
                     None,
                 )
+                if not callable(loader):
+                    loader = getattr(
+                        self.storage,
+                        "load_youtube_data",
+                        None,
+                    )
 
                 if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted = loader(

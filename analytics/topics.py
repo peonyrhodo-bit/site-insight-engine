@@ -931,16 +931,15 @@ def analyze_topics(
     It does not fetch anything itself.
     """
 
-    raw_items = list(items)
-
     topic_videos: dict[str, list[TopicVideo]] = defaultdict(list)
     topic_keywords: dict[str, list[str]] = defaultdict(list)
     topic_subtopics: dict[str, list[str]] = defaultdict(list)
 
-    total_items = len(raw_items)
+    total_items = 0
     analyzed_items = 0
 
-    for item in raw_items:
+    for item in items:
+        total_items += 1
         if not isinstance(item, Mapping):
             continue
 

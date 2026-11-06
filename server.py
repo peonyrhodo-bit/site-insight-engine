@@ -17,6 +17,7 @@ The server itself does not make strategic decisions.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import json
 import logging
 import os
@@ -213,10 +214,14 @@ except Exception:
 # Analytics imports are intentionally modular.
 try:
     from analytics.analytics import (
+        AggregateMetrics,
+        ResearchAnalytics,
         analyze_research,
         prepare_for_director as analytics_prepare_for_director,
     )
 except Exception:
+    AggregateMetrics = None
+    ResearchAnalytics = None
     analyze_research = None
     analytics_prepare_for_director = None
 
@@ -1397,6 +1402,97 @@ class ServerMemory:
 # ---------------------------------------------------------------------------
 
 
+
+def _analyze_research_in_batches(observations: list[dict[str, Any]], *, batch_size: int = 500) -> Any:
+    """Analyze video evidence in bounded chunks; retain only compact summaries."""
+    if analyze_research is None or ResearchAnalytics is None or AggregateMetrics is None:
+        return None
+    size = max(50, min(int(batch_size), 2000))
+    fields = (
+        "average_views", "average_likes", "average_comments", "average_like_rate",
+        "average_comment_rate", "average_engagement_rate", "average_views_per_hour",
+        "average_performance_score",
+    )
+    weighted = {name: 0.0 for name in fields}
+    total_count = 0
+    total_views = 0.0
+    median_parts: list[tuple[float, int]] = []
+    topic_counts: Counter[str] = Counter()
+    channel_counts: Counter[str] = Counter()
+    top_videos: list[dict[str, Any]] = []
+    signals: set[str] = set()
+    confidence_sum = 0.0
+    batch_count = 0
+
+    for offset in range(0, len(observations), size):
+        batch = observations[offset:offset + size]
+        if not batch:
+            continue
+        batch_count += 1
+        result = analyze_research(batch)
+        metrics = result.metrics
+        count = int(metrics.count or 0)
+        if count:
+            total_count += count
+            total_views += float(metrics.total_views or 0.0)
+            for name in fields:
+                weighted[name] += float(getattr(metrics, name, 0.0) or 0.0) * count
+            median_parts.append((float(metrics.median_views or 0.0), count))
+            confidence_sum += float(result.confidence or 0.0) * count
+        topic_counts.update(result.topic_distribution or {})
+        channel_counts.update(result.channel_distribution or {})
+        signals.update(str(value) for value in (result.signals or []) if value)
+        top_videos.extend(item for item in (result.top_videos or []) if isinstance(item, dict))
+        top_videos.sort(
+            key=lambda item: (
+                float(((item.get("analytics") or {}).get("performance_score")) or 0),
+                float(item.get("views") or item.get("view_count") or item.get("viewCount") or 0),
+            ), reverse=True,
+        )
+        del top_videos[10:]
+        del batch, result
+
+    ordered = sorted(median_parts, key=lambda item: item[0])
+    midpoint = (sum(weight for _, weight in ordered) - 1) / 2 if ordered else 0
+    running = 0
+    median_value = 0.0
+    for value, weight in ordered:
+        running += weight
+        if running > midpoint:
+            median_value = value
+            break
+    for name in fields:
+        weighted[name] = weighted[name] / total_count if total_count else 0.0
+
+    top = top_videos[0] if top_videos else {}
+    top_metrics = top.get("analytics") if isinstance(top, dict) else {}
+    metrics = AggregateMetrics(
+        count=total_count, total_views=total_views,
+        average_views=weighted["average_views"], median_views=median_value,
+        average_likes=weighted["average_likes"], average_comments=weighted["average_comments"],
+        average_like_rate=weighted["average_like_rate"],
+        average_comment_rate=weighted["average_comment_rate"],
+        average_engagement_rate=weighted["average_engagement_rate"],
+        average_views_per_hour=weighted["average_views_per_hour"],
+        average_performance_score=weighted["average_performance_score"],
+        top_video_id=(top.get("video_id") or top.get("id")) if top else None,
+        top_video_score=float((top_metrics or {}).get("performance_score") or 0),
+        unique_channels=len(channel_counts), unique_topics=len(topic_counts),
+    )
+    return ResearchAnalytics(
+        metrics=metrics, top_videos=top_videos,
+        topic_distribution=dict(topic_counts.most_common()),
+        channel_distribution=dict(channel_counts.most_common()),
+        trend=None, signals=sorted(signals),
+        confidence=confidence_sum / total_count if total_count else 0.0,
+        metadata={
+            "processing": "bounded_batches", "batch_size": size,
+            "batch_count": batch_count, "median_method": "weighted_batch_medians",
+        },
+    )
+
+
+
 class AnalyticsAdapter:
     """
     Adapter over modular Analytics.
@@ -1438,11 +1534,23 @@ class AnalyticsAdapter:
 
         if analytics_prepare_for_director is not None:
             try:
-                research_analysis = analyze_research(
-                    observations,
-                    previous_videos=(
-                        previous or None
-                    ),
+                try:
+                    configured_batch_size = int(os.getenv("DIRECTOR_ANALYSIS_BATCH_SIZE", "500"))
+                except (TypeError, ValueError):
+                    configured_batch_size = 500
+                batch_size = max(50, min(configured_batch_size, 2000))
+                research_analysis = _analyze_research_in_batches(
+                    observations, batch_size=batch_size
+                )
+                if research_analysis is None:
+                    research_analysis = analyze_research(
+                        observations, previous_videos=(previous or None)
+                    )
+                logger.info(
+                    "DIRECTOR ANALYTICS BATCHES: kind=research batch_size=%s batches=%s observations=%s",
+                    batch_size,
+                    getattr(research_analysis, "metadata", {}).get("batch_count", 1),
+                    len(observations),
                 )
                 logger.info(
                     "DIRECTOR MEMORY phase=analytics_basic_complete memory=%s",
@@ -1486,8 +1594,12 @@ class AnalyticsAdapter:
 
         if analyze_topics is not None:
             try:
-                topic_analysis = analyze_topics(
-                    observations,
+                # Topic analysis consumes the iterable directly and retains
+                # only its configured per-topic evidence sample.
+                topic_analysis = analyze_topics(observations)
+                logger.info(
+                    "DIRECTOR ANALYTICS BATCHES: kind=topics input_count=%s evidence_cap_per_topic=100",
+                    len(observations),
                 )
 
                 analytics_data["topics"] = serialize(
@@ -1660,7 +1772,7 @@ class AnalyticsAdapter:
                                 )
                                 else trend_payload
                             ),
-                            videos=observations,
+                            videos=observations[:100],
                             constraints=(
                                 constraint_texts
                                 or None
@@ -1701,6 +1813,19 @@ class AnalyticsAdapter:
             "DIRECTOR MEMORY phase=analytics_complete memory=%s result_keys=%s",
             _process_memory_mb(),
             sorted(analytics_data.keys()),
+        )
+
+        # Raw observations are no longer needed by decision enrichment.
+        # Keep the count for Director state and release the shared list.
+        processed_count = len(observations)
+        metadata = context.get("metadata")
+        if isinstance(metadata, dict):
+            metadata["last_analysis_observation_count"] = processed_count
+        observations.clear()
+        logger.info(
+            "DIRECTOR MEMORY phase=analysis_evidence_released observations=%s memory=%s",
+            processed_count,
+            _process_memory_mb(),
         )
         return analytics_data
 

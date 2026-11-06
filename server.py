@@ -1418,6 +1418,10 @@ class AnalyticsAdapter:
             "previous_observations",
             [],
         )
+        trend_current = (
+            context.get("trend_current_observations")
+            or observations
+        )
 
         analytics_data: dict[str, Any] = {}
 
@@ -1497,7 +1501,7 @@ class AnalyticsAdapter:
         ):
             try:
                 trend_analysis = analyze_trend(
-                    current=observations,
+                    current=trend_current,
                     previous=previous,
                 )
 
@@ -2049,6 +2053,8 @@ class DataAdapter:
         result: dict[str, Any] = {
             "project_id": project_id,
             "observations": [],
+            "previous_observations": [],
+            "trend_current_observations": [],
             "research_sets": [],
             "relations": [],
             "channels": [],
@@ -2210,6 +2216,8 @@ class DataAdapter:
                     )
 
                     observations: list[Any] = []
+                    previous_observations: list[dict[str, Any]] = []
+                    trend_current_observations: list[dict[str, Any]] = []
 
                     for video in videos:
                         observation = (
@@ -2250,29 +2258,24 @@ class DataAdapter:
                                 meta_value,
                             )
 
-                        # Enrich with the latest snapshot metrics so the
-                        # analytics layer receives numeric observations.
-                        snapshot = None
-
-                        if hasattr(
-                            self.youtube_registry,
-                            "latest_snapshot",
-                        ):
+                        # Keep only the two newest observations per video
+                        # in the working set. The older one supplies a matched
+                        # comparison point for trend analysis.
+                        snapshot_history = []
+                        video_key = getattr(video, "video_id", None)
+                        if hasattr(self.youtube_registry, "snapshots_for_video"):
                             try:
-                                snapshot = (
-                                    self.youtube_registry
-                                    .latest_snapshot(
-                                        video_id=(
-                                            getattr(
-                                                video,
-                                                "video_id",
-                                                None,
-                                            )
-                                        )
-                                    )
+                                snapshot_history = self.youtube_registry.snapshots_for_video(
+                                    video_id=video_key
                                 )
                             except Exception:
-                                snapshot = None
+                                snapshot_history = []
+                        snapshot = snapshot_history[-1] if snapshot_history else None
+                        previous_snapshot = (
+                            snapshot_history[-2]
+                            if len(snapshot_history) >= 2
+                            else None
+                        )
 
                         if snapshot is not None:
                             metrics = (
@@ -2313,13 +2316,38 @@ class DataAdapter:
                                         value,
                                     )
 
-                        observations.append(
-                            observation
-                        )
+                        observations.append(observation)
 
-                    result["observations"] = (
-                        observations
-                    )
+                        if previous_snapshot is not None:
+                            current_for_trend = dict(observation)
+                            trend_current_observations.append(current_for_trend)
+
+                            previous_observation = dict(observation)
+                            previous_metrics = (
+                                previous_snapshot.metrics
+                                if hasattr(previous_snapshot, "metrics")
+                                else (
+                                    previous_snapshot.get("metrics", {})
+                                    if isinstance(previous_snapshot, dict)
+                                    else {}
+                                )
+                            )
+                            if isinstance(previous_metrics, dict):
+                                previous_observation.update(previous_metrics)
+                            previous_captured_at = (
+                                getattr(previous_snapshot, "captured_at", None)
+                                if not isinstance(previous_snapshot, dict)
+                                else previous_snapshot.get("captured_at")
+                            )
+                            if previous_captured_at:
+                                previous_observation["snapshot_captured_at"] = str(
+                                    previous_captured_at
+                                )
+                            previous_observations.append(previous_observation)
+
+                    result["observations"] = observations
+                    result["previous_observations"] = previous_observations
+                    result["trend_current_observations"] = trend_current_observations
                     logger.info(
                         "DIRECTOR MEMORY phase=observations_built project_id=%s memory=%s observations=%s",
                         project_id,

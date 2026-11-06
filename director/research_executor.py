@@ -38,6 +38,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _resolve_execution_status(
+    *,
+    mandatory_ok: bool,
+    volume_ok: bool,
+    persistence_confirmed: bool,
+    research_status: ResearchStatus,
+    received_result_count: int,
+    failed_queries: int,
+    empty_queries: int,
+) -> tuple[ResearchStatus, str]:
+    if mandatory_ok and volume_ok and persistence_confirmed and research_status == ResearchStatus.COMPLETE:
+        return ResearchStatus.COMPLETED, "completed"
+    if received_result_count == 0 and failed_queries > 0 and empty_queries == 0:
+        return ResearchStatus.BLOCKED, "failed"
+    return ResearchStatus.PARTIAL, "partial"
+
+
 async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
@@ -1639,15 +1656,15 @@ class YouTubeResearchExecutor:
             for item in operation_results
         )
         volume_ok = bool(execution_summary.get("expected_volume_reached"))
-        if mandatory_ok and volume_ok and persistence_confirmed and research.status == "complete":
-            plan.status = ResearchStatus.COMPLETED
-            execution_summary["status"] = "completed"
-        elif not video_count and failed_queries and not empty_queries:
-            plan.status = ResearchStatus.BLOCKED
-            execution_summary["status"] = "failed"
-        else:
-            plan.status = ResearchStatus.PARTIAL
-            execution_summary["status"] = "partial"
+        plan.status, execution_summary["status"] = _resolve_execution_status(
+            mandatory_ok=mandatory_ok,
+            volume_ok=volume_ok,
+            persistence_confirmed=persistence_confirmed,
+            research_status=research.status,
+            received_result_count=received_result_count,
+            failed_queries=failed_queries,
+            empty_queries=empty_queries,
+        )
         execution_summary["plan_status"] = plan.status.value
         execution_summary["research_set_status"] = research.status
 

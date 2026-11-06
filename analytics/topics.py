@@ -931,16 +931,15 @@ def analyze_topics(
     It does not fetch anything itself.
     """
 
-    raw_items = list(items)
-
     topic_videos: dict[str, list[TopicVideo]] = defaultdict(list)
     topic_keywords: dict[str, list[str]] = defaultdict(list)
     topic_subtopics: dict[str, list[str]] = defaultdict(list)
 
-    total_items = len(raw_items)
+    total_items = 0
     analyzed_items = 0
 
-    for item in raw_items:
+    for item in items:
+        total_items += 1
         if not isinstance(item, Mapping):
             continue
 
@@ -983,8 +982,17 @@ def analyze_topics(
             if len(topic_videos[topic]) < MAX_VIDEOS_PER_TOPIC:
                 topic_videos[topic].append(video)
 
-            topic_keywords[topic].extend(keywords)
-            topic_subtopics[topic].extend(subtopics)
+            # Bound term buffers as well as per-topic video evidence.
+            keyword_buffer = topic_keywords[topic]
+            if len(keyword_buffer) < MAX_KEYWORDS * 4:
+                keyword_buffer.extend(
+                    keywords[: max(0, MAX_KEYWORDS * 4 - len(keyword_buffer))]
+                )
+            subtopic_buffer = topic_subtopics[topic]
+            if len(subtopic_buffer) < MAX_SUBTOPICS * 4:
+                subtopic_buffer.extend(
+                    subtopics[: max(0, MAX_SUBTOPICS * 4 - len(subtopic_buffer))]
+                )
 
     topic_profiles: list[TopicProfile] = []
 

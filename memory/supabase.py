@@ -532,36 +532,6 @@ class SupabaseMemoryBackend:
     # OPPORTUNITY DATA
     # ------------------------------------------------------------------
 
-    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
-        result = {
-            "channels": [],
-            "channel_snapshots": [],
-            "niches": [],
-            "niche_snapshots": [],
-        }
-        tables = {
-            "channels": "channels",
-            "channel_snapshots": "channel_snapshots",
-            "niches": "niches",
-            "niche_snapshots": "niche_snapshots",
-        }
-        for key, table in tables.items():
-            try:
-                rows = self._recent_for_project(
-                    table,
-                    limit=None,
-                    project_id=project_id,
-                    order_key="id",
-                    default_limit=1000,
-                )
-                for row in rows:
-                    if isinstance(row.get("data_json"), dict):
-                        row["data"] = row["data_json"]
-                result[key] = rows
-            except Exception:
-                result[key] = []
-        return result
-
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
         counts = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
         pid = str(project_id)

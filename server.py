@@ -45,6 +45,22 @@ logging.basicConfig(
 logger = logging.getLogger("site-insight-engine")
 
 
+def _process_memory_mb() -> dict[str, float]:
+    """Read Linux process RSS counters without adding a runtime dependency."""
+    values: dict[str, float] = {}
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+            for line in status_file:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    key, raw, *_ = line.split()
+                    values[key.rstrip(":").lower() + "_mb"] = round(
+                        int(raw) / 1024, 1
+                    )
+    except (OSError, ValueError):
+        pass
+    return values
+
+
 # ---------------------------------------------------------------------------
 # Optional environment / compatibility helpers
 # ---------------------------------------------------------------------------
@@ -2166,6 +2182,15 @@ class DataAdapter:
                                         )
 
                 self._loaded_project_id = project_id
+                logger.info(
+                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube=%s opportunities=%s relations=%s research_sets=%s",
+                    project_id,
+                    _process_memory_mb(),
+                    len(self.youtube_registry.videos()) if self.youtube_registry is not None else 0,
+                    self.opportunity_registry.counts() if self.opportunity_registry is not None else {},
+                    len(self.relations.all_relations()) if self.relations is not None else 0,
+                    len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
+                )
 
                 if hasattr(
                     self.youtube_registry,
@@ -2285,6 +2310,12 @@ class DataAdapter:
 
                     result["observations"] = (
                         observations
+                    )
+                    logger.info(
+                        "DIRECTOR MEMORY phase=observations_built project_id=%s memory=%s observations=%s",
+                        project_id,
+                        _process_memory_mb(),
+                        len(observations),
                     )
 
                     quota_timezone = ZoneInfo("America/Los_Angeles")

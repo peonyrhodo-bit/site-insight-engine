@@ -541,7 +541,7 @@ class SupabaseMemoryBackend:
                 published_at=snippet.get("publishedAt") or data.get("published_at"),
                 first_seen_at=row.get("first_seen"),
                 last_seen_at=row.get("last_seen"),
-                source="supabase_analysis",
+                source="supabase",
                 metadata=compact_metadata,
             )
             videos.append(video.to_dict())
@@ -598,7 +598,7 @@ class SupabaseMemoryBackend:
                 captured_at=row.get("created_at"),
                 metrics=metrics,
                 metadata={},
-                source="supabase_analysis",
+                source="supabase",
             )
             snapshots.append(snapshot.to_dict())
             snapshot_counts[video_key] = seen + 1

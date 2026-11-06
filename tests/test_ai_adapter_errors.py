@@ -28,7 +28,7 @@ async def test_ai_timeout_is_logged_and_propagated(monkeypatch, caplog):
     monkeypatch.setattr(
         server,
         "create_ai_provider",
-        lambda: FakeProvider(error=TimeoutError("model request timed out")),
+        lambda **kwargs: FakeProvider(error=TimeoutError("model request timed out")),
     )
     caplog.set_level(logging.ERROR, logger="site-insight-engine")
 
@@ -52,7 +52,7 @@ async def test_malformed_ai_response_is_not_silently_converted_to_empty_dict(
     monkeypatch.setattr(
         server,
         "create_ai_provider",
-        lambda: FakeProvider(result=["not", "an", "object"]),
+        lambda **kwargs: FakeProvider(result=["not", "an", "object"]),
     )
     adapter = server.AIAdapter()
 
@@ -67,7 +67,7 @@ async def test_unavailable_provider_reports_reason(monkeypatch):
     monkeypatch.setenv("OPENROUTER_MODEL", "test-model:free")
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
 
-    def fail_provider_creation():
+    def fail_provider_creation(**kwargs):
         raise RuntimeError("provider startup failed")
 
     monkeypatch.setattr(server, "create_ai_provider", fail_provider_creation)
@@ -105,16 +105,53 @@ async def test_director_logs_ai_failure_and_keeps_deterministic_decision(caplog)
     assert "continuing with deterministic Director decision" in caplog.text
 
 
-@pytest.mark.parametrize("free_mode", [True, False])
-def test_paid_model_is_disabled_even_when_api_key_exists(monkeypatch, free_mode):
+def test_free_mode_routes_stale_paid_model_to_free_router(monkeypatch):
+    received = {}
+
+    def create_provider(**kwargs):
+        received.update(kwargs)
+        return FakeProvider(result={"decision": "ok"})
+
+    monkeypatch.setattr(server, "FREE_MODE", True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(server, "create_ai_provider", create_provider)
+
+    adapter = server.AIAdapter()
+
+    assert adapter.enabled is True
+    assert received["model"] == "openrouter/free"
+
+
+def test_free_model_route_is_accepted(monkeypatch):
+    received = {}
+
+    def create_provider(**kwargs):
+        received.update(kwargs)
+        return FakeProvider(result={"decision": "ok"})
+
+    monkeypatch.setattr(server, "FREE_MODE", True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openrouter/free")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(server, "create_ai_provider", create_provider)
+
+    adapter = server.AIAdapter()
+
+    assert adapter.enabled is True
+    assert received["model"] == "openrouter/free"
+
+
+def test_paid_model_remains_blocked_when_free_mode_is_off(monkeypatch):
     provider_factory_called = False
 
-    def create_provider():
+    def create_provider(**kwargs):
         nonlocal provider_factory_called
         provider_factory_called = True
         raise AssertionError("paid provider must not be initialized")
 
-    monkeypatch.setattr(server, "FREE_MODE", free_mode)
+    monkeypatch.setattr(server, "FREE_MODE", False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -130,7 +167,7 @@ def test_paid_model_is_disabled_even_when_api_key_exists(monkeypatch, free_mode)
 def test_custom_openrouter_endpoint_is_not_assumed_free(monkeypatch):
     provider_factory_called = False
 
-    def create_provider():
+    def create_provider(**kwargs):
         nonlocal provider_factory_called
         provider_factory_called = True
         raise AssertionError("unverified endpoint must not be initialized")

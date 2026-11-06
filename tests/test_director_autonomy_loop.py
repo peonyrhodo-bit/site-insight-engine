@@ -1,6 +1,8 @@
 import asyncio
 import unittest
+from types import SimpleNamespace
 
+from director.director import Director
 from director.autonomy import (
     AutonomyConfig,
     CycleStatus,
@@ -162,6 +164,44 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cycle.status, CycleStatus.ERROR)
         self.assertEqual(cycle.state.metadata["failure"]["phase"], "capabilities")
         self.assertIn("TimeoutError", cycle.state.metadata["failure"]["error"])
+
+
+    async def test_decision_ai_receives_bounded_context_not_full_video_evidence(self):
+        class CapturingAI:
+            def __init__(self):
+                self.received = None
+
+            async def generate_decision(self, *, context):
+                self.received = context
+                return {}
+
+        ai = CapturingAI()
+        director = Director(project_id="test-project", ai_service=ai)
+        director.context.observations = [
+            {
+                "video_id": f"video-{index}",
+                "title": f"Video {index}",
+                "description": "large description must stay out of AI context",
+                "metadata": {"raw": "large payload"},
+            }
+            for index in range(1200)
+        ]
+
+        decision = SimpleNamespace(
+            to_dict=lambda: {"decision_type": "wait"},
+            rationale="",
+            confidence=0.5,
+        )
+        await director._enrich_decision_with_ai(
+            decision,
+            {"opportunities": []},
+        )
+
+        payload = ai.received["director_context"]
+        self.assertEqual(payload["observations"]["total_count"], 1200)
+        self.assertEqual(len(payload["observations"]["sample"]), 8)
+        self.assertNotIn("description", payload["observations"]["sample"][0])
+        self.assertNotIn("metadata", payload["observations"]["sample"][0])
 
 
 if __name__ == "__main__":

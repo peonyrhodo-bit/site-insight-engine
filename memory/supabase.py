@@ -450,37 +450,44 @@ class SupabaseMemoryBackend:
 
     @staticmethod
     def _analysis_metadata(data: dict[str, Any]) -> dict[str, Any]:
-        """Keep only fields needed for topic, channel and recency analysis."""
+        """Keep bounded fields needed for topic, channel and recency analysis."""
         result: dict[str, Any] = {}
         snippet = data.get("snippet")
         if isinstance(snippet, dict):
-            allowed_snippet = (
-                "title", "channelId", "channelTitle",
-                "publishedAt", "tags", "categoryId",
-            )
-            compact_snippet = {
-                key: snippet[key]
-                for key in allowed_snippet
-                if key in snippet and snippet[key] is not None
-            }
+            compact_snippet: dict[str, Any] = {}
+            for key in ("title", "channelId", "channelTitle", "publishedAt", "categoryId"):
+                value = snippet.get(key)
+                if value is not None:
+                    compact_snippet[key] = str(value)[:500] if isinstance(value, str) else value
+            tags = snippet.get("tags")
+            if isinstance(tags, (list, tuple)):
+                compact_tags = [str(tag)[:120] for tag in tags[:30] if tag]
+                if compact_tags:
+                    compact_snippet["tags"] = compact_tags
+                    result["tags"] = compact_tags
             if compact_snippet:
                 result["snippet"] = compact_snippet
 
-        for key in (
-            "topic", "topics", "category", "categories",
-            "niche", "niches", "thematic_direction",
-            "thematic_directions", "keywords", "tags",
-            "search_terms", "search_keywords",
-            "duration_seconds", "duration", "topicDetails",
-        ):
-            if key in data and data[key] is not None:
-                result[key] = data[key]
-
-        content_details = data.get("contentDetails")
-        if isinstance(content_details, dict) and content_details.get("duration"):
-            result["contentDetails"] = {
-                "duration": content_details["duration"]
-            }
+        list_fields = {
+            "topics", "categories", "niches", "thematic_directions",
+            "keywords", "tags", "search_terms", "search_keywords",
+            "subtopics", "sub_topics",
+        }
+        scalar_fields = {
+            "topic", "category", "niche", "thematic_direction",
+            "duration_seconds", "duration",
+        }
+        for key in list_fields | scalar_fields:
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in list_fields:
+                values = value if isinstance(value, (list, tuple, set)) else [value]
+                result[key] = [str(item)[:120] for item in list(values)[:30] if item is not None]
+            elif isinstance(value, str):
+                result[key] = value[:500]
+            else:
+                result[key] = value
         return result
 
     def load_youtube_analysis_data(

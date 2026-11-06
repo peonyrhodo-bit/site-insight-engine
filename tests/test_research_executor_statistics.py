@@ -62,7 +62,7 @@ def test_research_execution_status_is_completed_only_when_all_gates_pass():
         mandatory_ok=True,
         volume_ok=True,
         persistence_confirmed=True,
-        research_status=ResearchStatus.COMPLETE,
+        research_status="complete",
         received_result_count=100,
         failed_queries=0,
         empty_queries=0,

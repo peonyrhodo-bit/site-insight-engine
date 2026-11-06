@@ -31,6 +31,17 @@
     .subtitle { margin-top: 5px; }
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); padding: 22px; min-width: 0; }
     .recommendations-panel { margin-bottom: 20px; }
+    .mode-panel { margin-bottom: 20px; padding: 15px 18px; box-shadow: none; }
+    .mode-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 10px; }
+    .mode-head h2 { font-size: 16px; }
+    .mode-head p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+    .mode-toggle { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--soft); flex-shrink: 0; }
+    .mode-toggle button { border: 0; padding: 6px 10px; border-radius: 7px; font-size: 12px; background: transparent; }
+    .mode-toggle button.active { background: white; box-shadow: 0 1px 3px rgba(20, 25, 35, .12); font-weight: 600; }
+    .reminder-scroll { max-height: 108px; overflow-y: auto; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .reminder-scroll p { margin: 3px 0 7px; }
+    .reminder-scroll ul { margin: 4px 0 7px; padding-left: 18px; }
+    .reminder-scroll li { margin: 2px 0; }
     .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 16px; }
     .panel-head p { margin: 4px 0 0; color: var(--muted); }
     .recommendations-scroll { height: min(68vh, 760px); min-height: 430px; overflow-y: auto; padding: 2px 8px 2px 2px; scrollbar-gutter: stable; }
@@ -92,6 +103,29 @@
       <div class="footer-row">
         <span id="recommendationStatus">Данные загружаются из памяти директора.</span>
         <span>Прокручивай список внутри блока</span>
+      </div>
+    </section>
+
+    <section class="panel mode-panel" aria-labelledby="aiModeTitle">
+      <div class="mode-head">
+        <div>
+          <h2 id="aiModeTitle">Режим ИИ</h2>
+          <p>Сейчас выбран бесплатный режим.</p>
+        </div>
+        <div class="mode-toggle" role="group" aria-label="Режим использования ИИ">
+          <button type="button" id="freeModeButton" class="active" aria-pressed="true">Бесплатный</button>
+          <button type="button" id="paidModeButton" aria-pressed="false">Платный</button>
+        </div>
+      </div>
+      <div class="reminder-scroll" tabindex="0" aria-label="Напоминания о режиме ИИ">
+        <p><strong>Напоминание · 6 ноября 2026</strong></p>
+        <ul>
+          <li>Сейчас директор использует бесплатный режим. Платные запросы не разрешены.</li>
+          <li>Если бесплатная модель изменит тариф или исчерпает лимит, запрос к ИИ может завершиться ошибкой.</li>
+          <li>Директор должен попробовать продолжить работу без ИИ. Если для цикла недоступны обязательные данные или квоты, цикл может завершиться не полностью.</li>
+          <li>Платный режим можно будет включить после настройки лимита расходов и отдельного подтверждения.</li>
+        </ul>
+        <p>Переключатель платного режима пока информационный: он не включает оплату и не меняет настройки.</p>
       </div>
     </section>
 
@@ -311,6 +345,20 @@
       await Promise.all([loadRecommendations(), loadTasks()]);
       $("pageStatus").textContent = "Данные обновлены: " + new Date().toLocaleTimeString("ru-RU");
     }
+
+    $("freeModeButton").addEventListener("click", () => {
+      $("freeModeButton").classList.add("active");
+      $("freeModeButton").setAttribute("aria-pressed", "true");
+      $("paidModeButton").classList.remove("active");
+      $("paidModeButton").setAttribute("aria-pressed", "false");
+    });
+    $("paidModeButton").addEventListener("click", () => {
+      alert("Платный режим пока не подключён. Это напоминание не разрешает платные запросы и не меняет настройки.");
+      $("paidModeButton").classList.remove("active");
+      $("paidModeButton").setAttribute("aria-pressed", "false");
+      $("freeModeButton").classList.add("active");
+      $("freeModeButton").setAttribute("aria-pressed", "true");
+    });
 
     $("runForm").addEventListener("submit", startCycle);
     refreshDashboard();

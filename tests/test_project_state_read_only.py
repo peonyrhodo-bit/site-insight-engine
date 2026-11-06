@@ -129,3 +129,61 @@ async def test_get_project_state_exposes_loaded_opportunity_records_to_director(
     assert result["channel_snapshots"][0]["channel_id"] == "channel-1"
     assert result["niches"][0]["niche_id"] == "niche-1"
     assert result["niche_snapshots"][0]["niche_id"] == "niche-1"
+
+@pytest.mark.asyncio
+async def test_trend_cohort_reuses_current_observation_dicts():
+    class Video:
+        video_id = "video-1"
+
+        def to_dict(self):
+            return {
+                "video_id": self.video_id,
+                "title": "Video",
+                "metadata": {"topics": ["topic-a"]},
+            }
+
+    class Snapshot:
+        def __init__(self, captured_at, views):
+            self.captured_at = captured_at
+            self.metrics = {"views": views, "likes": 1, "comments": 0}
+
+    class Registry(ReadOnlyRegistry):
+        def __init__(self):
+            self.video = Video()
+            self.history = [
+                Snapshot("2026-01-01T00:00:00Z", 10),
+                Snapshot("2026-01-02T00:00:00Z", 20),
+            ]
+
+        def videos(self):
+            return [self.video]
+
+        def snapshots(self):
+            return self.history
+
+        def queries(self):
+            return []
+
+        def snapshots_for_video(self, *, video_id):
+            assert video_id == "video-1"
+            return self.history
+
+    adapter = DataAdapter.__new__(DataAdapter)
+    adapter.storage = StorageSpy()
+    adapter.youtube_registry = Registry()
+    adapter.research_manager = None
+    adapter.relations = None
+    adapter.opportunity_registry = None
+
+    result = await adapter.get_project_state("test-project")
+
+    assert len(result["observations"]) == 1
+    assert len(result["previous_observations"]) == 1
+    assert len(result["trend_current_observations"]) == 1
+    # Trend analysis consumes the matched current cohort, but should not
+    # allocate a second full observation dictionary for every matched video.
+    assert (
+        result["trend_current_observations"][0]
+        is result["observations"][0]
+    )
+

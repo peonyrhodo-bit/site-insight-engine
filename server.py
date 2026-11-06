@@ -2334,6 +2334,17 @@ class DataAdapter:
                             )
                             if isinstance(previous_metrics, dict):
                                 previous_observation.update(previous_metrics)
+                                metric_aliases = {
+                                    "viewCount": "views",
+                                    "view_count": "views",
+                                    "likeCount": "likes",
+                                    "like_count": "likes",
+                                    "commentCount": "comments",
+                                    "comment_count": "comments",
+                                }
+                                for source_key, target_key in metric_aliases.items():
+                                    if source_key in previous_metrics and target_key not in previous_metrics:
+                                        previous_observation[target_key] = previous_metrics[source_key]
                             previous_captured_at = (
                                 getattr(previous_snapshot, "captured_at", None)
                                 if not isinstance(previous_snapshot, dict)

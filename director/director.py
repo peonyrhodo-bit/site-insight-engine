@@ -71,6 +71,18 @@ from .state_snapshot import build_unified_state_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _select_work_plan_task(work_plan: dict[str, Any]) -> dict[str, Any] | None:
+    execution_order = work_plan.get("execution_order", [])
+    tasks = work_plan.get("tasks", [])
+    if not execution_order or not isinstance(tasks, list):
+        return None
+    selected_id = execution_order[0]
+    return next(
+        (item for item in tasks if isinstance(item, dict) and item.get("id") == selected_id),
+        None,
+    )
+
+
 def _work_plan_search_gaps(task: dict[str, Any]) -> list[str]:
     """Return only explicit search queries, never task descriptions or reasons."""
     queries = task.get("search_queries")
@@ -2114,22 +2126,20 @@ class Director:
         if isinstance(_, dict):
             task_gaps = _.get("missing_data")
             task_objective = _.get("objective") or _.get("next_action")
-            work_plan = _.get("work_plan")
-            if isinstance(work_plan, dict):
-                execution_order = work_plan.get("execution_order", [])
-                tasks = work_plan.get("tasks", [])
-                if execution_order and isinstance(tasks, list):
-                    selected_id = execution_order[0]
-                    selected_work_plan_task = next(
-                        (item for item in tasks if isinstance(item, dict) and item.get("id") == selected_id),
-                        None,
-                    )
-                    if selected_work_plan_task:
-                        task_objective = selected_work_plan_task.get("task") or task_objective
-                        task_gaps = _work_plan_search_gaps(selected_work_plan_task)
         elif _ is not None:
             task_gaps = getattr(_, "missing_data", None)
             task_objective = getattr(_, "objective", None) or getattr(_, "next_action", None)
+
+        # The previous phase payload is the decision, not the assessment.
+        # The work plan is stored on DirectorState by _autonomy_assess.
+        work_plan = state.metadata.get("work_plan")
+        if not isinstance(work_plan, dict) and isinstance(_, dict):
+            work_plan = _.get("work_plan")
+        if isinstance(work_plan, dict):
+            selected_work_plan_task = _select_work_plan_task(work_plan)
+            if selected_work_plan_task:
+                task_objective = selected_work_plan_task.get("task") or task_objective
+                task_gaps = _work_plan_search_gaps(selected_work_plan_task)
 
         plan = self.plan_research(
             objective=str(task_objective) if task_objective else None,

@@ -982,8 +982,17 @@ def analyze_topics(
             if len(topic_videos[topic]) < MAX_VIDEOS_PER_TOPIC:
                 topic_videos[topic].append(video)
 
-            topic_keywords[topic].extend(keywords)
-            topic_subtopics[topic].extend(subtopics)
+            # Bound term buffers as well as per-topic video evidence.
+            keyword_buffer = topic_keywords[topic]
+            if len(keyword_buffer) < MAX_KEYWORDS * 4:
+                keyword_buffer.extend(
+                    keywords[: max(0, MAX_KEYWORDS * 4 - len(keyword_buffer))]
+                )
+            subtopic_buffer = topic_subtopics[topic]
+            if len(subtopic_buffer) < MAX_SUBTOPICS * 4:
+                subtopic_buffer.extend(
+                    subtopics[: max(0, MAX_SUBTOPICS * 4 - len(subtopic_buffer))]
+                )
 
     topic_profiles: list[TopicProfile] = []
 

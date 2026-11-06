@@ -2496,10 +2496,10 @@ class AIAdapter:
             logger.error(self.provider_error)
             return
 
-        # Never allow an implicit paid inference path. Budget modes do not
-        # authorize spending, so the default paid model must remain disabled
-        # even when an API key happens to be configured. Only an explicitly
-        # free OpenRouter model is eligible for automatic use.
+        # FREE_MODE is the authoritative application budget setting.
+        # In free mode, route through OpenRouter's free-only router by default;
+        # never let a stale paid model setting disable AI or trigger paid usage.
+        # Explicit :free variants remain supported for pinned model selection.
         api_key = (
             os.getenv("OPENROUTER_API_KEY")
             or os.getenv("DIRECTOR_AI_KEY")
@@ -2519,23 +2519,32 @@ class AIAdapter:
         ).strip().lower()
         if provider_name != "openrouter":
             self.provider_error = (
-                "AI provider disabled: provider cost cannot be verified; "
-                "only explicitly free OpenRouter models are allowed"
+                "AI provider disabled: free inference is only configured "
+                "for OpenRouter"
             )
             logger.warning(self.provider_error)
             return
 
-        model_name = os.getenv(
-            "OPENROUTER_MODEL",
-            "openai/gpt-4o-mini",
-        ).strip()
-        if not model_name.lower().endswith(":free"):
-            self.provider_error = (
-                "AI provider disabled: configured model is not explicitly "
-                "marked free (:free); paid inference is prohibited"
+        configured_model = os.getenv("OPENROUTER_MODEL", "").strip()
+        if FREE_MODE:
+            model_name = (
+                configured_model
+                if configured_model.lower() == "openrouter/free"
+                or configured_model.lower().endswith(":free")
+                else "openrouter/free"
             )
-            logger.warning(self.provider_error)
-            return
+        else:
+            model_name = configured_model or "openai/gpt-4o-mini"
+            if (
+                model_name.lower() != "openrouter/free"
+                and not model_name.lower().endswith(":free")
+            ):
+                self.provider_error = (
+                    "AI provider disabled: paid inference is prohibited "
+                    "while FREE_MODE is off and no paid authorization exists"
+                )
+                logger.warning(self.provider_error)
+                return
 
         base_url = os.getenv(
             "OPENROUTER_BASE_URL",
@@ -2549,8 +2558,8 @@ class AIAdapter:
             return
 
         try:
-            self.provider = create_ai_provider()
-            logger.info("AI provider initialized")
+            self.provider = create_ai_provider(model=model_name)
+            logger.info("AI provider initialized (model route: %s)", model_name)
         except Exception as exc:
             self.provider_error = f"{type(exc).__name__}: {exc}"
             logger.exception("AI provider unavailable")

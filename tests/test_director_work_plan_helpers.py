@@ -4,6 +4,7 @@ from director.director import (
     _select_work_plan_task,
 )
 from director.research import ResearchOperation, build_research_plan
+from director.research_executor import YouTubeResearchExecutor
 
 
 def _plan_with_refresh():
@@ -80,3 +81,13 @@ def test_only_explicit_search_queries_are_used():
             "search_queries": ["YouTube Shorts education trends", "gaming tutorials"],
         }
     ) == ["YouTube Shorts education trends", "gaming tutorials"]
+
+
+def test_bulk_refresh_is_not_added_without_explicit_refresh_task():
+    plan = _plan_with_refresh()
+
+    YouTubeResearchExecutor.sync_plan_operations(plan)
+
+    assert "refresh_existing_video_stats" not in {
+        operation.operation for operation in plan.operations
+    }

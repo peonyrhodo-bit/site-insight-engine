@@ -2133,6 +2133,8 @@ class Director:
         # The previous phase payload is the decision, not the assessment.
         # The work plan is stored on DirectorState by _autonomy_assess.
         work_plan = state.metadata.get("work_plan")
+        if not isinstance(work_plan, dict):
+            work_plan = self.context.metadata.get("work_plan")
         if not isinstance(work_plan, dict) and isinstance(_, dict):
             work_plan = _.get("work_plan")
         if isinstance(work_plan, dict):
@@ -2430,6 +2432,10 @@ class Director:
         work_plan["wake_snapshot"] = state.metadata.get("wake_snapshot", {})
         state.metadata["project_assessment"] = work_plan["basis"]
         state.metadata["work_plan"] = work_plan
+        # DirectorState metadata may be reconstructed between autonomy steps.
+        # Keep the selected plan on the persistent Director context as well.
+        self.context.metadata["project_assessment"] = work_plan["basis"]
+        self.context.metadata["work_plan"] = work_plan
         logger.info("DIRECTOR PROJECT ASSESSMENT: %s", json.dumps(work_plan["basis"], ensure_ascii=False, default=str))
         logger.info("DIRECTOR WORK PLAN: %s", json.dumps(work_plan, ensure_ascii=False, default=str))
 

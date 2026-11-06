@@ -218,6 +218,7 @@ try:
         ResearchAnalytics,
         analyze_research,
         calculate_engagement_rate,
+        detect_signals,
         get_comments,
         get_likes,
         get_published_at,
@@ -229,6 +230,7 @@ except Exception:
     ResearchAnalytics = None
     analyze_research = None
     calculate_engagement_rate = None
+    detect_signals = None
     get_comments = None
     get_likes = None
     get_published_at = None
@@ -1522,11 +1524,25 @@ def _analyze_research_in_batches(observations: list[dict[str, Any]], *, batch_si
         top_video_score=float((top_metrics or {}).get("performance_score") or 0),
         unique_channels=len(channel_counts), unique_topics=len(topic_counts),
     )
+    # Signals must describe the merged collection, not the union of
+    # batch-local decisions (for example, each one-channel batch must not
+    # imply that the whole project depends on a single channel).
+    if callable(detect_signals):
+        merged_signals = set(detect_signals(top_videos or [{}], metrics=metrics))
+    else:
+        merged_signals = set(signals)
+    merged_signals.discard("single_channel_dependency")
+    merged_signals.discard("broad_creator_distribution")
+    if len(channel_counts) == 1:
+        merged_signals.add("single_channel_dependency")
+    elif len(channel_counts) >= 10:
+        merged_signals.add("broad_creator_distribution")
+
     return ResearchAnalytics(
         metrics=metrics, top_videos=top_videos,
         topic_distribution=dict(topic_counts.most_common()),
         channel_distribution=dict(channel_counts.most_common()),
-        trend=None, signals=sorted(signals),
+        trend=None, signals=sorted(merged_signals),
         confidence=confidence_sum / total_count if total_count else 0.0,
         metadata={
             "processing": "bounded_batches", "batch_size": size,

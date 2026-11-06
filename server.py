@@ -217,12 +217,22 @@ try:
         AggregateMetrics,
         ResearchAnalytics,
         analyze_research,
+        calculate_engagement_rate,
+        get_comments,
+        get_likes,
+        get_published_at,
+        get_views,
         prepare_for_director as analytics_prepare_for_director,
     )
 except Exception:
     AggregateMetrics = None
     ResearchAnalytics = None
     analyze_research = None
+    calculate_engagement_rate = None
+    get_comments = None
+    get_likes = None
+    get_published_at = None
+    get_views = None
     analytics_prepare_for_director = None
 
 
@@ -1424,12 +1434,45 @@ def _analyze_research_in_batches(observations: list[dict[str, Any]], *, batch_si
     confidence_sum = 0.0
     batch_count = 0
 
+    normalization_reference: dict[str, Any] | None = None
+    if all(callable(fn) for fn in (
+        get_views, get_likes, get_comments, get_published_at,
+        calculate_engagement_rate,
+    )):
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        all_views = [float(get_views(item) or 0.0) for item in observations]
+        all_engagement = [
+            calculate_engagement_rate(
+                get_views(item), get_likes(item), get_comments(item)
+            )
+            for item in observations
+        ]
+        all_velocity = []
+        for item in observations:
+            published = get_published_at(item)
+            if published is None:
+                all_velocity.append(0.0)
+            else:
+                age_hours = max(1.0, (now - published).total_seconds() / 3600.0)
+                all_velocity.append(float(get_views(item) or 0.0) / age_hours)
+        normalization_reference = {
+            "reference_views": max(max(all_views, default=0.0), 1.0),
+            "reference_engagement": max(max(all_engagement, default=0.0), 1e-9),
+            "reference_views_per_hour": max(max(all_velocity, default=0.0), 1.0),
+            "now": now,
+        }
+
     for offset in range(0, len(observations), size):
         batch = observations[offset:offset + size]
         if not batch:
             continue
         batch_count += 1
-        result = analyze_research(batch)
+        result = analyze_research(
+            batch,
+            normalization_reference=normalization_reference,
+        )
         metrics = result.metrics
         count = int(metrics.count or 0)
         if count:

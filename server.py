@@ -1423,6 +1423,13 @@ class AnalyticsAdapter:
             or observations
         )
 
+        logger.info(
+            "DIRECTOR MEMORY phase=analytics_start memory=%s observations=%s previous=%s trend_current=%s",
+            _process_memory_mb(),
+            len(observations),
+            len(previous),
+            len(trend_current),
+        )
         analytics_data: dict[str, Any] = {}
 
         # ---------------------------------------------------------------
@@ -1436,6 +1443,10 @@ class AnalyticsAdapter:
                     previous_videos=(
                         previous or None
                     ),
+                )
+                logger.info(
+                    "DIRECTOR MEMORY phase=analytics_basic_complete memory=%s",
+                    _process_memory_mb(),
                 )
 
                 prepared = analytics_prepare_for_director(
@@ -1678,6 +1689,11 @@ class AnalyticsAdapter:
                     "Opportunity analysis failed"
                 )
 
+        logger.info(
+            "DIRECTOR MEMORY phase=analytics_complete memory=%s result_keys=%s",
+            _process_memory_mb(),
+            sorted(analytics_data.keys()),
+        )
         return analytics_data
 
 
@@ -2319,8 +2335,10 @@ class DataAdapter:
                         observations.append(observation)
 
                         if previous_snapshot is not None:
-                            current_for_trend = dict(observation)
-                            trend_current_observations.append(current_for_trend)
+                            # The trend cohort is a subset of observations. Reuse the same
+                            # read-only analysis dict instead of allocating a second
+                            # full dict for every matched video.
+                            trend_current_observations.append(observation)
 
                             previous_observation = dict(observation)
                             previous_metrics = (

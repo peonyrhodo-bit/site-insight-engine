@@ -265,6 +265,7 @@ class SupabaseMemoryBackend:
         order_key: str,
         descending: bool = False,
         page_size: int = 500,
+        columns: str = "*",
     ):
         """Yield one page at a time instead of retaining an entire table in RAM.
 
@@ -278,7 +279,7 @@ class SupabaseMemoryBackend:
             response = (
                 self.client
                 .table(table_name)
-                .select("*")
+                .select(columns)
                 .order(order_key, desc=descending)
                 .range(offset, offset + page_size - 1)
                 .execute()
@@ -446,6 +447,161 @@ class SupabaseMemoryBackend:
             "videos": videos,
             "snapshots": snapshots,
         }
+
+    @staticmethod
+    def _analysis_metadata(data: dict[str, Any]) -> dict[str, Any]:
+        """Keep only fields needed for topic, channel and recency analysis."""
+        result: dict[str, Any] = {}
+        snippet = data.get("snippet")
+        if isinstance(snippet, dict):
+            allowed_snippet = (
+                "title", "channelId", "channelTitle",
+                "publishedAt", "tags", "categoryId",
+            )
+            compact_snippet = {
+                key: snippet[key]
+                for key in allowed_snippet
+                if key in snippet and snippet[key] is not None
+            }
+            if compact_snippet:
+                result["snippet"] = compact_snippet
+
+        for key in (
+            "topic", "topics", "category", "categories",
+            "niche", "niches", "thematic_direction",
+            "thematic_directions", "keywords", "tags",
+            "search_terms", "search_keywords",
+            "duration_seconds", "duration", "topicDetails",
+        ):
+            if key in data and data[key] is not None:
+                result[key] = data[key]
+
+        content_details = data.get("contentDetails")
+        if isinstance(content_details, dict) and content_details.get("duration"):
+            result["contentDetails"] = {
+                "duration": content_details["duration"]
+            }
+        return result
+
+    def load_youtube_analysis_data(
+        self,
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Load a compact Director working set without retaining full video payloads.
+
+        Rows are streamed from Supabase page by page. Only topic metadata and
+        the newest configured number of numeric snapshots per video are kept
+        in memory. Full source records and older history remain in Supabase.
+        """
+        from data.youtube import YouTubeSnapshot, YouTubeVideo
+
+        started_at = time.monotonic()
+        expected_project = str(project_id) if project_id is not None else None
+        page_size = max(50, min(int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500")), 1000))
+        videos: list[dict[str, Any]] = []
+        video_ids: set[str] = set()
+        video_rows_scanned = 0
+
+        for row in self._iter_paginated_rows(
+            "videos",
+            order_key="video_id",
+            page_size=page_size,
+            columns="video_id,data_json,first_seen,last_seen",
+        ):
+            video_rows_scanned += 1
+            if expected_project is not None and self._project_id_from_row(row) != expected_project:
+                continue
+
+            data = self._safe_dict(row.get("data_json"))
+            snippet = self._safe_dict(data.get("snippet"))
+            video_id = row.get("video_id") or data.get("id")
+            if video_id is None:
+                continue
+
+            compact_metadata = self._analysis_metadata(data)
+            video = YouTubeVideo(
+                video_id=video_id,
+                youtube_id=str(video_id),
+                title=str(snippet.get("title") or data.get("title") or ""),
+                channel_id=snippet.get("channelId") or data.get("channel_id"),
+                channel_title=snippet.get("channelTitle") or data.get("channel_title"),
+                description=None,
+                published_at=snippet.get("publishedAt") or data.get("published_at"),
+                first_seen_at=row.get("first_seen"),
+                last_seen_at=row.get("last_seen"),
+                source="supabase_analysis",
+                metadata=compact_metadata,
+            )
+            videos.append(video.to_dict())
+            video_ids.add(str(video_id))
+
+        try:
+            snapshots_per_video = max(
+                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "2")), 20)
+            )
+        except (TypeError, ValueError):
+            snapshots_per_video = 2
+
+        snapshots: list[dict[str, Any]] = []
+        snapshot_counts: dict[str, int] = {}
+        snapshot_rows_scanned = 0
+
+        for row in self._iter_paginated_rows(
+            "video_snapshots",
+            order_key="id",
+            descending=True,
+            page_size=page_size,
+            columns="id,video_id,created_at,data_json",
+        ):
+            snapshot_rows_scanned += 1
+            row_project = self._project_id_from_row(row)
+            if expected_project is not None:
+                if row_project is not None and row_project != expected_project:
+                    continue
+                if row_project is None and str(row.get("video_id")) not in video_ids:
+                    continue
+
+            video_key = str(row.get("video_id") or "")
+            if not video_key:
+                continue
+            seen = snapshot_counts.get(video_key, 0)
+            if seen >= snapshots_per_video:
+                continue
+
+            data = self._safe_dict(row.get("data_json"))
+            statistics = self._safe_dict(data.get("statistics"))
+            radar = self._safe_dict(data.get("_radar"))
+            metrics = dict(statistics)
+            for key in ("views", "age_hours", "engagement", "views_per_hour"):
+                if key in radar:
+                    metrics[key] = radar[key]
+
+            snapshot_id = data.get("snapshot_id") or row.get("id")
+            if snapshot_id is None:
+                continue
+
+            snapshot = YouTubeSnapshot(
+                snapshot_id=snapshot_id,
+                video_id=row.get("video_id"),
+                captured_at=row.get("created_at"),
+                metrics=metrics,
+                metadata={},
+                source="supabase_analysis",
+            )
+            snapshots.append(snapshot.to_dict())
+            snapshot_counts[video_key] = seen + 1
+
+        logger.info(
+            "SUPABASE COMPACT ANALYSIS DATA LOADED: project_id=%s "
+            "video_rows_scanned=%d videos=%d snapshot_rows_scanned=%d "
+            "snapshots=%d snapshots_per_video=%d page_size=%d "
+            "elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all", video_rows_scanned, len(videos),
+            snapshot_rows_scanned, len(snapshots), snapshots_per_video,
+            page_size, time.monotonic() - started_at, _peak_rss_raw(),
+        )
+        return {"queries": [], "videos": videos, "snapshots": snapshots}
 
     def save_youtube_data(
         self,

@@ -83,6 +83,21 @@ def _select_work_plan_task(work_plan: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _needs_broad_discovery(
+    stored_query_count: int,
+    known_topic_labels: int,
+    freshness_status: str,
+    missing_data: list[str] | None = None,
+) -> bool:
+    """Search broadly when query history is large but topic coverage is absent."""
+    return (
+        stored_query_count < 12
+        or known_topic_labels < 3
+        or freshness_status != "fresh"
+        or any("широк" in str(item).lower() for item in (missing_data or []))
+    )
+
+
 def _work_plan_search_gaps(task: dict[str, Any]) -> list[str]:
     """Return only explicit search queries, never task descriptions or reasons."""
     queries = task.get("search_queries")
@@ -831,8 +846,14 @@ class Director:
                     freshness = project_state.get("freshness", {}) if isinstance(project_state, dict) else {}
                     coverage = project_state.get("coverage", {}) if isinstance(project_state, dict) else {}
                     stored_query_count = int(coverage.get("stored_search_queries", 0) or 0)
-                    force_broad_discovery = any("широк" in str(item).lower() for item in (missing_data or []))
-                    if stored_query_count < 12 or freshness.get("status") != "fresh" or force_broad_discovery:
+                    known_topic_labels = int(coverage.get("known_topic_labels", 0) or 0)
+                    force_broad_discovery = _needs_broad_discovery(
+                        stored_query_count,
+                        known_topic_labels,
+                        str(freshness.get("status", "unknown")),
+                        missing_data,
+                    )
+                    if force_broad_discovery:
                         seed_batches = [
                             [
                                 ("emerging YouTube trends 2026", "en", "US"),
@@ -2404,8 +2425,16 @@ class Director:
                 {
                     "id": "discover_broadly",
                     "task": "Искать новые направления широко — по разным темам, языкам, регионам и форматам, а не только проверять прежние гипотезы.",
-                    "status": "required" if coverage.get("stored_search_queries", 0) < 12 or freshness_status != "fresh" else "next",
-                    "reason": "Сопоставить новые поисковые результаты с текущей базой.",
+                    "status": "required" if _needs_broad_discovery(
+                        int(coverage.get("stored_search_queries", 0) or 0),
+                        int(coverage.get("known_topic_labels", 0) or 0),
+                        freshness_status,
+                    ) else "next",
+                    "reason": (
+                        f"known_topic_labels={int(coverage.get('known_topic_labels', 0) or 0)}; "
+                        f"stored_search_queries={int(coverage.get('stored_search_queries', 0) or 0)}; "
+                        f"freshness={freshness_status}"
+                    ),
                 },
                 {
                     "id": "validate_hypotheses",

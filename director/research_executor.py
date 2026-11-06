@@ -43,12 +43,12 @@ def _resolve_execution_status(
     mandatory_ok: bool,
     volume_ok: bool,
     persistence_confirmed: bool,
-    research_status: ResearchStatus,
+    research_status: str,
     received_result_count: int,
     failed_queries: int,
     empty_queries: int,
 ) -> tuple[ResearchStatus, str]:
-    if mandatory_ok and volume_ok and persistence_confirmed and research_status == ResearchStatus.COMPLETE:
+    if mandatory_ok and volume_ok and persistence_confirmed and research_status == "complete":
         return ResearchStatus.COMPLETED, "completed"
     if received_result_count == 0 and failed_queries > 0 and empty_queries == 0:
         return ResearchStatus.BLOCKED, "failed"

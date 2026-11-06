@@ -1,4 +1,5 @@
-from director.director import _needs_broad_discovery, (
+from director.director import (
+    _needs_broad_discovery,
     _apply_work_plan_task_to_research_plan,
     _work_plan_search_gaps,
     _select_work_plan_task,

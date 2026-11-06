@@ -71,6 +71,28 @@ from .state_snapshot import build_unified_state_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _work_plan_search_gaps(task: dict[str, Any]) -> list[str]:
+    """Return only explicit search queries, never task descriptions or reasons."""
+    queries = task.get("search_queries")
+    if not isinstance(queries, list):
+        return []
+    return [str(query).strip() for query in queries if str(query).strip()]
+
+
+def _apply_work_plan_task_to_research_plan(
+    plan: ResearchPlan,
+    task: dict[str, Any],
+) -> ResearchPlan:
+    """Attach the selected task and remove unrelated bulk-refresh work."""
+    plan.metadata["work_plan_task"] = task
+    if task.get("id") != "refresh_evidence":
+        plan.operations = [
+            operation for operation in plan.operations
+            if operation.operation != "refresh_existing_video_stats"
+        ]
+    return plan
+
+
 class DirectorMode(str, Enum):
     MANUAL = "manual"
     ASSISTED = "assisted"
@@ -2104,10 +2126,7 @@ class Director:
                     )
                     if selected_work_plan_task:
                         task_objective = selected_work_plan_task.get("task") or task_objective
-                        task_gaps = [
-                            selected_work_plan_task.get("task", ""),
-                            selected_work_plan_task.get("reason", ""),
-                        ]
+                        task_gaps = _work_plan_search_gaps(selected_work_plan_task)
         elif _ is not None:
             task_gaps = getattr(_, "missing_data", None)
             task_objective = getattr(_, "objective", None) or getattr(_, "next_action", None)
@@ -2117,7 +2136,10 @@ class Director:
             missing_data=task_gaps if isinstance(task_gaps, (list, tuple)) else None,
         )
         if selected_work_plan_task:
-            plan.metadata["work_plan_task"] = selected_work_plan_task
+            plan = _apply_work_plan_task_to_research_plan(
+                plan,
+                selected_work_plan_task,
+            )
             state.metadata["selected_work_plan_task"] = selected_work_plan_task
             logger.info(
                 "DIRECTOR SELECTED WORK PLAN TASK: cycle=%s task=%s reason=%s",

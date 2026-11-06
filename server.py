@@ -1560,7 +1560,15 @@ class AnalyticsAdapter:
                     )
 
                 if not topic_items:
-                    topic_items = observations
+                    # Raw videos are evidence, not opportunity candidates.
+                    # Falling back to every observation creates thousands of
+                    # duplicate assessments when topic extraction has no labels,
+                    # and can pass the entire dataset into decision enrichment.
+                    logger.info(
+                        "Opportunity analysis skipped: no topic profiles were produced; "
+                        "raw observations are not opportunity candidates"
+                    )
+                    topic_items = []
 
                 trend_payload = (
                     analytics_data.get(

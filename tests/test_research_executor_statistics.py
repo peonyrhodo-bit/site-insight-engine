@@ -1,5 +1,5 @@
 from director.research import ResearchOperation, ResearchOperationStatus, ResearchPlan, ResearchStatus, mark_completed
-from director.research_executor import YouTubeResearchExecutor
+from director.research_executor import YouTubeResearchExecutor, _resolve_execution_status
 
 
 def _plan():
@@ -24,6 +24,52 @@ def _plan():
         reason="test",
         operations=[operation],
     )
+
+
+
+def test_research_execution_status_is_partial_when_results_were_saved_but_volume_is_incomplete():
+    status, label = _resolve_execution_status(
+        mandatory_ok=True,
+        volume_ok=False,
+        persistence_confirmed=True,
+        research_status=ResearchStatus.PARTIAL,
+        received_result_count=136,
+        failed_queries=0,
+        empty_queries=0,
+    )
+
+    assert status == ResearchStatus.PARTIAL
+    assert label == "partial"
+
+
+def test_research_execution_status_is_blocked_when_every_query_failed_without_results():
+    status, label = _resolve_execution_status(
+        mandatory_ok=False,
+        volume_ok=False,
+        persistence_confirmed=False,
+        research_status=ResearchStatus.PARTIAL,
+        received_result_count=0,
+        failed_queries=3,
+        empty_queries=0,
+    )
+
+    assert status == ResearchStatus.BLOCKED
+    assert label == "failed"
+
+
+def test_research_execution_status_is_completed_only_when_all_gates_pass():
+    status, label = _resolve_execution_status(
+        mandatory_ok=True,
+        volume_ok=True,
+        persistence_confirmed=True,
+        research_status=ResearchStatus.COMPLETE,
+        received_result_count=100,
+        failed_queries=0,
+        empty_queries=0,
+    )
+
+    assert status == ResearchStatus.COMPLETED
+    assert label == "completed"
 
 
 def test_channel_snapshot_operation_succeeds_only_when_snapshots_are_persisted():

@@ -107,7 +107,7 @@ class ResearchAndOpportunityHistoryTests(unittest.TestCase):
             self.assertEqual(len(actual_ids), len(set(actual_ids)), key)
             self.assertEqual(set(actual_ids), set(expected_ids), key)
 
-    def test_channels_and_opportunity_tables_load_all_pages(self):
+    def test_channels_and_opportunity_tables_use_bounded_working_sets(self):
         tables = {
             "channels": make_rows(1207),
             "channel_snapshots": make_rows(1207),
@@ -116,8 +116,23 @@ class ResearchAndOpportunityHistoryTests(unittest.TestCase):
         }
         backend = SupabaseMemoryBackend(client=FakeClient(tables))
 
-        result = backend.load_opportunity_data(project_id="project-a")
+        from unittest.mock import patch
 
+        limits = {
+            "DIRECTOR_CHANNELS_IN_MEMORY": "500",
+            "DIRECTOR_CHANNEL_SNAPSHOTS_IN_MEMORY": "500",
+            "DIRECTOR_NICHES_IN_MEMORY": "250",
+            "DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY": "500",
+        }
+        with patch.dict("os.environ", limits):
+            result = backend.load_opportunity_data(project_id="project-a")
+
+        expected_limits = {
+            "channels": 500,
+            "channel_snapshots": 500,
+            "niches": 250,
+            "niche_snapshots": 500,
+        }
         for key, source_table in (
             ("channels", "channels"),
             ("channel_snapshots", "channel_snapshots"),
@@ -126,9 +141,9 @@ class ResearchAndOpportunityHistoryTests(unittest.TestCase):
         ):
             expected_ids = [r["id"] for r in tables[source_table] if r["project_id"] == "project-a"]
             actual_ids = [r["id"] for r in result[key]]
-            self.assertEqual(len(actual_ids), len(expected_ids), key)
+            self.assertEqual(len(actual_ids), min(expected_limits[key], len(expected_ids)), key)
             self.assertEqual(len(actual_ids), len(set(actual_ids)), key)
-            self.assertEqual(set(actual_ids), set(expected_ids), key)
+            self.assertTrue(set(actual_ids).issubset(set(expected_ids)), key)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from director.director import (
     _apply_work_plan_task_to_research_plan,
     _work_plan_search_gaps,
+    _select_work_plan_task,
 )
 from director.research import ResearchOperation, build_research_plan
 
@@ -45,6 +46,22 @@ def test_refresh_evidence_task_keeps_explicit_video_refresh():
 
     assert "refresh_existing_video_stats" in {
         operation.operation for operation in result.operations
+    }
+
+
+def test_selected_task_is_read_from_assessment_work_plan():
+    work_plan = {
+        "execution_order": ["validate_hypotheses", "persist_and_reinspect"],
+        "tasks": [
+            {"id": "discover_broadly", "task": "discover"},
+            {"id": "validate_hypotheses", "task": "validate", "reason": "not formulated"},
+        ],
+    }
+
+    assert _select_work_plan_task(work_plan) == {
+        "id": "validate_hypotheses",
+        "task": "validate",
+        "reason": "not formulated",
     }
 
 

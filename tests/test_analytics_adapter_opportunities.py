@@ -101,5 +101,47 @@ async def test_analytics_releases_raw_observations_after_analysis(monkeypatch):
 
     await server.AnalyticsAdapter().analyze(context)
 
-    assert observations == []
+    assert len(observations) == 100
     assert context["metadata"]["last_analysis_observation_count"] == 1200
+    assert context["metadata"]["last_analysis_context_sample_size"] == 100
+
+
+
+@pytest.mark.asyncio
+async def test_opportunity_assessment_receives_topic_specific_evidence(monkeypatch):
+    assessed = []
+
+    monkeypatch.setattr(server, "analytics_prepare_for_director", None)
+    monkeypatch.setattr(
+        server,
+        "analyze_topics",
+        lambda _items: {
+            "topics": [
+                {
+                    "topic_id": "gardening",
+                    "name": "Gardening",
+                    "video_ids": ["video-5"],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(server, "topics_prepare_for_director", None)
+    monkeypatch.setattr(server, "analyze_trend", None)
+    monkeypatch.setattr(server, "opportunity_prepare_for_director", None)
+
+    def fake_assess_opportunity(**kwargs):
+        assessed.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(server, "assess_opportunity", fake_assess_opportunity)
+    observations = [
+        {"video_id": f"video-{index}", "title": f"Video {index}"}
+        for index in range(10)
+    ]
+
+    await server.AnalyticsAdapter().analyze(
+        {"observations": observations, "metadata": {}}
+    )
+
+    assert len(assessed) == 1
+    assert [item["video_id"] for item in assessed[0]["videos"]] == ["video-5"]

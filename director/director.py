@@ -185,25 +185,25 @@ class DirectorContext:
         """
         return {
             "project_id": self.project_id,
-            "objective": self.context.objective,
-            "channels": self.context.channels,
+            "objective": self.objective,
+            "channels": self.channels,
             "channel_snapshots": self.channel_snapshots,
             "niches": self.niches,
             "niche_snapshots": self.niche_snapshots,
-            "strategies": self.context.strategies,
-            "observations": self.context.observations,
-            "analytics": self.context.analytics,
-            "topics": self.context.topics,
-            "opportunities": self.context.opportunities,
-            "research_history": self.context.research_history,
-            "decisions": self.context.decisions,
-            "recommendations": self.context.recommendations,
-            "feedback": self.context.feedback,
-            "constraints": self.context.constraints,
-            "resources": self.context.resources,
-            "available_actions": self.context.available_actions,
-            "missing_data": self.context.missing_data,
-            "metadata": self.context.metadata,
+            "strategies": self.strategies,
+            "observations": self.observations,
+            "analytics": self.analytics,
+            "topics": self.topics,
+            "opportunities": self.opportunities,
+            "research_history": self.research_history,
+            "decisions": self.decisions,
+            "recommendations": self.recommendations,
+            "feedback": self.feedback,
+            "constraints": self.constraints,
+            "resources": self.resources,
+            "available_actions": self.available_actions,
+            "missing_data": self.missing_data,
+            "metadata": self.metadata,
         }
 
 
@@ -258,7 +258,7 @@ class Director:
         self.mode = mode
 
         self.research_service = research_service
-        self.context.analytics_service = analytics_service
+        self.analytics_service = analytics_service
         self.memory_service = memory_service
         self.ai_service = ai_service
         self.data_service = data_service
@@ -344,7 +344,7 @@ class Director:
         """Build the runtime map of capabilities actually available now."""
         services = {
             "research": self.research_service,
-            "analytics": self.context.analytics_service,
+            "analytics": self.analytics_service,
             "memory": self.memory_service,
             "ai": self.ai_service,
             "data": self.data_service,
@@ -354,7 +354,7 @@ class Director:
         actions: list[str] = ["inspect", "understand", "assess", "decide"]
         if self.research_service is not None and getattr(self.research_service, "plan", None):
             actions.extend(["research", "plan_research"])
-        if self.context.analytics_service is not None and getattr(self.context.analytics_service, "analyze", None):
+        if self.analytics_service is not None and getattr(self.analytics_service, "analyze", None):
             actions.append("analyze")
         if self.ai_service is not None:
             actions.append("ai_assistance")
@@ -972,9 +972,9 @@ class Director:
             "analytics": self.context.analytics,
         }
 
-        if self.context.analytics_service is not None:
+        if self.analytics_service is not None:
             analyzer = getattr(
-                self.context.analytics_service,
+                self.analytics_service,
                 "analyze",
                 None,
             )

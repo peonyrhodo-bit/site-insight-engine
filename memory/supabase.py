@@ -725,14 +725,54 @@ class SupabaseMemoryBackend:
     TABLE_NICHE_SNAPSHOTS = "niche_snapshots"
 
     def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, Any]:
-        """Load channel/niche identities and historical snapshots for a project."""
+        """Load a bounded working set; Supabase remains the complete history."""
         expected_project = str(project_id) if project_id is not None else None
-        return {
-            "channels": self._recent_for_project(self.TABLE_CHANNELS, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "channel_snapshots": self._recent_for_project(self.TABLE_CHANNEL_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
-            "niches": self._recent_for_project(self.TABLE_NICHES, limit=None, project_id=expected_project, order_key="id", default_limit=10000),
-            "niche_snapshots": self._recent_for_project(self.TABLE_NICHE_SNAPSHOTS, limit=None, project_id=expected_project, order_key="captured_at", default_limit=10000),
+
+        def configured_limit(name: str, default: int, maximum: int) -> int:
+            try:
+                value = int(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                value = default
+            return max(1, min(value, maximum))
+
+        limits = {
+            "channels": configured_limit("DIRECTOR_CHANNELS_IN_MEMORY", 500, 2000),
+            "channel_snapshots": configured_limit("DIRECTOR_CHANNEL_SNAPSHOTS_IN_MEMORY", 500, 5000),
+            "niches": configured_limit("DIRECTOR_NICHES_IN_MEMORY", 250, 1000),
+            "niche_snapshots": configured_limit("DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY", 500, 5000),
         }
+        started_at = time.monotonic()
+        result = {
+            "channels": self._recent_for_project(
+                self.TABLE_CHANNELS, limit=limits["channels"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["channels"],
+            ),
+            "channel_snapshots": self._recent_for_project(
+                self.TABLE_CHANNEL_SNAPSHOTS, limit=limits["channel_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["channel_snapshots"],
+            ),
+            "niches": self._recent_for_project(
+                self.TABLE_NICHES, limit=limits["niches"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["niches"],
+            ),
+            "niche_snapshots": self._recent_for_project(
+                self.TABLE_NICHE_SNAPSHOTS, limit=limits["niche_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["niche_snapshots"],
+            ),
+        }
+        logger.info(
+            "SUPABASE OPPORTUNITY DATA LOADED: project_id=%s counts=%s limits=%s elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            {key: len(rows) for key, rows in result.items()},
+            limits,
+            time.monotonic() - started_at,
+            _peak_rss_raw(),
+        )
+        return result
 
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
         """Persist channel/niche identities and snapshots idempotently."""

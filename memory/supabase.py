@@ -841,6 +841,55 @@ class SupabaseMemoryBackend:
         response = self.client.table(self.TABLE_DATA_RELATIONS).upsert(payload, on_conflict="project_id,source_type,source_id,relation,target_type,target_id").select("id").execute()
         return self._first_id(response)
 
+    def save_data_relations(
+        self,
+        *,
+        project_id: str,
+        relations: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Persist relations in one idempotent batch instead of one HTTP call per row."""
+        payload_by_key: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        for item in relations or []:
+            relation = self._safe_dict(item)
+            source_type = relation.get("source_type")
+            source_id = relation.get("source_id")
+            relation_name = relation.get("relation")
+            target_type = relation.get("target_type")
+            target_id = relation.get("target_id")
+            if not all((source_type, source_id, relation_name, target_type, target_id)):
+                continue
+            key = (
+                str(source_type),
+                str(source_id),
+                str(relation_name),
+                str(target_type),
+                str(target_id),
+            )
+            payload_by_key[key] = {
+                "project_id": str(project_id),
+                "source_type": key[0],
+                "source_id": key[1],
+                "relation": key[2],
+                "target_type": key[3],
+                "target_id": key[4],
+                "metadata": self._safe_dict(relation.get("metadata")),
+            }
+
+        payload = list(payload_by_key.values())
+        if not payload:
+            return 0
+
+        response = (
+            self.client.table(self.TABLE_DATA_RELATIONS)
+            .upsert(
+                payload,
+                on_conflict="project_id,source_type,source_id,relation,target_type,target_id",
+            )
+            .select("id")
+            .execute()
+        )
+        return len(self._safe_list(response))
+
     def save_research_data(self, *, project_id: str, queries: list[dict[str, Any]] | None = None, research_sets: list[dict[str, Any]] | None = None, relations: list[dict[str, Any]] | None = None) -> dict[str, int]:
         """Persist the current DATA graph using idempotent upserts."""
         saved = {"queries": 0, "research_sets": 0, "relations": 0}
@@ -848,8 +897,10 @@ class SupabaseMemoryBackend:
             if self.save_youtube_query(project_id=project_id, query=query) is not None: saved["queries"] += 1
         for research in research_sets or []:
             if self.save_research_set(project_id=project_id, research=research) is not None: saved["research_sets"] += 1
-        for relation in relations or []:
-            if self.save_data_relation(project_id=project_id, relation=relation) is not None: saved["relations"] += 1
+        saved["relations"] = self.save_data_relations(
+            project_id=project_id,
+            relations=relations,
+        )
         return saved
 
     # ------------------------------------------------------------------

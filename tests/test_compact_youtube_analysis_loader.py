@@ -103,8 +103,8 @@ def test_compact_analysis_loader_keeps_signals_and_drops_long_payloads():
     assert len(video["metadata"]["tags"]) == 30
     assert "description" not in video["metadata"]
     assert len(result["snapshots"]) == 2
-    assert result["snapshots"][0]["metrics"]["viewCount"] == "1200"
-    assert result["snapshots"][1]["metrics"]["viewCount"] == "900"
+    assert result["snapshots"][0]["metrics"]["viewCount"] == 1200
+    assert result["snapshots"][1]["metrics"]["viewCount"] == 900
     assert result["snapshots"][0]["metadata"] == {}
     assert client.selected_columns["videos"] == "video_id,data_json,first_seen,last_seen"
     assert client.selected_columns["video_snapshots"] == "id,video_id,created_at,data_json"

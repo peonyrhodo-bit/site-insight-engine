@@ -505,7 +505,11 @@ class SupabaseMemoryBackend:
 
         started_at = time.monotonic()
         expected_project = str(project_id) if project_id is not None else None
-        page_size = max(50, min(int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500")), 1000))
+        try:
+            configured_page_size = int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500"))
+        except (TypeError, ValueError):
+            configured_page_size = 500
+        page_size = max(50, min(configured_page_size, 1000))
         videos: list[dict[str, Any]] = []
         video_ids: set[str] = set()
         video_rows_scanned = 0

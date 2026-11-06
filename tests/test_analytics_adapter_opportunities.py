@@ -60,8 +60,8 @@ def test_research_analytics_runs_in_bounded_batches(monkeypatch):
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
-    def fake_analyze(batch):
-        calls.append(len(batch))
+    def fake_analyze(batch, *, normalization_reference=None):
+        calls.append((len(batch), normalization_reference))
         count = len(batch)
         return SimpleNamespace(
             metrics=Metrics(count),
@@ -79,7 +79,9 @@ def test_research_analytics_runs_in_bounded_batches(monkeypatch):
         batch_size=100,
     )
 
-    assert calls == [100] * 12
+    assert [size for size, _reference in calls] == [100] * 12
+    assert all(reference == calls[0][1] for _size, reference in calls)
+    assert calls[0][1]["reference_views"] >= 1
     assert result.metrics.count == 1200
     assert result.metadata["batch_count"] == 12
     assert result.metadata["processing"] == "bounded_batches"
@@ -145,3 +147,30 @@ async def test_opportunity_assessment_receives_topic_specific_evidence(monkeypat
 
     assert len(assessed) == 1
     assert [item["video_id"] for item in assessed[0]["videos"]] == ["video-5"]
+
+
+
+def test_director_state_keeps_full_counts_after_evidence_compaction():
+    from director.director import Director
+
+    director = Director(project_id="test")
+    director.context.observations = [
+        {"video_id": f"video-{index}", "views": 100}
+        for index in range(100)
+    ]
+    director.context.metadata = {
+        "last_analysis_observation_count": 1200,
+        "last_analysis_metric_observation_count": 1100,
+        "last_analysis_velocity_observation_count": 900,
+        "last_analysis_known_topic_label_count": 12,
+        "last_analysis_latest_snapshot_at": "2026-11-06T12:00:00Z",
+        "data_inventory": {"video_count": 1200, "snapshot_count": 2400},
+    }
+
+    director._refresh_project_state()
+
+    project_state = director.context.metadata["project_state"]
+    assert project_state["observation_count"] == 1200
+    assert project_state["metric_observation_count"] == 1100
+    assert project_state["velocity_observation_count"] == 900
+    assert project_state["coverage"]["known_topic_labels"] == 12

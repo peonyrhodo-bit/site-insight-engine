@@ -61,6 +61,7 @@ class DirectorDecision:
     risks: list[str] = field(default_factory=list)
     missing_data: list[str] = field(default_factory=list)
     next_action: str | None = None
+    expected_outcome: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -130,6 +131,7 @@ def build_decision(
     risks: Iterable[str] | None = None,
     missing_data: Iterable[str] | None = None,
     next_action: str | None = None,
+    expected_outcome: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> DirectorDecision:
     if not isinstance(decision_type, DecisionType):
@@ -150,6 +152,7 @@ def build_decision(
             str(x) for x in (missing_data or []) if str(x).strip()
         ],
         next_action=str(next_action).strip() if next_action else None,
+        expected_outcome=(str(expected_outcome).strip() if expected_outcome else None),
         metadata=dict(metadata or {}),
     )
 
@@ -187,6 +190,12 @@ def decide_from_opportunity(
             risks=risks,
             missing_data=missing,
             next_action="Провести дополнительное исследование.",
+            expected_outcome=(
+                "Получить данные по исследовательским пробелам: "
+                + "; ".join(str(item) for item in missing)
+                if missing
+                else "Получить новые данные, достаточные для уверенной оценки направления."
+            ),
         )
 
     if score >= 0.72 and applicability >= 0.60:
@@ -202,6 +211,10 @@ def decide_from_opportunity(
             risks=risks,
             missing_data=missing,
             next_action="Сформировать небольшой проверочный эксперимент.",
+            expected_outcome=(
+                "Получить измеримые результаты ограниченного эксперимента и "
+                "сопоставить их с заранее заданными критериями."
+            ),
         )
 
     if score >= 0.50:
@@ -217,6 +230,10 @@ def decide_from_opportunity(
             risks=risks,
             missing_data=missing,
             next_action="Сравнить направление с альтернативами.",
+            expected_outcome=(
+                "Сравнить направление с альтернативами по доступным доказательствам "
+                "и определить, какие данные нужны для следующего решения."
+            ),
         )
 
     return build_decision(
@@ -231,6 +248,10 @@ def decide_from_opportunity(
         risks=risks,
         missing_data=missing,
         next_action="Наблюдать за изменением данных.",
+        expected_outcome=(
+            "Не запускать необоснованное действие; при следующем цикле "
+            "проверить новые данные и пересмотреть решение при изменении сигналов."
+        ),
     )
 
 

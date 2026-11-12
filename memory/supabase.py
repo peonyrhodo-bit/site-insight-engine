@@ -495,11 +495,12 @@ class SupabaseMemoryBackend:
         *,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        """Load a compact Director working set without retaining full video payloads.
+        """Load a bounded, recent Director working set directly from Supabase.
 
-        Rows are streamed from Supabase page by page. Only topic metadata and
-        the newest configured number of numeric snapshots per video are kept
-        in memory. Full source records and older history remain in Supabase.
+        The database applies project filtering and recency ordering before
+        video payloads are materialized. Only the configured number of videos
+        and the newest configured snapshots for those videos enter the
+        process-local registry. Historical rows remain in Supabase.
         """
         from data.youtube import YouTubeSnapshot, YouTubeVideo
 
@@ -510,42 +511,81 @@ class SupabaseMemoryBackend:
         except (TypeError, ValueError):
             configured_page_size = 500
         page_size = max(50, min(configured_page_size, 1000))
+        try:
+            configured_video_limit = int(os.getenv("DIRECTOR_ANALYSIS_MAX_VIDEOS", "1000"))
+        except (TypeError, ValueError):
+            configured_video_limit = 1000
+        video_limit = max(100, min(configured_video_limit, 2000))
+
+        def exact_count(table_name: str, column: str) -> int | None:
+            try:
+                query = self.client.table(table_name).select(
+                    column, count="exact", head=True
+                )
+                if expected_project is not None:
+                    query = query.eq("data_json->>project_id", expected_project)
+                response = query.execute()
+                value = getattr(response, "count", None)
+                return int(value) if value is not None else None
+            except Exception:
+                logger.warning(
+                    "Could not read exact %s count for project=%s",
+                    table_name, expected_project or "all", exc_info=True,
+                )
+                return None
+
+        total_video_count = exact_count("videos", "video_id")
+        total_snapshot_count = exact_count("video_snapshots", "id")
+
         videos: list[dict[str, Any]] = []
-        video_ids: set[str] = set()
-        video_rows_scanned = 0
-
-        for row in self._iter_paginated_rows(
-            "videos",
-            order_key="video_id",
-            page_size=page_size,
-            columns="video_id,data_json,first_seen,last_seen",
-        ):
-            video_rows_scanned += 1
-            if expected_project is not None and self._project_id_from_row(row) != expected_project:
-                continue
-
-            data = self._safe_dict(row.get("data_json"))
-            snippet = self._safe_dict(data.get("snippet"))
-            video_id = row.get("video_id") or data.get("id")
-            if video_id is None:
-                continue
-
-            compact_metadata = self._analysis_metadata(data)
-            video = YouTubeVideo(
-                video_id=video_id,
-                youtube_id=str(video_id),
-                title=str(snippet.get("title") or data.get("title") or ""),
-                channel_id=snippet.get("channelId") or data.get("channel_id"),
-                channel_title=snippet.get("channelTitle") or data.get("channel_title"),
-                description=None,
-                published_at=snippet.get("publishedAt") or data.get("published_at"),
-                first_seen_at=row.get("first_seen"),
-                last_seen_at=row.get("last_seen"),
-                source="supabase",
-                metadata=compact_metadata,
+        video_ids: list[str] = []
+        video_offset = 0
+        while len(videos) < video_limit:
+            query = (
+                self.client.table("videos")
+                .select("video_id,data_json,first_seen,last_seen")
+                .order("last_seen", desc=True)
+                .order("video_id", desc=True)
             )
-            videos.append(video.to_dict())
-            video_ids.add(str(video_id))
+            if expected_project is not None:
+                query = query.eq("data_json->>project_id", expected_project)
+            response = (
+                query.range(video_offset, video_offset + page_size - 1)
+                .execute()
+            )
+            page = self._safe_list(response)
+            for row in page:
+                # Retain the legacy project check as a guard against malformed
+                # JSON rows even though the database performs the main filter.
+                if expected_project is not None and self._project_id_from_row(row) != expected_project:
+                    continue
+                data = self._safe_dict(row.get("data_json"))
+                snippet = self._safe_dict(data.get("snippet"))
+                video_id = row.get("video_id") or data.get("id")
+                if video_id is None:
+                    continue
+                compact_metadata = self._analysis_metadata(data)
+                video = YouTubeVideo(
+                    video_id=video_id,
+                    youtube_id=str(video_id),
+                    title=str(snippet.get("title") or data.get("title") or ""),
+                    channel_id=snippet.get("channelId") or data.get("channel_id"),
+                    channel_title=snippet.get("channelTitle") or data.get("channel_title"),
+                    description=None,
+                    published_at=snippet.get("publishedAt") or data.get("published_at"),
+                    first_seen_at=row.get("first_seen"),
+                    last_seen_at=row.get("last_seen"),
+                    source="supabase",
+                    metadata=compact_metadata,
+                )
+                videos.append(video.to_dict())
+                video_ids.append(str(video_id))
+                if len(videos) >= video_limit:
+                    break
+            if len(videos) >= video_limit or len(page) < page_size:
+                break
+            video_offset += page_size
+            del page, response
 
         try:
             snapshots_per_video = max(
@@ -556,63 +596,100 @@ class SupabaseMemoryBackend:
 
         snapshots: list[dict[str, Any]] = []
         snapshot_counts: dict[str, int] = {}
+        latest_snapshot_at: str | None = None
         snapshot_rows_scanned = 0
 
-        for row in self._iter_paginated_rows(
-            "video_snapshots",
-            order_key="id",
-            descending=True,
-            page_size=page_size,
-            columns="id,video_id,created_at,data_json",
-        ):
-            snapshot_rows_scanned += 1
-            row_project = self._project_id_from_row(row)
-            if expected_project is not None:
-                if row_project is not None and row_project != expected_project:
-                    continue
-                if row_project is None and str(row.get("video_id")) not in video_ids:
-                    continue
+        # Keep URL/query sizes bounded; Supabase filters snapshots by the
+        # selected video IDs, not by scanning/materializing project history.
+        id_chunk_size = 200
+        for chunk_start in range(0, len(video_ids), id_chunk_size):
+            video_id_chunk = video_ids[chunk_start:chunk_start + id_chunk_size]
+            snapshot_offset = 0
+            while True:
+                response = (
+                    self.client.table("video_snapshots")
+                    .select("id,video_id,created_at,data_json")
+                    .in_("video_id", video_id_chunk)
+                    .order("id", desc=True)
+                    .range(snapshot_offset, snapshot_offset + page_size - 1)
+                    .execute()
+                )
+                page = self._safe_list(response)
+                snapshot_rows_scanned += len(page)
+                for row in page:
+                    video_key = str(row.get("video_id") or "")
+                    if not video_key:
+                        continue
+                    seen = snapshot_counts.get(video_key, 0)
+                    if seen >= snapshots_per_video:
+                        continue
 
-            video_key = str(row.get("video_id") or "")
-            if not video_key:
-                continue
-            seen = snapshot_counts.get(video_key, 0)
-            if seen >= snapshots_per_video:
-                continue
+                    data = self._safe_dict(row.get("data_json"))
+                    statistics = self._safe_dict(data.get("statistics"))
+                    radar = self._safe_dict(data.get("_radar"))
+                    metrics = dict(statistics)
+                    for key in ("views", "age_hours", "engagement", "views_per_hour"):
+                        if key in radar:
+                            metrics[key] = radar[key]
 
-            data = self._safe_dict(row.get("data_json"))
-            statistics = self._safe_dict(data.get("statistics"))
-            radar = self._safe_dict(data.get("_radar"))
-            metrics = dict(statistics)
-            for key in ("views", "age_hours", "engagement", "views_per_hour"):
-                if key in radar:
-                    metrics[key] = radar[key]
+                    snapshot_id = data.get("snapshot_id") or row.get("id")
+                    if snapshot_id is None:
+                        continue
+                    snapshot = YouTubeSnapshot(
+                        snapshot_id=snapshot_id,
+                        video_id=row.get("video_id"),
+                        captured_at=row.get("created_at"),
+                        metrics=metrics,
+                        metadata={},
+                        source="supabase",
+                    )
+                    snapshots.append(snapshot.to_dict())
+                    snapshot_counts[video_key] = seen + 1
+                    captured_at = str(row.get("created_at") or "")
+                    if captured_at and (
+                        latest_snapshot_at is None or captured_at > latest_snapshot_at
+                    ):
+                        latest_snapshot_at = captured_at
 
-            snapshot_id = data.get("snapshot_id") or row.get("id")
-            if snapshot_id is None:
-                continue
+                if len(page) < page_size:
+                    break
+                snapshot_offset += page_size
+                del page, response
 
-            snapshot = YouTubeSnapshot(
-                snapshot_id=snapshot_id,
-                video_id=row.get("video_id"),
-                captured_at=row.get("created_at"),
-                metrics=metrics,
-                metadata={},
-                source="supabase",
-            )
-            snapshots.append(snapshot.to_dict())
-            snapshot_counts[video_key] = seen + 1
-
+        inventory = {
+            "video_count": total_video_count,
+            "snapshot_count": total_snapshot_count,
+            "working_video_count": len(videos),
+            "working_snapshot_count": len(snapshots),
+            "video_limit": video_limit,
+            "snapshots_per_video": snapshots_per_video,
+            "latest_snapshot_at": latest_snapshot_at,
+            "counts_exact": (
+                total_video_count is not None and total_snapshot_count is not None
+            ),
+        }
         logger.info(
-            "SUPABASE COMPACT ANALYSIS DATA LOADED: project_id=%s "
-            "video_rows_scanned=%d videos=%d snapshot_rows_scanned=%d "
-            "snapshots=%d snapshots_per_video=%d page_size=%d "
-            "elapsed_seconds=%.3f peak_rss_raw=%s",
-            expected_project or "all", video_rows_scanned, len(videos),
-            snapshot_rows_scanned, len(snapshots), snapshots_per_video,
-            page_size, time.monotonic() - started_at, _peak_rss_raw(),
+            "SUPABASE BOUNDED ANALYSIS DATA LOADED: project_id=%s "
+            "videos_total=%s videos_loaded=%d video_limit=%d "
+            "snapshots_total=%s snapshots_loaded=%d snapshot_rows_scanned=%d "
+            "page_size=%d elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            total_video_count,
+            len(videos),
+            video_limit,
+            total_snapshot_count,
+            len(snapshots),
+            snapshot_rows_scanned,
+            page_size,
+            time.monotonic() - started_at,
+            _peak_rss_raw(),
         )
-        return {"queries": [], "videos": videos, "snapshots": snapshots}
+        return {
+            "queries": [],
+            "videos": videos,
+            "snapshots": snapshots,
+            "inventory": inventory,
+        }
 
     def save_youtube_data(
         self,

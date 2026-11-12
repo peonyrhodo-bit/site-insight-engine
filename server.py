@@ -17,7 +17,7 @@ The server itself does not make strategic decisions.
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
+import heapq
 import json
 import logging
 import os
@@ -214,27 +214,11 @@ except Exception:
 # Analytics imports are intentionally modular.
 try:
     from analytics.analytics import (
-        AggregateMetrics,
-        ResearchAnalytics,
         analyze_research,
-        calculate_engagement_rate,
-        detect_signals,
-        get_comments,
-        get_likes,
-        get_published_at,
-        get_views,
         prepare_for_director as analytics_prepare_for_director,
     )
 except Exception:
-    AggregateMetrics = None
-    ResearchAnalytics = None
     analyze_research = None
-    calculate_engagement_rate = None
-    detect_signals = None
-    get_comments = None
-    get_likes = None
-    get_published_at = None
-    get_views = None
     analytics_prepare_for_director = None
 
 
@@ -1415,145 +1399,6 @@ class ServerMemory:
 
 
 
-def _analyze_research_in_batches(observations: list[dict[str, Any]], *, batch_size: int = 500) -> Any:
-    """Analyze video evidence in bounded chunks; retain only compact summaries."""
-    if analyze_research is None or ResearchAnalytics is None or AggregateMetrics is None:
-        return None
-    size = max(50, min(int(batch_size), 2000))
-    fields = (
-        "average_views", "average_likes", "average_comments", "average_like_rate",
-        "average_comment_rate", "average_engagement_rate", "average_views_per_hour",
-        "average_performance_score",
-    )
-    weighted = {name: 0.0 for name in fields}
-    total_count = 0
-    total_views = 0.0
-    median_parts: list[tuple[float, int]] = []
-    topic_counts: Counter[str] = Counter()
-    channel_counts: Counter[str] = Counter()
-    top_videos: list[dict[str, Any]] = []
-    signals: set[str] = set()
-    confidence_sum = 0.0
-    batch_count = 0
-
-    normalization_reference: dict[str, Any] | None = None
-    if all(callable(fn) for fn in (
-        get_views, get_likes, get_comments, get_published_at,
-        calculate_engagement_rate,
-    )):
-        from datetime import datetime, timezone
-
-        now = datetime.now(timezone.utc)
-        all_views = [float(get_views(item) or 0.0) for item in observations]
-        all_engagement = [
-            calculate_engagement_rate(
-                get_views(item), get_likes(item), get_comments(item)
-            )
-            for item in observations
-        ]
-        all_velocity = []
-        for item in observations:
-            published = get_published_at(item)
-            if published is None:
-                all_velocity.append(0.0)
-            else:
-                age_hours = max(1.0, (now - published).total_seconds() / 3600.0)
-                all_velocity.append(float(get_views(item) or 0.0) / age_hours)
-        normalization_reference = {
-            "reference_views": max(max(all_views, default=0.0), 1.0),
-            "reference_engagement": max(max(all_engagement, default=0.0), 1e-9),
-            "reference_views_per_hour": max(max(all_velocity, default=0.0), 1.0),
-            "now": now,
-        }
-
-    for offset in range(0, len(observations), size):
-        batch = observations[offset:offset + size]
-        if not batch:
-            continue
-        batch_count += 1
-        result = analyze_research(
-            batch,
-            normalization_reference=normalization_reference,
-        )
-        metrics = result.metrics
-        count = int(metrics.count or 0)
-        if count:
-            total_count += count
-            total_views += float(metrics.total_views or 0.0)
-            for name in fields:
-                weighted[name] += float(getattr(metrics, name, 0.0) or 0.0) * count
-            median_parts.append((float(metrics.median_views or 0.0), count))
-            confidence_sum += float(result.confidence or 0.0) * count
-        topic_counts.update(result.topic_distribution or {})
-        channel_counts.update(result.channel_distribution or {})
-        signals.update(str(value) for value in (result.signals or []) if value)
-        top_videos.extend(item for item in (result.top_videos or []) if isinstance(item, dict))
-        top_videos.sort(
-            key=lambda item: (
-                float(((item.get("analytics") or {}).get("performance_score")) or 0),
-                float(item.get("views") or item.get("view_count") or item.get("viewCount") or 0),
-            ), reverse=True,
-        )
-        del top_videos[10:]
-        del batch, result
-
-    ordered = sorted(median_parts, key=lambda item: item[0])
-    midpoint = (sum(weight for _, weight in ordered) - 1) / 2 if ordered else 0
-    running = 0
-    median_value = 0.0
-    for value, weight in ordered:
-        running += weight
-        if running > midpoint:
-            median_value = value
-            break
-    for name in fields:
-        weighted[name] = weighted[name] / total_count if total_count else 0.0
-
-    top = top_videos[0] if top_videos else {}
-    top_metrics = top.get("analytics") if isinstance(top, dict) else {}
-    metrics = AggregateMetrics(
-        count=total_count, total_views=total_views,
-        average_views=weighted["average_views"], median_views=median_value,
-        average_likes=weighted["average_likes"], average_comments=weighted["average_comments"],
-        average_like_rate=weighted["average_like_rate"],
-        average_comment_rate=weighted["average_comment_rate"],
-        average_engagement_rate=weighted["average_engagement_rate"],
-        average_views_per_hour=weighted["average_views_per_hour"],
-        average_performance_score=weighted["average_performance_score"],
-        top_video_id=(top.get("video_id") or top.get("id")) if top else None,
-        top_video_score=float((top_metrics or {}).get("performance_score") or 0),
-        unique_channels=len(channel_counts), unique_topics=len(topic_counts),
-    )
-    # Signals must describe the merged collection, not the union of
-    # batch-local decisions (for example, each one-channel batch must not
-    # imply that the whole project depends on a single channel).
-    if total_count == 0:
-        merged_signals = {"insufficient_data"}
-    elif callable(detect_signals):
-        merged_signals = set(detect_signals(top_videos or [{}], metrics=metrics))
-    else:
-        merged_signals = set(signals)
-    merged_signals.discard("single_channel_dependency")
-    merged_signals.discard("broad_creator_distribution")
-    if len(channel_counts) == 1:
-        merged_signals.add("single_channel_dependency")
-    elif len(channel_counts) >= 10:
-        merged_signals.add("broad_creator_distribution")
-
-    return ResearchAnalytics(
-        metrics=metrics, top_videos=top_videos,
-        topic_distribution=dict(topic_counts.most_common()),
-        channel_distribution=dict(channel_counts.most_common()),
-        trend=None, signals=sorted(merged_signals),
-        confidence=confidence_sum / total_count if total_count else 0.0,
-        metadata={
-            "processing": "bounded_batches", "batch_size": size,
-            "batch_count": batch_count, "median_method": "weighted_batch_medians",
-        },
-    )
-
-
-
 class AnalyticsAdapter:
     """
     Adapter over modular Analytics.
@@ -1595,23 +1440,18 @@ class AnalyticsAdapter:
 
         if analytics_prepare_for_director is not None:
             try:
-                try:
-                    configured_batch_size = int(os.getenv("DIRECTOR_ANALYSIS_BATCH_SIZE", "500"))
-                except (TypeError, ValueError):
-                    configured_batch_size = 500
-                batch_size = max(50, min(configured_batch_size, 2000))
-                research_analysis = _analyze_research_in_batches(
-                    observations, batch_size=batch_size
+                # Analyze the bounded database-selected working set in one pass.
+                # This preserves exact collection statistics and previous-snapshot
+                # trend semantics; no approximate merge of per-batch medians.
+                research_analysis = analyze_research(
+                    observations,
+                    previous_videos=(previous or None),
                 )
-                if research_analysis is None:
-                    research_analysis = analyze_research(
-                        observations, previous_videos=(previous or None)
-                    )
                 logger.info(
-                    "DIRECTOR ANALYTICS BATCHES: kind=research batch_size=%s batches=%s observations=%s",
-                    batch_size,
-                    getattr(research_analysis, "metadata", {}).get("batch_count", 1),
+                    "DIRECTOR ANALYTICS WORKING SET: observations=%s previous=%s memory=%s",
                     len(observations),
+                    len(previous),
+                    _process_memory_mb(),
                 )
                 logger.info(
                     "DIRECTOR MEMORY phase=analytics_basic_complete memory=%s",
@@ -1655,11 +1495,10 @@ class AnalyticsAdapter:
 
         if analyze_topics is not None:
             try:
-                # Topic analysis consumes the iterable directly and retains
-                # only its configured per-topic evidence sample.
+                # Topic analysis receives only the database-selected working set.
                 topic_analysis = analyze_topics(observations)
                 logger.info(
-                    "DIRECTOR ANALYTICS BATCHES: kind=topics input_count=%s evidence_cap_per_topic=100",
+                    "DIRECTOR ANALYTICS WORKING SET: kind=topics input_count=%s",
                     len(observations),
                 )
 
@@ -1957,11 +1796,11 @@ class AnalyticsAdapter:
                 score_value = 0.0
             return score_value, views_value
 
-        observations[:] = sorted(
+        observations[:] = heapq.nlargest(
+            100,
             (item for item in observations if isinstance(item, dict)),
             key=_evidence_rank,
-            reverse=True,
-        )[:100]
+        )
         if isinstance(metadata, dict):
             metadata["last_analysis_context_sample_size"] = len(observations)
         logger.info(
@@ -1996,6 +1835,7 @@ class DataAdapter:
         self.relations = None
         self.opportunity_registry = None
         self._loaded_project_id: str | None = None
+        self.youtube_inventory: dict[str, Any] = {}
 
         try:
             if YouTubeDataRegistry is not None:
@@ -2389,6 +2229,10 @@ class DataAdapter:
                     )
 
                     if isinstance(persisted, dict):
+                        inventory = persisted.pop("inventory", {})
+                        self.youtube_inventory = (
+                            inventory if isinstance(inventory, dict) else {}
+                        )
                         # Restore directly into the live registry to avoid
                         # temporarily holding two complete copies in memory.
                         self.youtube_registry.clear()
@@ -2490,10 +2334,11 @@ class DataAdapter:
 
                 self._loaded_project_id = project_id
                 logger.info(
-                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube=%s opportunities=%s relations=%s research_sets=%s",
+                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube_loaded=%s youtube_total=%s opportunities=%s relations=%s research_sets=%s",
                     project_id,
                     _process_memory_mb(),
                     len(self.youtube_registry.videos()) if self.youtube_registry is not None else 0,
+                    self.youtube_inventory.get("video_count"),
                     self.opportunity_registry.counts() if self.opportunity_registry is not None else {},
                     len(self.relations.all_relations()) if self.relations is not None else 0,
                     len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
@@ -2679,19 +2524,33 @@ class DataAdapter:
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
                     try:
+                        loaded_video_count = len(self.youtube_registry.videos())
+                        loaded_snapshot_count = len(self.youtube_registry.snapshots())
                         result["data_inventory"] = {
-                            "video_count": len(
-                                self.youtube_registry.videos()
+                            "video_count": int(
+                                self.youtube_inventory.get("video_count")
+                                if self.youtube_inventory.get("video_count") is not None
+                                else loaded_video_count
                             ),
-                            "snapshot_count": len(
-                                self.youtube_registry.snapshots()
+                            "snapshot_count": int(
+                                self.youtube_inventory.get("snapshot_count")
+                                if self.youtube_inventory.get("snapshot_count") is not None
+                                else loaded_snapshot_count
                             ),
+                            "working_video_count": loaded_video_count,
+                            "working_snapshot_count": loaded_snapshot_count,
+                            "video_limit": self.youtube_inventory.get("video_limit"),
+                            "snapshots_per_video": self.youtube_inventory.get("snapshots_per_video"),
+                            "counts_exact": bool(self.youtube_inventory.get("counts_exact", False)),
                             "query_count": len(
                                 self.youtube_registry.queries()
                             ),
-                            "latest_snapshot_at": max(
-                                (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
-                                default=None,
+                            "latest_snapshot_at": (
+                                self.youtube_inventory.get("latest_snapshot_at")
+                                or max(
+                                    (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
+                                    default=None,
+                                )
                             ),
                             "youtube_other_units_today": sum(
                                 max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)

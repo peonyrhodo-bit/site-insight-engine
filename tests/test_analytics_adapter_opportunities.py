@@ -31,62 +31,44 @@ async def test_analytics_adapter_does_not_treat_raw_videos_as_opportunities(monk
     assert assessed == []
 
 
-def test_research_analytics_runs_in_bounded_batches(monkeypatch):
-    from types import SimpleNamespace
+@pytest.mark.asyncio
+async def test_research_analytics_preserves_exact_collection_and_previous_trend(monkeypatch):
+    from analytics.analytics import AggregateMetrics, ResearchAnalytics
 
     calls = []
-
-    class Metrics:
-        def __init__(self, count):
-            self.count = count
-            self.total_views = count * 10
-            self.median_views = 10
-            self.average_views = 10
-            self.average_likes = 1
-            self.average_comments = 1
-            self.average_like_rate = 0.1
-            self.average_comment_rate = 0.1
-            self.average_engagement_rate = 0.2
-            self.average_views_per_hour = 1
-            self.average_performance_score = 0.5
-            self.top_video_id = None
-            self.top_video_score = 0
-
-    class Aggregate:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    class Research:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    def fake_analyze(batch, *, normalization_reference=None):
-        calls.append((len(batch), normalization_reference))
-        count = len(batch)
-        return SimpleNamespace(
-            metrics=Metrics(count),
-            topic_distribution={"gardening": count},
-            channel_distribution={f"channel-{len(calls)}": count},
-            top_videos=[], signals=["single_channel_dependency"], confidence=0.8,
-        )
-
-    monkeypatch.setattr(server, "analyze_research", fake_analyze)
-    monkeypatch.setattr(server, "AggregateMetrics", Aggregate)
-    monkeypatch.setattr(server, "ResearchAnalytics", Research)
-
-    result = server._analyze_research_in_batches(
-        [{"video_id": str(index)} for index in range(1200)],
-        batch_size=100,
+    result = ResearchAnalytics(
+        metrics=AggregateMetrics(),
+        top_videos=[],
+        topic_distribution={},
+        channel_distribution={},
+        trend=None,
+        signals=[],
+        confidence=0.0,
+        metadata={},
     )
 
-    assert [size for size, _reference in calls] == [100] * 12
-    assert all(reference == calls[0][1] for _size, reference in calls)
-    assert calls[0][1]["reference_views"] >= 1
-    assert result.metrics.count == 1200
-    assert result.metadata["batch_count"] == 12
-    assert result.metadata["processing"] == "bounded_batches"
-    assert "single_channel_dependency" not in result.signals
-    assert "broad_creator_distribution" in result.signals
+    def fake_analyze(observations, *, previous_videos=None):
+        calls.append((observations, previous_videos))
+        return result
+
+    monkeypatch.setattr(server, "analyze_research", fake_analyze)
+    monkeypatch.setattr(server, "analytics_prepare_for_director", lambda _result: {})
+    monkeypatch.setattr(server, "analyze_topics", None)
+    monkeypatch.setattr(server, "analyze_trend", None)
+    monkeypatch.setattr(server, "assess_opportunity", None)
+
+    observations = [{"video_id": f"video-{index}"} for index in range(300)]
+    previous = [{"video_id": f"previous-{index}"} for index in range(120)]
+
+    await server.AnalyticsAdapter().analyze({
+        "observations": observations,
+        "previous_observations": previous,
+        "trend_current_observations": observations,
+    })
+
+    assert len(calls) == 1
+    assert calls[0][0] is observations
+    assert calls[0][1] is previous
 
 
 @pytest.mark.asyncio

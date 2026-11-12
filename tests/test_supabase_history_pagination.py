@@ -4,8 +4,9 @@ from memory.supabase import SupabaseMemoryBackend
 
 
 class FakeResponse:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class FakeQuery:
@@ -14,8 +15,20 @@ class FakeQuery:
         self.orders = []
         self.start = None
         self.end = None
+        self.filters = []
+        self.in_filters = []
+        self.head = False
 
-    def select(self, _columns):
+    def select(self, _columns, count=None, head=False):
+        self.head = head
+        return self
+
+    def eq(self, key, value):
+        self.filters.append((key, value))
+        return self
+
+    def in_(self, key, values):
+        self.in_filters.append((key, set(values)))
         return self
 
     def order(self, key, desc=False):
@@ -28,12 +41,26 @@ class FakeQuery:
 
     def execute(self):
         rows = list(self.rows)
+        for key, value in self.filters:
+            if "->>" in key:
+                column, json_key = key.split("->>", 1)
+                rows = [
+                    row for row in rows
+                    if str((row.get(column) or {}).get(json_key)) == str(value)
+                ]
+            else:
+                rows = [row for row in rows if str(row.get(key)) == str(value)]
+        for key, values in self.in_filters:
+            rows = [row for row in rows if str(row.get(key)) in values]
+        count = len(rows)
         # Python's stable sort lets the first declared key remain primary.
         for key, desc in reversed(self.orders):
             rows.sort(key=lambda row: (row.get(key) is None, row.get(key)), reverse=desc)
+        if self.head:
+            return FakeResponse([], count=count)
         if self.start is not None:
             rows = rows[self.start : self.end + 1]
-        return FakeResponse(rows)
+        return FakeResponse(rows, count=count)
 
 
 class FakeClient:
@@ -148,3 +175,62 @@ class ResearchAndOpportunityHistoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoundedYouTubeAnalysisLoaderTests(unittest.TestCase):
+    def test_loader_filters_and_caps_videos_before_materializing_snapshots(self):
+        from unittest.mock import patch
+
+        videos = [
+            {
+                "video_id": f"video-{index:04d}",
+                "last_seen": f"2026-11-{(index % 28) + 1:02d}T00:00:00Z",
+                "first_seen": "2026-01-01T00:00:00Z",
+                "data_json": {
+                    "project_id": "project-a" if index % 5 else "project-b",
+                    "snippet": {"title": f"Video {index}", "channelId": "channel-1"},
+                },
+            }
+            for index in range(260)
+        ]
+        snapshots = []
+        for index in range(260):
+            project = "project-a" if index % 5 else "project-b"
+            for version in range(4):
+                snapshots.append({
+                    "id": index * 4 + version + 1,
+                    "video_id": f"video-{index:04d}",
+                    "created_at": f"2026-11-{version + 1:02d}T00:00:00Z",
+                    "data_json": {
+                        "project_id": project,
+                        "statistics": {"viewCount": str(100 + version)},
+                    },
+                })
+
+        backend = SupabaseMemoryBackend(
+            client=FakeClient({"videos": videos, "video_snapshots": snapshots})
+        )
+        with patch.dict("os.environ", {
+            "DIRECTOR_ANALYSIS_MAX_VIDEOS": "100",
+            "DIRECTOR_ANALYSIS_PAGE_SIZE": "50",
+            "DIRECTOR_SNAPSHOTS_PER_VIDEO": "2",
+        }):
+            result = backend.load_youtube_analysis_data(project_id="project-a")
+
+        self.assertEqual(result["inventory"]["video_count"], 208)
+        self.assertEqual(result["inventory"]["snapshot_count"], 832)
+        self.assertEqual(len(result["videos"]), 100)
+        self.assertEqual(len(result["snapshots"]), 200)
+        selected_ids = {row["video_id"] for row in result["videos"]}
+        self.assertEqual(
+            {row["video_id"] for row in result["snapshots"]},
+            selected_ids,
+        )
+        self.assertEqual(
+            result["inventory"]["working_video_count"],
+            len(result["videos"]),
+        )
+        self.assertEqual(
+            result["inventory"]["working_snapshot_count"],
+            len(result["snapshots"]),
+        )

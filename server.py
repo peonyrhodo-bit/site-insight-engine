@@ -17,6 +17,7 @@ The server itself does not make strategic decisions.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import os
@@ -1397,6 +1398,7 @@ class ServerMemory:
 # ---------------------------------------------------------------------------
 
 
+
 class AnalyticsAdapter:
     """
     Adapter over modular Analytics.
@@ -1438,11 +1440,18 @@ class AnalyticsAdapter:
 
         if analytics_prepare_for_director is not None:
             try:
+                # Analyze the bounded database-selected working set in one pass.
+                # This preserves exact collection statistics and previous-snapshot
+                # trend semantics; no approximate merge of per-batch medians.
                 research_analysis = analyze_research(
                     observations,
-                    previous_videos=(
-                        previous or None
-                    ),
+                    previous_videos=(previous or None),
+                )
+                logger.info(
+                    "DIRECTOR ANALYTICS WORKING SET: observations=%s previous=%s memory=%s",
+                    len(observations),
+                    len(previous),
+                    _process_memory_mb(),
                 )
                 logger.info(
                     "DIRECTOR MEMORY phase=analytics_basic_complete memory=%s",
@@ -1486,8 +1495,11 @@ class AnalyticsAdapter:
 
         if analyze_topics is not None:
             try:
-                topic_analysis = analyze_topics(
-                    observations,
+                # Topic analysis receives only the database-selected working set.
+                topic_analysis = analyze_topics(observations)
+                logger.info(
+                    "DIRECTOR ANALYTICS WORKING SET: kind=topics input_count=%s",
+                    len(observations),
                 )
 
                 analytics_data["topics"] = serialize(
@@ -1560,7 +1572,15 @@ class AnalyticsAdapter:
                     )
 
                 if not topic_items:
-                    topic_items = observations
+                    # Raw videos are evidence, not opportunity candidates.
+                    # Falling back to every observation creates thousands of
+                    # duplicate assessments when topic extraction has no labels,
+                    # and can pass the entire dataset into decision enrichment.
+                    logger.info(
+                        "Opportunity analysis skipped: no topic profiles were produced; "
+                        "raw observations are not opportunity candidates"
+                    )
+                    topic_items = []
 
                 trend_payload = (
                     analytics_data.get(
@@ -1626,6 +1646,21 @@ class AnalyticsAdapter:
                     if not isinstance(item, dict):
                         continue
 
+                    topic_video_ids = {
+                        str(value) for value in (item.get("video_ids") or [])
+                    }
+                    topic_evidence_videos = [
+                        video for video in observations
+                        if str(
+                            video.get("video_id")
+                            or video.get("id")
+                            or video.get("youtube_id")
+                            or ""
+                        ) in topic_video_ids
+                    ][:100]
+                    if not topic_evidence_videos:
+                        topic_evidence_videos = observations[:100]
+
                     title = (
                         item.get("name")
                         or item.get("title")
@@ -1652,7 +1687,7 @@ class AnalyticsAdapter:
                                 )
                                 else trend_payload
                             ),
-                            videos=observations,
+                            videos=topic_evidence_videos,
                             constraints=(
                                 constraint_texts
                                 or None
@@ -1694,6 +1729,98 @@ class AnalyticsAdapter:
             _process_memory_mb(),
             sorted(analytics_data.keys()),
         )
+
+        # Keep a compact evidence sample for subsequent Director/AI reasoning.
+        # The full collection has already contributed to aggregate analytics.
+        processed_count = len(observations)
+        metadata = context.get("metadata")
+        if isinstance(metadata, dict):
+            metric_keys = {
+                "views", "viewCount", "views_per_hour",
+                "likes", "likeCount", "comments", "commentCount",
+                "engagement",
+            }
+            metric_count = 0
+            velocity_count = 0
+            known_topics: set[str] = set()
+            latest_snapshot_at = None
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    continue
+                metrics = observation.get("metrics")
+                merged = dict(observation)
+                if isinstance(metrics, dict):
+                    merged.update(metrics)
+                if any(key in merged and merged.get(key) is not None for key in metric_keys):
+                    metric_count += 1
+                if any(
+                    key in merged and merged.get(key) is not None
+                    for key in ("views_per_hour", "velocity", "growth_rate")
+                ):
+                    velocity_count += 1
+                for key in ("topic", "category", "niche"):
+                    value = observation.get(key)
+                    if isinstance(value, str) and value.strip():
+                        known_topics.add(value.strip().lower())
+                video_metadata = observation.get("metadata")
+                if isinstance(video_metadata, dict):
+                    for key in ("topic", "category", "niche"):
+                        value = video_metadata.get(key)
+                        if isinstance(value, str) and value.strip():
+                            known_topics.add(value.strip().lower())
+                captured = observation.get("snapshot_captured_at") or observation.get("captured_at")
+                if captured and (latest_snapshot_at is None or str(captured) > str(latest_snapshot_at)):
+                    latest_snapshot_at = str(captured)
+
+            metadata["last_analysis_observation_count"] = processed_count
+            metadata["last_analysis_metric_observation_count"] = metric_count
+            metadata["last_analysis_velocity_observation_count"] = velocity_count
+            metadata["last_analysis_known_topic_label_count"] = len(known_topics)
+            metadata["last_analysis_latest_snapshot_at"] = latest_snapshot_at
+
+        def _evidence_rank(observation: dict[str, Any]) -> tuple[float, float]:
+            analytics = observation.get("analytics")
+            analytics = analytics if isinstance(analytics, dict) else {}
+            metrics = observation.get("metrics")
+            metrics = metrics if isinstance(metrics, dict) else {}
+            views = observation.get("views") or observation.get("view_count") or observation.get("viewCount")
+            if views is None:
+                views = metrics.get("views") or metrics.get("view_count") or metrics.get("viewCount")
+            try:
+                views_value = float(views or 0)
+            except (TypeError, ValueError):
+                views_value = 0.0
+            try:
+                score_value = float(analytics.get("performance_score") or 0)
+            except (TypeError, ValueError):
+                score_value = 0.0
+            return score_value, views_value
+
+        observations[:] = heapq.nlargest(
+            100,
+            (item for item in observations if isinstance(item, dict)),
+            key=_evidence_rank,
+        )
+        if isinstance(metadata, dict):
+            metadata["last_analysis_context_sample_size"] = len(observations)
+
+        # The previous/current trend cohorts have completed their only consumer
+        # (analytics). Release their list references before Director decision
+        # and AI enrichment; the registry remains the canonical bounded store.
+        released_cohorts = 0
+        for cohort_name in ("previous_observations", "trend_current_observations"):
+            cohort = context.get(cohort_name)
+            if isinstance(cohort, list) and cohort is not observations:
+                released_cohorts += len(cohort)
+                cohort.clear()
+
+        logger.info(
+            "DIRECTOR MEMORY phase=analysis_evidence_compacted observations=%s retained=%s released_trend_rows=%s memory=%s",
+            processed_count,
+            len(observations),
+            released_cohorts,
+            _process_memory_mb(),
+        )
         return analytics_data
 
 
@@ -1720,6 +1847,7 @@ class DataAdapter:
         self.relations = None
         self.opportunity_registry = None
         self._loaded_project_id: str | None = None
+        self.youtube_inventory: dict[str, Any] = {}
 
         try:
             if YouTubeDataRegistry is not None:
@@ -2066,6 +2194,9 @@ class DataAdapter:
         The DATA layer remains deliberately conservative here.
         """
 
+        if not isinstance(getattr(self, "youtube_inventory", None), dict):
+            self.youtube_inventory = {}
+
         result: dict[str, Any] = {
             "project_id": project_id,
             "observations": [],
@@ -2108,11 +2239,16 @@ class DataAdapter:
                     )
 
                 if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
+                    self.youtube_inventory = {}
                     persisted = loader(
                         project_id=project_id,
                     )
 
                     if isinstance(persisted, dict):
+                        inventory = persisted.pop("inventory", {})
+                        self.youtube_inventory = (
+                            inventory if isinstance(inventory, dict) else {}
+                        )
                         # Restore directly into the live registry to avoid
                         # temporarily holding two complete copies in memory.
                         self.youtube_registry.clear()
@@ -2214,10 +2350,11 @@ class DataAdapter:
 
                 self._loaded_project_id = project_id
                 logger.info(
-                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube=%s opportunities=%s relations=%s research_sets=%s",
+                    "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube_loaded=%s youtube_total=%s opportunities=%s relations=%s research_sets=%s",
                     project_id,
                     _process_memory_mb(),
                     len(self.youtube_registry.videos()) if self.youtube_registry is not None else 0,
+                    self.youtube_inventory.get("video_count"),
                     self.opportunity_registry.counts() if self.opportunity_registry is not None else {},
                     len(self.relations.all_relations()) if self.relations is not None else 0,
                     len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
@@ -2403,19 +2540,33 @@ class DataAdapter:
                     # distinguish "no data" from "data exists but has not
                     # been analyzed yet".
                     try:
+                        loaded_video_count = len(self.youtube_registry.videos())
+                        loaded_snapshot_count = len(self.youtube_registry.snapshots())
                         result["data_inventory"] = {
-                            "video_count": len(
-                                self.youtube_registry.videos()
+                            "video_count": int(
+                                self.youtube_inventory.get("video_count")
+                                if self.youtube_inventory.get("video_count") is not None
+                                else loaded_video_count
                             ),
-                            "snapshot_count": len(
-                                self.youtube_registry.snapshots()
+                            "snapshot_count": int(
+                                self.youtube_inventory.get("snapshot_count")
+                                if self.youtube_inventory.get("snapshot_count") is not None
+                                else loaded_snapshot_count
                             ),
+                            "working_video_count": loaded_video_count,
+                            "working_snapshot_count": loaded_snapshot_count,
+                            "video_limit": self.youtube_inventory.get("video_limit"),
+                            "snapshots_per_video": self.youtube_inventory.get("snapshots_per_video"),
+                            "counts_exact": bool(self.youtube_inventory.get("counts_exact", False)),
                             "query_count": len(
                                 self.youtube_registry.queries()
                             ),
-                            "latest_snapshot_at": max(
-                                (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
-                                default=None,
+                            "latest_snapshot_at": (
+                                self.youtube_inventory.get("latest_snapshot_at")
+                                or max(
+                                    (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
+                                    default=None,
+                                )
                             ),
                             "youtube_other_units_today": sum(
                                 max(int(((getattr(query, "metadata", {}) or {}).get("quota") or {}).get("other_units", 0) or 0), 0)

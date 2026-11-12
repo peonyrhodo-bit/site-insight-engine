@@ -1803,10 +1803,22 @@ class AnalyticsAdapter:
         )
         if isinstance(metadata, dict):
             metadata["last_analysis_context_sample_size"] = len(observations)
+
+        # The previous/current trend cohorts have completed their only consumer
+        # (analytics). Release their list references before Director decision
+        # and AI enrichment; the registry remains the canonical bounded store.
+        released_cohorts = 0
+        for cohort_name in ("previous_observations", "trend_current_observations"):
+            cohort = context.get(cohort_name)
+            if isinstance(cohort, list) and cohort is not observations:
+                released_cohorts += len(cohort)
+                cohort.clear()
+
         logger.info(
-            "DIRECTOR MEMORY phase=analysis_evidence_compacted observations=%s retained=%s memory=%s",
+            "DIRECTOR MEMORY phase=analysis_evidence_compacted observations=%s retained=%s released_trend_rows=%s memory=%s",
             processed_count,
             len(observations),
+            released_cohorts,
             _process_memory_mb(),
         )
         return analytics_data

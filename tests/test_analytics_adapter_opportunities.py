@@ -48,7 +48,7 @@ async def test_research_analytics_preserves_exact_collection_and_previous_trend(
     )
 
     def fake_analyze(observations, *, previous_videos=None):
-        calls.append((observations, previous_videos))
+        calls.append((observations, previous_videos, len(previous_videos or [])))
         return result
 
     monkeypatch.setattr(server, "analyze_research", fake_analyze)
@@ -69,6 +69,8 @@ async def test_research_analytics_preserves_exact_collection_and_previous_trend(
     assert len(calls) == 1
     assert calls[0][0] is observations
     assert calls[0][1] is previous
+    assert calls[0][2] == 120
+    assert previous == []
 
 
 @pytest.mark.asyncio
@@ -83,11 +85,20 @@ async def test_analytics_releases_raw_observations_after_analysis(monkeypatch):
         {"video_id": f"video-{index}", "title": f"Video {index}"}
         for index in range(1200)
     ]
-    context = {"observations": observations, "metadata": {}}
+    previous = [{"video_id": f"previous-{index}"} for index in range(500)]
+    trend_current = [{"video_id": f"trend-{index}"} for index in range(500)]
+    context = {
+        "observations": observations,
+        "previous_observations": previous,
+        "trend_current_observations": trend_current,
+        "metadata": {},
+    }
 
     await server.AnalyticsAdapter().analyze(context)
 
     assert len(observations) == 100
+    assert previous == []
+    assert trend_current == []
     assert context["metadata"]["last_analysis_observation_count"] == 1200
     assert context["metadata"]["last_analysis_context_sample_size"] == 100
 

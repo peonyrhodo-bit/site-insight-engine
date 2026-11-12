@@ -544,7 +544,7 @@ class SupabaseMemoryBackend:
             query = (
                 self.client.table("videos")
                 .select("video_id,data_json,first_seen,last_seen")
-                .order("last_seen", desc=True)
+                .order("last_seen", desc=True, nullsfirst=False)
                 .order("video_id", desc=True)
             )
             if expected_project is not None:

@@ -10,10 +10,22 @@ class FakeQuery:
         self.columns = "*"
         self.start = 0
         self.end = 999
+        self.filters = []
+        self.in_filters = []
+        self.head = False
 
-    def select(self, columns):
+    def select(self, columns, count=None, head=False):
         self.columns = columns
         self.client.selected_columns[self.table_name] = columns
+        self.head = head
+        return self
+
+    def eq(self, key, value):
+        self.filters.append((key, value))
+        return self
+
+    def in_(self, key, values):
+        self.in_filters.append((key, set(values)))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -24,8 +36,22 @@ class FakeQuery:
         return self
 
     def execute(self):
-        rows = self.client.rows.get(self.table_name, [])
-        return SimpleNamespace(data=rows[self.start:self.end + 1])
+        rows = list(self.client.rows.get(self.table_name, []))
+        for key, value in self.filters:
+            if "->>" in key:
+                column, json_key = key.split("->>", 1)
+                rows = [
+                    row for row in rows
+                    if str((row.get(column) or {}).get(json_key)) == str(value)
+                ]
+            else:
+                rows = [row for row in rows if str(row.get(key)) == str(value)]
+        for key, values in self.in_filters:
+            rows = [row for row in rows if str(row.get(key)) in values]
+        count = len(rows)
+        if self.head:
+            return SimpleNamespace(data=[], count=count)
+        return SimpleNamespace(data=rows[self.start:self.end + 1], count=count)
 
 
 class FakeClient:

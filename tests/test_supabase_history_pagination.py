@@ -173,9 +173,6 @@ class ResearchAndOpportunityHistoryTests(unittest.TestCase):
             self.assertTrue(set(actual_ids).issubset(set(expected_ids)), key)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class BoundedYouTubeAnalysisLoaderTests(unittest.TestCase):
     def test_loader_filters_and_caps_videos_before_materializing_snapshots(self):
@@ -234,3 +231,6 @@ class BoundedYouTubeAnalysisLoaderTests(unittest.TestCase):
             result["inventory"]["working_snapshot_count"],
             len(result["snapshots"]),
         )
+
+if __name__ == "__main__":
+    unittest.main()

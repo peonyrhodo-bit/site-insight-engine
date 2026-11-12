@@ -2182,6 +2182,9 @@ class DataAdapter:
         The DATA layer remains deliberately conservative here.
         """
 
+        if not isinstance(getattr(self, "youtube_inventory", None), dict):
+            self.youtube_inventory = {}
+
         result: dict[str, Any] = {
             "project_id": project_id,
             "observations": [],

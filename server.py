@@ -2227,6 +2227,7 @@ class DataAdapter:
                     )
 
                 if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
+                    self.youtube_inventory = {}
                     persisted = loader(
                         project_id=project_id,
                     )

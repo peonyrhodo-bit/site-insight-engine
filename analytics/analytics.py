@@ -835,11 +835,6 @@ def normalize_videos(
     videos: Iterable[
         Mapping[str, Any]
     ],
-    *,
-    reference_views: float | None = None,
-    reference_engagement: float | None = None,
-    reference_views_per_hour: float | None = None,
-    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     videos = [
         video
@@ -867,21 +862,18 @@ def normalize_videos(
         for video in videos
     ]
 
-    reference_views = (
-        max(max(views, default=0.0), 1.0)
-        if reference_views is None
-        else max(float(reference_views), 1.0)
+    reference_views = max(
+        max(views, default=0.0),
+        1.0,
     )
 
-    reference_engagement = (
-        max(max(engagements, default=0.0), EPSILON)
-        if reference_engagement is None
-        else max(float(reference_engagement), EPSILON)
+    reference_engagement = max(
+        max(engagements, default=0.0),
+        EPSILON,
     )
 
-    # Momentum must be comparable across the current collection. Callers
-    # analyzing multiple batches may supply one shared collection baseline.
-    now = now or _now()
+    # Momentum must be comparable across the current collection.
+    now = _now()
     views_per_hour = []
     for video in videos:
         published_at = get_published_at(video)
@@ -894,10 +886,9 @@ def normalize_videos(
         )
         views_per_hour.append(get_views(video) / age_hours)
 
-    reference_views_per_hour = (
-        max(max(views_per_hour, default=0.0), 1.0)
-        if reference_views_per_hour is None
-        else max(float(reference_views_per_hour), 1.0)
+    reference_views_per_hour = max(
+        max(views_per_hour, default=0.0),
+        1.0,
     )
 
     normalized = []
@@ -948,11 +939,6 @@ def aggregate_metrics(
     videos: Iterable[
         Mapping[str, Any]
     ],
-    *,
-    reference_views: float | None = None,
-    reference_engagement: float | None = None,
-    reference_views_per_hour: float | None = None,
-    now: datetime | None = None,
 ) -> AggregateMetrics:
     videos = [
         video
@@ -967,11 +953,7 @@ def aggregate_metrics(
         return AggregateMetrics()
 
     normalized = normalize_videos(
-        videos,
-        reference_views=reference_views,
-        reference_engagement=reference_engagement,
-        reference_views_per_hour=reference_views_per_hour,
-        now=now,
+        videos
     )
 
     metrics = [
@@ -1284,15 +1266,15 @@ def detect_signals(
     videos: Sequence[
         Mapping[str, Any]
     ],
-    *,
-    metrics: AggregateMetrics | None = None,
 ) -> list[str]:
     if not videos:
         return [
             "insufficient_data"
         ]
 
-    metrics = metrics or aggregate_metrics(videos)
+    metrics = aggregate_metrics(
+        videos
+    )
 
     signals: list[str] = []
 
@@ -1386,7 +1368,6 @@ def analyze_research(
     | None = None,
     metadata: Mapping[str, Any]
     | None = None,
-    normalization_reference: Mapping[str, Any] | None = None,
 ) -> ResearchAnalytics:
     videos = [
         video
@@ -1397,39 +1378,18 @@ def analyze_research(
         )
     ]
 
-    reference = dict(normalization_reference or {})
-    reference_views = reference.get("reference_views")
-    reference_engagement = reference.get("reference_engagement")
-    reference_views_per_hour = reference.get("reference_views_per_hour")
-    reference_now = reference.get("now")
-
     normalized = normalize_videos(
-        videos,
-        reference_views=reference_views,
-        reference_engagement=reference_engagement,
-        reference_views_per_hour=reference_views_per_hour,
-        now=reference_now,
+        videos
     )
 
     metrics = aggregate_metrics(
-        normalized,
-        reference_views=reference_views,
-        reference_engagement=reference_engagement,
-        reference_views_per_hour=reference_views_per_hour,
-        now=reference_now,
+        normalized
     )
 
-    # The normalized rows already use the shared reference baseline. Avoid
-    # rank_videos() here because it would normalize the batch a second time.
-    ranked = sorted(
+    ranked = rank_videos(
         normalized,
-        key=lambda item: (
-            _safe_float((item.get("analytics") or {}).get("performance_score")),
-            get_views(item),
-            get_published_at(item) or datetime.min.replace(tzinfo=timezone.utc),
-        ),
-        reverse=True,
-    )[:10]
+        limit=10,
+    )
 
     topics = topic_distribution(
         normalized
@@ -1450,8 +1410,7 @@ def analyze_research(
         )
 
     signals = detect_signals(
-        normalized,
-        metrics=metrics,
+        normalized
     )
 
     confidence = calculate_analysis_confidence(

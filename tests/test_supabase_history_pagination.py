@@ -31,7 +31,7 @@ class FakeQuery:
         self.in_filters.append((key, set(values)))
         return self
 
-    def order(self, key, desc=False):
+    def order(self, key, desc=False, **_kwargs):
         self.orders.append((key, desc))
         return self
 

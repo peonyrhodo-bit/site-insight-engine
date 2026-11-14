@@ -1099,10 +1099,9 @@ class SupabaseMemoryBackend:
                     if field in item
                 }
                 payload["project_id"] = project_id
-                raw_data = item.get("data_json")
-                if raw_data is None:
-                    raw_data = item.get("data")
-                payload["data_json"] = self._safe_dict(raw_data)
+                payload["data_json"] = self._safe_dict(
+                    item.get("data") or item.get("data_json")
+                )
                 payloads.append(payload)
 
             batch_counts[key] = (len(payloads) + batch_size - 1) // batch_size

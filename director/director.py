@@ -280,61 +280,100 @@ class Director:
         self.last_result: DirectorResult | None = None
         self.last_cycle: DirectorCycle | None = None
 
-    def to_ai_decision_dict(self) -> dict[str, Any]:
-        """Build a bounded context payload for decision-enrichment AI.
-
-        The full evidence set remains available to local analytics, but sending
-        thousands of raw video/snapshot rows to the AI provider creates an
-        avoidable serialization and prompt-memory spike. Decision enrichment
-        should use the current analysis plus a small representative sample.
-        """
-        sample_fields = (
-            "video_id", "title", "name", "channel_title", "channel_id",
-            "views", "viewCount", "likes", "likeCount", "comments",
-            "commentCount", "views_per_hour", "velocity", "growth_rate",
-            "published_at", "metrics",
-        )
-        observation_sample = []
-        for item in self.observations[:8]:
-            if not isinstance(item, dict):
-                continue
-            observation_sample.append({
-                key: item[key]
-                for key in sample_fields
-                if key in item
-            })
-
-        return {
-            "project_id": self.project_id,
-            "objective": self.objective,
-            "channels": self.channels[:20],
-            "strategies": self.strategies[:10],
-            "observations": {
-                "total_count": len(self.observations),
-                "sample": observation_sample,
-            },
-            "analytics": self.analytics,
-            "topics": self.topics,
-            "opportunities": self.opportunities[:20],
-            "research_history": self.research_history[-10:],
-            "decisions": self.decisions[-10:],
-            "recommendations": self.recommendations[-10:],
-            "feedback": self.feedback[-10:],
-            "constraints": self.constraints[:20],
-            "resources": self.resources,
-            "available_actions": self.available_actions,
-            "missing_data": self.missing_data,
-            "metadata": {
-                key: self.metadata[key]
-                for key in (
-                    "project_state", "data_inventory", "capabilities",
-                    "signal_interpretation", "current_hypothesis",
-                    "data_requirements", "preferred_languages",
-                    "unified_state_snapshot", "runtime_health",
+    @staticmethod
+    def _bound_ai_value(
+        value: Any,
+        *,
+        depth: int = 0,
+        max_depth: int = 5,
+        max_items: int = 30,
+        max_string_chars: int = 4000,
+    ) -> tuple[Any, int]:
+        """Create a JSON-safe bounded view without mutating project evidence."""
+        if depth >= max_depth:
+            if isinstance(value, (dict, list, tuple)):
+                return {"_omitted": "maximum_nesting_depth"}, 1
+            return value, 0
+        if isinstance(value, str):
+            if len(value) <= max_string_chars:
+                return value, 0
+            return value[:max_string_chars] + "…", 1
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            omitted = max(0, len(value) - max_items)
+            for key, item in list(value.items())[:max_items]:
+                bounded, count = Director._bound_ai_value(
+                    item, depth=depth + 1, max_depth=max_depth,
+                    max_items=max_items, max_string_chars=max_string_chars,
                 )
-                if key in self.metadata
-            },
+                result[str(key)] = bounded
+                omitted += count
+            if omitted:
+                result["_ai_omitted_items"] = omitted
+            return result, omitted
+        if isinstance(value, (list, tuple)):
+            result = []
+            omitted = max(0, len(value) - max_items)
+            for item in list(value)[:max_items]:
+                bounded, count = Director._bound_ai_value(
+                    item, depth=depth + 1, max_depth=max_depth,
+                    max_items=max_items, max_string_chars=max_string_chars,
+                )
+                result.append(bounded)
+                omitted += count
+            return result, omitted
+        if value is None or isinstance(value, (bool, int, float)):
+            return value, 0
+        return str(value)[:max_string_chars], 1
+
+    def to_ai_decision_dict(self) -> dict[str, Any]:
+        """Build a bounded AI view; full evidence remains in Director/Analytics."""
+        context = self.context
+        limits = {
+            "channels": 20, "channel_snapshots": 12, "niches": 20,
+            "niche_snapshots": 12, "strategies": 10, "observations": 8,
+            "opportunities": 20, "research_history": 10, "decisions": 10,
+            "recommendations": 10, "feedback": 10, "constraints": 20,
+            "missing_data": 30, "available_actions": 30,
         }
+        omitted: dict[str, int] = {}
+        payload: dict[str, Any] = {
+            "project_id": context.project_id,
+            "objective": context.objective,
+        }
+        for name, limit in limits.items():
+            value = getattr(context, name, [])
+            if isinstance(value, list):
+                selected = value[-limit:] if name in {
+                    "research_history", "decisions", "recommendations", "feedback"
+                } else value[:limit]
+                payload[name] = selected
+                if len(value) > len(selected):
+                    omitted[name] = len(value) - len(selected)
+        payload["observation_count"] = len(context.observations)
+        payload["analytics"] = context.analytics
+        payload["topics"] = context.topics
+        payload["opportunities_count"] = len(context.opportunities)
+        payload["resources"] = context.resources
+        payload["metadata"] = {
+            key: context.metadata[key]
+            for key in (
+                "project_state", "data_inventory", "capabilities",
+                "signal_interpretation", "current_hypothesis",
+                "data_requirements", "preferred_languages",
+                "unified_state_snapshot", "runtime_health",
+            )
+            if key in context.metadata
+        }
+        bounded, nested_omissions = self._bound_ai_value(payload)
+        if omitted or nested_omissions:
+            bounded["ai_context_limits"] = {
+                "omitted_top_level_records": omitted,
+                "omitted_nested_items": nested_omissions,
+                "full_evidence_retained_in_director": True,
+                "retrieve_from_source_for_details": True,
+            }
+        return bounded
 
     # ============================================================
     # CAPABILITIES
@@ -1441,13 +1480,29 @@ class Director:
         try:
             # AI receives a structured context and returns a structured
             # result. The Director keeps ownership of the decision.
+            ai_context = self.to_ai_decision_dict()
+            # Analysis is represented by the bounded Director view. The
+            # deterministic Director retains the full analysis locally.
             result = generator(
                 context={
                     "decision": decision.to_dict(),
-                    "analysis": analysis,
-                    "director_context": (
-                        self.context.to_analysis_dict()
-                    ),
+                    "analysis": {
+                        "topics": ai_context.get("topics", {}),
+                        "analytics": ai_context.get("analytics", {}),
+                        "opportunities": ai_context.get("opportunities", []),
+                        "signal_interpretation": ai_context.get("metadata", {}).get(
+                            "signal_interpretation", {}
+                        ),
+                        "hypothesis": ai_context.get("metadata", {}).get(
+                            "current_hypothesis"
+                        ),
+                        "omitted_opportunities": max(
+                            0,
+                            len(self.context.opportunities)
+                            - len(ai_context.get("opportunities", [])),
+                        ),
+                    },
+                    "director_context": ai_context,
                 }
             )
 

@@ -451,14 +451,32 @@ def _serialize_context(
     import json
 
     try:
-        return json.dumps(
+        serialized = json.dumps(
             dict(context),
             ensure_ascii=False,
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
     except Exception:
-        return str(dict(context))
+        serialized = str(dict(context))
+
+    # Keep a safety ceiling below provider payload limits. Do not silently
+    # truncate: a caller must reduce the context while preserving evidence.
+    max_bytes = 1_500_000
+    try:
+        import os
+        configured = int(os.getenv("DIRECTOR_AI_CONTEXT_MAX_BYTES", str(max_bytes)))
+        max_bytes = max(64_000, min(configured, 4_000_000))
+    except (TypeError, ValueError):
+        pass
+    actual_bytes = len(serialized.encode("utf-8"))
+    if actual_bytes > max_bytes:
+        raise ValueError(
+            "Director AI context exceeds the configured safe limit "
+            f"({actual_bytes} > {max_bytes} bytes); reduce the structured "
+            "context before requesting model inference."
+        )
+    return serialized
 
 
 # ---------------------------------------------------------------------------

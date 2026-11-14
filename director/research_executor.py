@@ -637,11 +637,13 @@ class YouTubeResearchExecutor:
         persisted = False
         if refreshed_snapshots:
             try:
-                save_result = await _maybe_await(self.storage.save_youtube_data(
+                save_result = await asyncio.to_thread(
+                    self.storage.save_youtube_data,
                     project_id=project_id,
                     videos=refreshed_videos,
                     snapshots=refreshed_snapshots,
-                ))
+                )
+                save_result = await _maybe_await(save_result)
                 expected_videos = len(refreshed_videos)
                 expected_snapshots = len(refreshed_snapshots)
                 if not isinstance(save_result, dict):
@@ -1360,20 +1362,19 @@ class YouTubeResearchExecutor:
                         new_channels.append(channel.to_dict())
 
                     if new_channels:
-                        await _maybe_await(
-                            self.storage.save_opportunity_data(
-                                project_id=project_id,
-                                data={
-                                    "channels": new_channels,
-                                    "channel_snapshots": [
-                                        snapshot.to_dict()
-                                        for snapshot in channel_snapshots
-                                        if str(snapshot.channel_id) in seen_channel_ids
-                                    ],
-                                    "niches": [],
-                                    "niche_snapshots": [],
-                                },
-                            )
+                        await asyncio.to_thread(
+                            self.storage.save_opportunity_data,
+                            project_id=project_id,
+                            data={
+                                "channels": new_channels,
+                                "channel_snapshots": [
+                                    snapshot.to_dict()
+                                    for snapshot in channel_snapshots
+                                    if str(snapshot.channel_id) in seen_channel_ids
+                                ],
+                                "niches": [],
+                                "niche_snapshots": [],
+                            },
                         )
 
                 # Research metadata persistence is separate from YouTube object counts.
@@ -1557,10 +1558,11 @@ class YouTubeResearchExecutor:
         niche_persistence_confirmed = False
         if (niche_records or niche_snapshot_records) and self.storage is not None and hasattr(self.storage, "save_opportunity_data"):
             try:
-                niche_save = await _maybe_await(self.storage.save_opportunity_data(
+                niche_save = await asyncio.to_thread(
+                    self.storage.save_opportunity_data,
                     project_id=project_id,
                     data={"channels": [], "channel_snapshots": [], "niches": niche_records, "niche_snapshots": niche_snapshot_records},
-                ))
+                )
                 niche_persistence_confirmed = (
                     int((niche_save or {}).get("niches", 0) or 0) == len(niche_records)
                     and int((niche_save or {}).get("niche_snapshots", 0) or 0) == len(niche_snapshot_records)

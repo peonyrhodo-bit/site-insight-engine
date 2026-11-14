@@ -803,10 +803,119 @@ class SupabaseMemoryBackend:
 
 
     # ------------------------------------------------------------------
-    # OPPORTUNITY DATA
+    # OPPORTUNITY DATA (channels / niches / historical snapshots)
     # ------------------------------------------------------------------
 
+    TABLE_CHANNELS = "channels"
+    TABLE_CHANNEL_SNAPSHOTS = "channel_snapshots"
+    TABLE_NICHES = "niches"
+    TABLE_NICHE_SNAPSHOTS = "niche_snapshots"
+
+    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, Any]:
+        """Load a bounded working set; Supabase remains the complete history."""
+        expected_project = str(project_id) if project_id is not None else None
+
+        def configured_limit(name: str, default: int, maximum: int) -> int:
+            try:
+                value = int(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                value = default
+            return max(1, min(value, maximum))
+
+        limits = {
+            "channels": configured_limit("DIRECTOR_CHANNELS_IN_MEMORY", 500, 2000),
+            "channel_snapshots": configured_limit("DIRECTOR_CHANNEL_SNAPSHOTS_IN_MEMORY", 500, 5000),
+            "niches": configured_limit("DIRECTOR_NICHES_IN_MEMORY", 250, 1000),
+            "niche_snapshots": configured_limit("DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY", 500, 5000),
+        }
+        started_at = time.monotonic()
+        history_analytics = {
+            "channels": self._summarize_project_table(self.TABLE_CHANNELS, project_id=expected_project, fields=("channel_id",)),
+            "channel_snapshots": self._summarize_project_table(self.TABLE_CHANNEL_SNAPSHOTS, project_id=expected_project, fields=("channel_id",)),
+            "niches": self._summarize_project_table(self.TABLE_NICHES, project_id=expected_project, fields=("niche_id", "name")),
+            "niche_snapshots": self._summarize_project_table(self.TABLE_NICHE_SNAPSHOTS, project_id=expected_project, fields=("niche_id",)),
+        }
+        result = {
+            "history_analytics": history_analytics,
+            "channels": self._recent_for_project(
+                self.TABLE_CHANNELS, limit=limits["channels"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["channels"],
+            ),
+            "channel_snapshots": self._recent_for_project(
+                self.TABLE_CHANNEL_SNAPSHOTS, limit=limits["channel_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["channel_snapshots"],
+            ),
+            "niches": self._recent_for_project(
+                self.TABLE_NICHES, limit=limits["niches"],
+                project_id=expected_project, order_key="id",
+                default_limit=limits["niches"],
+            ),
+            "niche_snapshots": self._recent_for_project(
+                self.TABLE_NICHE_SNAPSHOTS, limit=limits["niche_snapshots"],
+                project_id=expected_project, order_key="captured_at",
+                default_limit=limits["niche_snapshots"],
+            ),
+        }
+        logger.info(
+            "SUPABASE OPPORTUNITY DATA LOADED: project_id=%s counts=%s limits=%s elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            {key: len(rows) for key, rows in result.items()},
+            limits,
+            time.monotonic() - started_at,
+            _peak_rss_raw(),
+        )
+        return result
+
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
+        """Persist channel/niche identities and snapshots idempotently."""
+        project_id = str(project_id)
+        saved = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
+
+        for item in data.get("channels") or []:
+            if not isinstance(item, dict) or not item.get("channel_id"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_CHANNELS).upsert(payload, on_conflict="project_id,channel_id").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["channels"] += 1
+
+        for item in data.get("channel_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("channel_id") or not item.get("captured_at"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_CHANNEL_SNAPSHOTS).upsert(payload, on_conflict="project_id,channel_id,captured_at").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["channel_snapshots"] += 1
+
+        for item in data.get("niches") or []:
+            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("name"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_NICHES).upsert(payload, on_conflict="project_id,niche_id").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["niches"] += 1
+
+        for item in data.get("niche_snapshots") or []:
+            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("captured_at"):
+                continue
+            payload = dict(item)
+            payload["project_id"] = project_id
+            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
+            response = self.client.table(self.TABLE_NICHE_SNAPSHOTS).upsert(payload, on_conflict="project_id,niche_id,captured_at").select("id").execute()
+            if self._first_id(response) is not None:
+                saved["niche_snapshots"] += 1
+
+        return saved
+
+    # ------------------------------------------------------------------    def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
         """Persist channel/niche identities and snapshots in bounded batches."""
         started_at = time.monotonic()
         project_id = str(project_id)
@@ -859,6 +968,7 @@ class SupabaseMemoryBackend:
         return saved
 
     # ------------------------------------------------------------------
+
     # CONTEXT
     # ------------------------------------------------------------------
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from director.trace_context import get_correlation_id
 
+import asyncio
 import json
 import logging
 import os
@@ -1305,13 +1306,16 @@ class YouTubeResearchExecutor:
                 research_videos, research_snapshots = _research_objects_for_persistence(
                     registry, research
                 )
-                save_result = await _maybe_await(
-                    self.storage.save_youtube_data(
-                        project_id=project_id,
-                        videos=[video.to_dict() for video in research_videos],
-                        snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
-                    )
+                # SupabaseMemoryBackend uses the synchronous Supabase client.
+                # Run this potentially large batch off the event loop so the
+                # Director timeout, heartbeat, and cancellation remain responsive.
+                save_result = await asyncio.to_thread(
+                    self.storage.save_youtube_data,
+                    project_id=project_id,
+                    videos=[video.to_dict() for video in research_videos],
+                    snapshots=[snapshot.to_dict() for snapshot in research_snapshots],
                 )
+                save_result = await _maybe_await(save_result)
                 if not isinstance(save_result, dict):
                     raise RuntimeError("storage did not confirm persisted video/snapshot counts")
                 saved_video_count = int(save_result.get("videos", 0) or 0)

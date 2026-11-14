@@ -410,6 +410,13 @@ class AnalyticsAdapter:
             len(trend_current),
         )
         analytics_data: dict[str, Any] = {}
+        metadata = context.get("metadata", {})
+        history_analytics = (
+            metadata.get("history_analytics", {})
+            if isinstance(metadata, dict) else {}
+        )
+        if isinstance(history_analytics, dict) and history_analytics:
+            analytics_data["history_analytics"] = history_analytics
 
         # ---------------------------------------------------------------
         # Basic analytics

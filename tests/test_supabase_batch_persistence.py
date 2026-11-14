@@ -40,11 +40,14 @@ class FakeQuery:
         rows = []
         for row in batch:
             self.client.next_snapshot_id += 1
-            rows.append({
-                "id": self.client.next_snapshot_id,
-                "video_id": row["video_id"],
-                "data_json": row["data_json"],
-            })
+            if self.table_name == "video_snapshots":
+                rows.append({
+                    "id": self.client.next_snapshot_id,
+                    "video_id": row["video_id"],
+                    "data_json": row["data_json"],
+                })
+            else:
+                rows.append({"id": self.client.next_snapshot_id})
         return FakeResponse(rows)
 
 
@@ -120,6 +123,38 @@ class SupabaseBatchPersistenceTests(unittest.TestCase):
         self.assertEqual(video_calls[0][2][0]["data_json"]["title"], "latest")
         self.assertEqual(result["videos"], 1)
         self.assertEqual(result["snapshots"], 0)
+
+
+    def test_opportunity_records_are_saved_in_bounded_batches(self):
+        client = FakeSupabaseClient()
+        backend = SupabaseMemoryBackend(client=client)
+        data = {
+            "channels": [{"channel_id": f"channel-{i}", "data": {"title": str(i)}} for i in range(205)],
+            "channel_snapshots": [
+                {"channel_id": f"channel-{i}", "captured_at": f"2026-01-01T00:{i % 60:02d}:00Z", "data": {}}
+                for i in range(205)
+            ],
+            "niches": [{"niche_id": f"niche-{i}", "name": f"Niche {i}", "data": {}} for i in range(205)],
+            "niche_snapshots": [
+                {"niche_id": f"niche-{i}", "captured_at": f"2026-01-01T00:{i % 60:02d}:00Z", "data": {}}
+                for i in range(205)
+            ],
+        }
+
+        with patch.dict(os.environ, {"SUPABASE_DATA_WRITE_BATCH_SIZE": "100"}):
+            result = backend.save_opportunity_data(project_id="default", data=data)
+
+        for table_name in ("channels", "channel_snapshots", "niches", "niche_snapshots"):
+            calls = [call for call in client.calls if call[0] == table_name]
+            self.assertEqual([len(call[2]) for call in calls], [100, 100, 5])
+            self.assertTrue(all(call[1] == "upsert" for call in calls))
+        self.assertEqual(result, {
+            "channels": 205,
+            "channel_snapshots": 205,
+            "niches": 205,
+            "niche_snapshots": 205,
+        })
+
 
 
 if __name__ == "__main__":

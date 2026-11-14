@@ -19,6 +19,7 @@ It does not replace specialized systems.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -362,6 +363,7 @@ class Director:
                 "signal_interpretation", "current_hypothesis",
                 "data_requirements", "preferred_languages",
                 "unified_state_snapshot", "runtime_health",
+                "memory_state", "memory_read",
             )
             if key in context.metadata
         }
@@ -458,11 +460,21 @@ class Director:
                     if hasattr(external_context, "__await__"):
                         external_context = await external_context
                     if isinstance(external_context, dict):
-                        self._merge_context(external_context)
-                        # Server adapters may translate backend exceptions into
-                        # an empty dict. A completely empty payload is therefore
-                        # not proof that storage is healthy or merely has no rows.
-                        if external_context:
+                        read_info = external_context.get("_memory_read")
+                        read_status = (
+                            str(read_info.get("status") or "").lower()
+                            if isinstance(read_info, dict)
+                            else "atomic"
+                        )
+                        memory_payload = {
+                            key: value for key, value in external_context.items()
+                            if key != "_memory_read"
+                        }
+                        if read_status == "complete":
+                            # A confirmed complete read is authoritative, including
+                            # empty collections: stale in-process memory must clear.
+                            self._merge_context(memory_payload, replace_empty=True)
+                            self.context.metadata["memory_read"] = read_info
                             external_health = external_context.get("runtime_health")
                             external_memory_health = (
                                 external_health.get("memory")
@@ -476,14 +488,46 @@ class Director:
                                     "status": "healthy",
                                     "checked_at": datetime.now(timezone.utc).isoformat(),
                                     "operation": "get_context",
+                                    "read_status": "complete",
                                 }
                             )
-                        else:
+                        elif read_status == "partial":
+                            # Partial rows remain useful evidence, but failed tables
+                            # must not erase previously known values or look healthy.
+                            self._merge_context(memory_payload)
+                            self.context.metadata["memory_read"] = read_info
                             runtime_health["memory"] = {
                                 "status": "degraded",
+                                "read_status": "partial",
                                 "checked_at": datetime.now(timezone.utc).isoformat(),
-                                "reason": "Memory returned an empty context; backend failure and genuinely empty state are indistinguishable.",
+                                "reason": "Memory returned a partial context; decisions must account for missing history.",
+                                "errors": dict(read_info.get("errors") or {}),
+                                "tables": dict(read_info.get("tables") or {}),
                             }
+                        elif read_status in {"error", "unavailable"}:
+                            self.context.metadata["memory_read"] = read_info
+                            runtime_health["memory"] = {
+                                "status": "unavailable",
+                                "read_status": read_status,
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "reason": "Memory context could not be read completely.",
+                                "errors": dict(read_info.get("errors") or {}),
+                                "tables": dict(read_info.get("tables") or {}),
+                            }
+                        else:
+                            # Legacy atomic backends do not expose per-table
+                            # status. Non-empty results are their complete contract.
+                            self._merge_context(memory_payload, replace_empty=True)
+                            runtime_health["memory"] = {
+                                "status": "healthy" if memory_payload else "degraded",
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "operation": "get_context",
+                                "read_status": "atomic",
+                            }
+                            if not memory_payload:
+                                runtime_health["memory"]["reason"] = (
+                                    "Legacy memory backend returned an empty context without an explicit read status."
+                                )
                     else:
                         runtime_health["memory"] = {
                             "status": "degraded",
@@ -491,11 +535,47 @@ class Director:
                             "reason": "Memory returned a non-dict context.",
                         }
                 except Exception as exc:
-                    runtime_health["memory"] = {
-                        "status": "unavailable",
-                        "checked_at": datetime.now(timezone.utc).isoformat(),
-                        "reason": f"{type(exc).__name__}: {exc}",
-                    }
+                    read_status = str(getattr(exc, "status", "") or "").lower()
+                    partial_context = getattr(exc, "context", None)
+                    errors = getattr(exc, "errors", {})
+                    if read_status == "partial" and isinstance(partial_context, dict):
+                        # Keep rows from successful tables while recording the
+                        # failed tables as unknown; never call this a healthy read.
+                        partial_payload = {
+                            key: value for key, value in partial_context.items()
+                            if key != "_memory_read"
+                        }
+                        self._merge_context(partial_payload)
+                        read_info = partial_context.get("_memory_read")
+                        if not isinstance(read_info, dict):
+                            read_info = {
+                                "status": "partial",
+                                "errors": dict(errors) if isinstance(errors, dict) else {},
+                                "tables": {},
+                            }
+                        self.context.metadata["memory_read"] = read_info
+                        runtime_health["memory"] = {
+                            "status": "degraded",
+                            "read_status": "partial",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "reason": "Memory read was partial; usable rows were retained, but missing tables remain unknown.",
+                            "errors": dict(errors) if isinstance(errors, dict) else {},
+                            "tables": dict(read_info.get("tables") or {}),
+                        }
+                    else:
+                        self.context.metadata["memory_read"] = {
+                            "status": read_status or "error",
+                            "errors": dict(errors) if isinstance(errors, dict) else {
+                                "context": f"{type(exc).__name__}: {exc}",
+                            },
+                        }
+                        runtime_health["memory"] = {
+                            "status": "unavailable",
+                            "read_status": read_status or "error",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "reason": f"{type(exc).__name__}: {exc}",
+                            "errors": dict(errors) if isinstance(errors, dict) else {},
+                        }
                     logger.warning("Director memory inspection failed", exc_info=True)
         else:
             runtime_health["memory"] = {
@@ -771,11 +851,12 @@ class Director:
     def _merge_context(
         self,
         data: dict[str, Any],
+        *,
+        replace_empty: bool = False,
     ) -> None:
         """
-        Conservative context merge.
-
-        We do not overwrite non-empty local state with empty external values.
+        Merge external state. Only a confirmed complete read may clear stale
+        collections; partial reads preserve values for failed/empty tables.
         """
         for key, value in data.items():
             if not hasattr(self.context, key):
@@ -785,6 +866,14 @@ class Director:
             current = getattr(self.context, key)
 
             if value in (None, "", [], {}):
+                if not replace_empty:
+                    continue
+                if isinstance(current, list) and isinstance(value, list):
+                    setattr(self.context, key, [])
+                elif isinstance(current, dict) and isinstance(value, dict):
+                    setattr(self.context, key, {})
+                elif value is None or value == "":
+                    setattr(self.context, key, value)
                 continue
 
             if isinstance(current, list) and isinstance(value, list):
@@ -795,6 +884,23 @@ class Director:
                 setattr(self.context, key, merged)
             else:
                 setattr(self.context, key, value)
+
+    def _memory_state_summary(self) -> dict[str, Any]:
+        """Compact semantic memory context used by Director planning."""
+        memory_state = self.context.metadata.get("memory_state")
+        if not isinstance(memory_state, dict):
+            return {}
+        summary: dict[str, Any] = {}
+        for key in (
+            "active_constraints", "pending_recommendations",
+            "unfinished_actions", "unresolved_decisions",
+            "recent_results", "recent_events", "recent_chat", "recent_runs",
+        ):
+            rows = memory_state.get(key)
+            if isinstance(rows, list):
+                summary[f"{key}_count"] = len(rows)
+                summary[key] = rows[-5:]
+        return summary
 
     # ============================================================
     # UNDERSTANDING
@@ -834,6 +940,8 @@ class Director:
             "missing_data": list(self.context.missing_data),
             "data_requirements": list(self.context.metadata.get("data_requirements", [])),
             "constraints": list(self.context.constraints),
+            "memory_state": self._memory_state_summary(),
+            "memory_read": dict(self.context.metadata.get("memory_read") or {}),
             "project_state": dict(project_state),
         }
 
@@ -1507,7 +1615,14 @@ class Director:
             )
 
             if hasattr(result, "__await__"):
-                result = await result
+                try:
+                    configured_timeout = float(
+                        os.getenv("DIRECTOR_AI_DECISION_TIMEOUT_SECONDS", "45")
+                    )
+                except (TypeError, ValueError):
+                    configured_timeout = 45.0
+                ai_timeout = max(1.0, min(configured_timeout, 90.0))
+                result = await asyncio.wait_for(result, timeout=ai_timeout)
 
             if isinstance(result, dict):
                 if result.get("rationale"):
@@ -2466,6 +2581,8 @@ class Director:
                 "coverage": coverage,
                 "hypothesis_status": hypothesis_status,
                 "hypothesis": self.context.metadata.get("current_hypothesis", {}),
+                "memory_state": self._memory_state_summary(),
+                "memory_read": dict(self.context.metadata.get("memory_read") or {}),
                 "recent_research": self.context.research_history[-8:],
                 "quota": quota,
                 "missing_data": list(dict.fromkeys(missing)),

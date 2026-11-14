@@ -622,6 +622,58 @@ class SupabaseMemoryBackend:
             "history_analytics": history_analytics,
         }
 
+    def iter_video_evidence(
+        self,
+        video_id: str,
+        *,
+        page_size: int = 500,
+    ):
+        """Yield one video's source row and every historical snapshot on demand.
+
+        This is the drill-down path for evidence IDs emitted by the streaming
+        aggregates. It keeps memory bounded even for videos with long histories.
+        """
+        normalized_id = str(video_id).strip()
+        if not normalized_id:
+            raise ValueError("video_id is required")
+        page_size = max(1, min(int(page_size), 1000))
+
+        try:
+            response = (
+                self.client.table("videos")
+                .select("video_id,data_json,first_seen,last_seen")
+                .eq("video_id", normalized_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise MemoryTableReadError("videos", cause=exc) from exc
+        rows = self._safe_list(response)
+        if rows:
+            yield {"kind": "video", "row": rows[0]}
+
+        offset = 0
+        while True:
+            try:
+                response = (
+                    self.client.table("video_snapshots")
+                    .select("id,video_id,created_at,data_json")
+                    .eq("video_id", normalized_id)
+                    .order("id", desc=True)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+            except Exception as exc:
+                raise MemoryTableReadError(
+                    "video_snapshots", cause=exc
+                ) from exc
+            page = self._safe_list(response)
+            for row in page:
+                yield {"kind": "snapshot", "row": row}
+            if len(page) < page_size:
+                break
+            offset += page_size
+
     def save_youtube_data(
         self,
         *,

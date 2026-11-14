@@ -16,8 +16,18 @@ class FakeQuery:
         self.orders = []
         self.start = 0
         self.end = None
+        self.filters = []
+        self.limit_count = None
 
     def select(self, _columns):
+        return self
+
+    def eq(self, key, value):
+        self.filters.append((key, value))
+        return self
+
+    def limit(self, value):
+        self.limit_count = value
         return self
 
     def order(self, key, desc=False):
@@ -29,10 +39,17 @@ class FakeQuery:
         return self
 
     def execute(self):
-        rows = list(self.rows)
+        rows = [
+            row for row in self.rows
+            if all(str(row.get(key)) == str(value) for key, value in self.filters)
+        ]
         for key, desc in reversed(self.orders):
             rows.sort(key=lambda row: (row.get(key) is None, row.get(key)), reverse=desc)
-        return FakeResponse(rows[self.start:self.end + 1])
+        if self.end is not None:
+            rows = rows[self.start:self.end + 1]
+        if self.limit_count is not None:
+            rows = rows[:self.limit_count]
+        return FakeResponse(rows)
 
 
 class FakeClient:
@@ -114,6 +131,27 @@ class SupabaseFullHistoryStreamingTests(unittest.TestCase):
         self.assertEqual(len(result["videos"]), 100)
         self.assertEqual(len(result["snapshots"]), 200)
         self.assertEqual(history["snapshot_metrics"]["views"]["count"], 260)
+
+    def test_video_evidence_drilldown_yields_source_and_all_snapshot_pages(self):
+        backend = SupabaseMemoryBackend(client=FakeClient({
+            "videos": [{
+                "video_id": "v1",
+                "data_json": {"snippet": {"title": "source video"}},
+            }],
+            "video_snapshots": [
+                {"id": index, "video_id": "v1", "created_at": f"2026-01-0{index}T00:00:00Z",
+                 "data_json": {"statistics": {"views": index * 10}}}
+                for index in range(1, 6)
+            ] + [
+                {"id": 99, "video_id": "other", "created_at": "2026-01-01T00:00:00Z",
+                 "data_json": {}}
+            ],
+        }))
+        evidence = list(backend.iter_video_evidence("v1", page_size=2))
+        self.assertEqual(evidence[0]["kind"], "video")
+        self.assertEqual(evidence[0]["row"]["video_id"], "v1")
+        snapshots = [item["row"]["id"] for item in evidence if item["kind"] == "snapshot"]
+        self.assertEqual(snapshots, [5, 4, 3, 2, 1])
 
     def test_project_scoped_scan_excludes_unscoped_legacy_snapshots_explicitly(self):
         backend = SupabaseMemoryBackend(client=FakeClient({

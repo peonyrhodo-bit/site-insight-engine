@@ -1048,6 +1048,18 @@ class DataAdapter:
                     return payload
         return {}
 
+    def iter_video_evidence(
+        self,
+        video_id: str,
+        *,
+        page_size: int = 500,
+    ):
+        """Expose on-demand, paginated source evidence without copying history."""
+        reader = getattr(self.storage, "iter_video_evidence", None)
+        if not callable(reader):
+            raise RuntimeError("The configured storage backend does not support video evidence drill-down.")
+        yield from reader(video_id, page_size=page_size)
+
     async def get_project_state(
         self,
         project_id: str,

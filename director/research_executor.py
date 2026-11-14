@@ -924,7 +924,7 @@ class YouTubeResearchExecutor:
                             # must not disappear with the in-memory registry.
                             if self.storage is not None:
                                 try:
-                                    await _maybe_await(self.storage.save_research_data(
+                                    await _maybe_await(await asyncio.to_thread(self.storage.save_research_data,
                                         project_id=project_id,
                                         queries=[query.to_dict()],
                                         research_sets=[],
@@ -1037,7 +1037,7 @@ class YouTubeResearchExecutor:
                             errors.append(f"{text}: {type(exc).__name__}: {exc}")
                             if self.storage is not None:
                                 try:
-                                    await _maybe_await(self.storage.save_research_data(
+                                    await _maybe_await(await asyncio.to_thread(self.storage.save_research_data,
                                         project_id=project_id,
                                         queries=[query.to_dict()],
                                         research_sets=[],
@@ -1241,7 +1241,7 @@ class YouTubeResearchExecutor:
                 research.metadata["operation_results"] = operation_results
                 research.metadata["research_plan"] = plan.to_dict()
                 try:
-                    await _maybe_await(self.storage.save_research_data(
+                    await _maybe_await(await asyncio.to_thread(self.storage.save_research_data,
                         project_id=project_id,
                         queries=[query.to_dict() for query in collected_queries],
                         research_sets=[research.to_dict()],
@@ -1340,7 +1340,7 @@ class YouTubeResearchExecutor:
                     )
 
                 await _maybe_await(
-                    self.storage.save_research_data(
+                    await asyncio.to_thread(self.storage.save_research_data,
                         project_id=project_id,
                         queries=[query.to_dict() for query in collected_queries],
                         research_sets=[research.to_dict()],
@@ -1443,7 +1443,7 @@ class YouTubeResearchExecutor:
         # durable records distinguish API success from saved evidence.
         if self.storage is not None and collected_queries:
             try:
-                await _maybe_await(self.storage.save_research_data(
+                await _maybe_await(await asyncio.to_thread(self.storage.save_research_data,
                     project_id=project_id,
                     queries=[query.to_dict() for query in collected_queries],
                     research_sets=[research.to_dict()],
@@ -1683,7 +1683,7 @@ class YouTubeResearchExecutor:
             # only incomplete work without regenerating the plan.
             research.metadata["research_plan"] = plan.to_dict()
             try:
-                await _maybe_await(self.storage.save_research_data(
+                await _maybe_await(await asyncio.to_thread(self.storage.save_research_data,
                     project_id=project_id,
                     queries=[],
                     research_sets=[research.to_dict()],

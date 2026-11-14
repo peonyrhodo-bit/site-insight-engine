@@ -684,7 +684,11 @@ class SupabaseMemoryBackend:
         """Persist YouTube evidence in bounded batches, not one HTTP call per row."""
         started_at = time.monotonic()
         project_id = str(project_id)
-        batch_size = max(1, min(500, int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))))
+        try:
+            batch_size = int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))
+        except (TypeError, ValueError):
+            batch_size = 100
+        batch_size = max(1, min(500, batch_size))
         saved_video_ids: list[str] = []
         saved_snapshot_video_ids: list[str] = []
         saved_snapshot_query_ids: list[list[str]] = []
@@ -806,7 +810,11 @@ class SupabaseMemoryBackend:
         """Persist channel/niche identities and snapshots in bounded batches."""
         started_at = time.monotonic()
         project_id = str(project_id)
-        batch_size = max(1, min(500, int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))))
+        try:
+            batch_size = int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))
+        except (TypeError, ValueError):
+            batch_size = 100
+        batch_size = max(1, min(500, batch_size))
         saved = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
         specs = (
             ("channels", self.TABLE_CHANNELS, "project_id,channel_id", ("channel_id",)),

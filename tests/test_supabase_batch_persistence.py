@@ -32,7 +32,7 @@ class FakeQuery:
         return self
 
     def execute(self):
-        batch = list(self.payload)
+        batch = list(self.payload) if isinstance(self.payload, (list, tuple)) else [self.payload]
         self.client.calls.append((self.table_name, self.operation, batch))
         if self.table_name == "videos":
             return FakeResponse([{"video_id": row["video_id"]} for row in batch])
@@ -61,6 +61,55 @@ class FakeSupabaseClient:
 
 
 class SupabaseBatchPersistenceTests(unittest.TestCase):
+    def test_backend_preserves_director_research_contract(self):
+        client = FakeSupabaseClient()
+        backend = SupabaseMemoryBackend(client=client)
+
+        for method_name in (
+            "load_youtube_data",
+            "save_youtube_data",
+            "load_research_data",
+            "save_youtube_query",
+            "save_research_set",
+            "save_data_relation",
+            "save_data_relations",
+            "save_research_data",
+            "load_opportunity_data",
+            "save_opportunity_data",
+        ):
+            self.assertTrue(callable(getattr(backend, method_name, None)), method_name)
+
+        self.assertEqual(backend.TABLE_YOUTUBE_QUERIES, "youtube_queries")
+        self.assertEqual(backend.TABLE_RESEARCH_SETS, "research_sets")
+        self.assertEqual(backend.TABLE_DATA_RELATIONS, "data_relations")
+        self.assertEqual(backend.TABLE_CHANNELS, "channels")
+        self.assertEqual(backend.TABLE_CHANNEL_SNAPSHOTS, "channel_snapshots")
+        self.assertEqual(backend.TABLE_NICHES, "niches")
+        self.assertEqual(backend.TABLE_NICHE_SNAPSHOTS, "niche_snapshots")
+
+    def test_research_graph_is_persisted_through_restored_method(self):
+        client = FakeSupabaseClient()
+        backend = SupabaseMemoryBackend(client=client)
+
+        result = backend.save_research_data(
+            project_id="project-1",
+            queries=[{"query_id": "query-1", "text": "test"}],
+            research_sets=[{"research_id": "research-1", "name": "test"}],
+            relations=[{
+                "source_type": "research",
+                "source_id": "research-1",
+                "relation": "uses",
+                "target_type": "query",
+                "target_id": "query-1",
+            }],
+        )
+
+        self.assertEqual(result, {"queries": 1, "research_sets": 1, "relations": 1})
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["youtube_queries", "research_sets", "data_relations"],
+        )
+
     def test_youtube_videos_and_snapshots_are_saved_in_bounded_batches(self):
         client = FakeSupabaseClient()
         backend = SupabaseMemoryBackend(client=client)

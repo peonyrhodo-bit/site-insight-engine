@@ -36,6 +36,8 @@ except ImportError:  # pragma: no cover - unavailable on some platforms
 
 from supabase import Client, create_client
 
+from memory.read_status import MemoryTableReadError
+
 logger = logging.getLogger(__name__)
 
 
@@ -232,11 +234,18 @@ class SupabaseMemoryBackend:
             if order_key != "id":
                 query = query.order("id", desc=True)
 
-            response = (
-                query
-                .range(offset, offset + page_size - 1)
-                .execute()
-            )
+            try:
+                response = (
+                    query
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+            except Exception as exc:
+                raise MemoryTableReadError(
+                    table_name,
+                    partial_rows=rows,
+                    cause=exc,
+                ) from exc
             page = self._safe_list(response)
             for row in page:
                 if expected_project is not None and self._project_id_from_row(row) != expected_project:
@@ -1026,44 +1035,64 @@ class SupabaseMemoryBackend:
         limit_recommendations: int = 20,
         limit_constraints: int = 20,
     ) -> dict[str, Any]:
-        return {
-            "runs": self.get_recent_runs(
-                limit=limit_runs,
-                project_id=project_id
-            ),
-            "decisions": self.get_recent_decisions(
-                limit=limit_decisions,
-                project_id=project_id
-            ),
-            "recommendations": (
-                self.get_recent_recommendations(
-                    limit=limit_recommendations,
-                    project_id=project_id
-                )
-            ),
-            "constraints": (
-                self.get_recent_constraints(
-                    limit=limit_constraints,
-                    project_id=project_id
-                )
-            ),
-            "events": self.get_recent_events(
-                limit=limit_events,
-                project_id=project_id
-            ),
-            "chat": self.get_recent_chat_messages(
-                limit=limit_chat,
-                project_id=project_id
-            ),
-            "actions": self.get_recent_actions(
-                limit=limit_actions,
-                project_id=project_id
-            ),
-            "results": self.get_recent_results(
-                limit=limit_results,
-                project_id=project_id
-            ),
+        """Read each memory collection independently and report completeness.
+
+        A successfully read empty table is represented as complete with zero
+        rows. A failed table is never silently represented as an empty table.
+        """
+        readers = {
+            "runs": lambda: self.get_recent_runs(limit=limit_runs, project_id=project_id),
+            "decisions": lambda: self.get_recent_decisions(limit=limit_decisions, project_id=project_id),
+            "recommendations": lambda: self.get_recent_recommendations(limit=limit_recommendations, project_id=project_id),
+            "constraints": lambda: self.get_recent_constraints(limit=limit_constraints, project_id=project_id),
+            "events": lambda: self.get_recent_events(limit=limit_events, project_id=project_id),
+            "chat": lambda: self.get_recent_chat_messages(limit=limit_chat, project_id=project_id),
+            "actions": lambda: self.get_recent_actions(limit=limit_actions, project_id=project_id),
+            "results": lambda: self.get_recent_results(limit=limit_results, project_id=project_id),
         }
+
+        context: dict[str, Any] = {}
+        table_status: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+
+        for name, read in readers.items():
+            try:
+                rows = read()
+                if not isinstance(rows, list):
+                    raise TypeError(f"{name} reader returned {type(rows).__name__}, expected list")
+                context[name] = rows
+                table_status[name] = {"status": "complete", "rows": len(rows)}
+            except MemoryTableReadError as exc:
+                context[name] = exc.partial_rows
+                errors[name] = str(exc.cause or exc)
+                table_status[name] = {
+                    "status": "partial" if exc.partial_rows else "error",
+                    "rows": len(exc.partial_rows),
+                }
+                logger.exception("Memory context table read incomplete: %s", name)
+            except Exception as exc:
+                context[name] = []
+                errors[name] = str(exc)
+                table_status[name] = {"status": "error", "rows": 0}
+                logger.exception("Memory context table read failed: %s", name)
+
+        successful_tables = sum(
+            1 for item in table_status.values()
+            if item["status"] == "complete"
+        )
+        status = (
+            "complete" if not errors
+            else "partial" if successful_tables or any(
+                item["status"] == "partial" for item in table_status.values()
+            )
+            else "error"
+        )
+        context["_memory_read"] = {
+            "status": status,
+            "tables": table_status,
+            "errors": errors,
+        }
+        return context
 
     # ------------------------------------------------------------------
     # RUNS

@@ -803,377 +803,51 @@ class SupabaseMemoryBackend:
     # ------------------------------------------------------------------
 
     def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
-        counts = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
-        pid = str(project_id)
-
-        for item in data.get("channels") or []:
-            if not isinstance(item, dict) or not item.get("channel_id"):
-                continue
-            payload = {
-                "project_id": pid,
-                "channel_id": str(item["channel_id"]),
-                "title": item.get("title", ""),
-                "description": item.get("description"),
-                "custom_url": item.get("custom_url"),
-                "country": item.get("country"),
-                "published_at": item.get("published_at"),
-                "video_count": item.get("video_count"),
-                "subscriber_count": item.get("subscriber_count"),
-                "view_count": item.get("view_count"),
-                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
-            }
-            self.client.table("channels").upsert(payload, on_conflict="project_id,channel_id").execute()
-            counts["channels"] += 1
-
-        for item in data.get("channel_snapshots") or []:
-            if not isinstance(item, dict) or not item.get("channel_id"):
-                continue
-            payload = {
-                "project_id": pid,
-                "channel_id": str(item["channel_id"]),
-                "captured_at": item.get("captured_at"),
-                "subscriber_count": item.get("subscriber_count"),
-                "video_count": item.get("video_count"),
-                "view_count": item.get("view_count"),
-                "new_video_count": item.get("new_video_count"),
-                "subscriber_growth": item.get("subscriber_growth"),
-                "view_growth": item.get("view_growth"),
-                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
-            }
-            self.client.table("channel_snapshots").upsert(payload, on_conflict="project_id,channel_id,captured_at").execute()
-            counts["channel_snapshots"] += 1
-
-        for item in data.get("niches") or []:
-            if not isinstance(item, dict) or not item.get("niche_id"):
-                continue
-            payload = {
-                "project_id": pid,
-                "niche_id": str(item["niche_id"]),
-                "name": item.get("name", ""),
-                "description": item.get("description"),
-                "aliases": item.get("aliases") or [],
-                "language": item.get("language"),
-                "region": item.get("region"),
-                "status": item.get("status", "active"),
-                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
-            }
-            self.client.table("niches").upsert(payload, on_conflict="project_id,niche_id").execute()
-            counts["niches"] += 1
-
-        for item in data.get("niche_snapshots") or []:
-            if not isinstance(item, dict) or not item.get("niche_id"):
-                continue
-            payload = {
-                "project_id": pid,
-                "niche_id": str(item["niche_id"]),
-                "captured_at": item.get("captured_at"),
-                "video_count": item.get("video_count"),
-                "channel_count": item.get("channel_count"),
-                "median_views": item.get("median_views"),
-                "average_views": item.get("average_views"),
-                "growth_rate": item.get("growth_rate"),
-                "new_video_count": item.get("new_video_count"),
-                "new_channel_count": item.get("new_channel_count"),
-                "top_channel_share": item.get("top_channel_share"),
-                "competition_score": item.get("competition_score"),
-                "opportunity_score": item.get("opportunity_score"),
-                "data_json": self._safe_dict(item.get("data") or item.get("data_json")),
-            }
-            self.client.table("niche_snapshots").upsert(payload, on_conflict="project_id,niche_id,captured_at").execute()
-            counts["niche_snapshots"] += 1
-
-        return counts
-
-    def _summarize_project_table(
-        self,
-        table_name: str,
-        *,
-        project_id: str | None,
-        fields: tuple[str, ...] = (),
-    ) -> dict[str, Any]:
-        """Scan every row while retaining only bounded counters."""
-        from collections import Counter
-
-        expected = str(project_id) if project_id is not None else None
-        counts: dict[str, Counter[str]] = {field: Counter() for field in fields}
-        rows_scanned = 0
-        matched = 0
-        for row in self._iter_paginated_rows(
-            table_name, order_key="id", page_size=500,
-        ):
-            rows_scanned += 1
-            if expected is not None and self._project_id_from_row(row) != expected:
-                continue
-            matched += 1
-            data = self._safe_dict(row.get("data_json"))
-            for field in fields:
-                value = row.get(field)
-                if value is None:
-                    value = data.get(field)
-                if value is None:
-                    continue
-                label = str(value).strip()[:160]
-                if label:
-                    counts[field][label] += 1
-                    if len(counts[field]) > 2000:
-                        for key, _ in counts[field].most_common()[1000:]:
-                            del counts[field][key]
-        return {
-            "status": "complete",
-            "rows_scanned": rows_scanned,
-            "matched_rows": matched,
-            "distributions": {
-                field: [{"value": key, "count": count} for key, count in counter.most_common(100)]
-                for field, counter in counts.items()
-            },
-        }
-
-    # DATA / RESEARCH
-    # ------------------------------------------------------------------
-
-    def load_research_data(self, *, project_id: str | None = None) -> dict[str, Any]:
-        """Load persisted research/query/relation DATA for one project."""
-        expected_project = str(project_id) if project_id is not None else None
-        # Keep the process-local graph bounded. The complete history remains
-        # in Supabase; Director startup only needs a recent working index.
+        """Persist channel/niche identities and snapshots in bounded batches."""
         started_at = time.monotonic()
-        result = {
-            "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=2000, project_id=expected_project, order_key="id", default_limit=2000),
-            "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=1000, project_id=expected_project, order_key="id", default_limit=1000),
-            "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=5000, project_id=expected_project, order_key="id", default_limit=5000),
-            "history_analytics": {
-                "queries": self._summarize_project_table(self.TABLE_YOUTUBE_QUERIES, project_id=expected_project, fields=("status", "language", "region")),
-                "research_sets": self._summarize_project_table(self.TABLE_RESEARCH_SETS, project_id=expected_project, fields=("status", "language", "region")),
-                "relations": self._summarize_project_table(self.TABLE_DATA_RELATIONS, project_id=expected_project, fields=("source_type", "relation", "target_type")),
-            },
-        }
-        logger.info(
-            "SUPABASE RESEARCH HISTORY SCANNED: project_id=%s counts=%s elapsed_seconds=%.3f peak_rss_raw=%s",
-            expected_project or "all",
-            {key: value["matched_rows"] for key, value in result["history_analytics"].items()},
-            time.monotonic() - started_at, _peak_rss_raw(),
-        )
-        return result
-
-    def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:
-        query = self._safe_dict(query)
-        query_id = str(query.get("query_id") or "").strip()
-        if not query_id:
-            raise ValueError("query_id is required")
-        payload = {
-            "project_id": str(project_id), "query_id": query_id,
-            "text": query.get("text", ""), "language": query.get("language"),
-            "region": query.get("region"), "metadata": self._safe_dict(query.get("metadata")),
-            "source": query.get("source"), "status": query.get("status", "planned"),
-        }
-        response = self.client.table(self.TABLE_YOUTUBE_QUERIES).upsert(payload, on_conflict="project_id,query_id").select("id").execute()
-        return self._first_id(response)
-
-    def save_research_set(self, *, project_id: str, research: dict[str, Any]) -> int | None:
-        research = self._safe_dict(research)
-        research_id = str(research.get("research_id") or "").strip()
-        if not research_id:
-            raise ValueError("research_id is required")
-        payload = {
-            "project_id": str(project_id), "research_id": research_id,
-            "name": research.get("name", ""), "objective": research.get("objective", ""),
-            "language": research.get("language"), "region": research.get("region"),
-            "languages": research.get("languages") or [], "regions": research.get("regions") or [],
-            "query_ids": research.get("query_ids") or [], "video_ids": research.get("video_ids") or [],
-            "snapshot_ids": research.get("snapshot_ids") or [], "gathered_data": research.get("gathered_data") or [],
-            "missing_data": research.get("missing_data") or [], "reusable_video_ids": research.get("reusable_video_ids") or [],
-            "reused_video_ids": research.get("reused_video_ids") or [], "source": research.get("source"),
-            "status": research.get("status", "planned"), "created_at": research.get("created_at"),
-            "updated_at": research.get("updated_at"), "completed_at": research.get("completed_at"),
-            "metadata": self._safe_dict(research.get("metadata")), "expected_data": research.get("expected_data") or [],
-        }
-        response = self.client.table(self.TABLE_RESEARCH_SETS).upsert(payload, on_conflict="project_id,research_id").select("id").execute()
-        return self._first_id(response)
-
-    def save_data_relation(self, *, project_id: str, relation: dict[str, Any]) -> int | None:
-        relation = self._safe_dict(relation)
-        payload = {
-            "project_id": str(project_id), "source_type": relation.get("source_type"),
-            "source_id": str(relation.get("source_id")), "relation": relation.get("relation"),
-            "target_type": relation.get("target_type"), "target_id": str(relation.get("target_id")),
-            "metadata": self._safe_dict(relation.get("metadata")),
-        }
-        response = self.client.table(self.TABLE_DATA_RELATIONS).upsert(payload, on_conflict="project_id,source_type,source_id,relation,target_type,target_id").select("id").execute()
-        return self._first_id(response)
-
-    def save_data_relations(
-        self,
-        *,
-        project_id: str,
-        relations: list[dict[str, Any]] | None = None,
-    ) -> int:
-        """Persist relations in one idempotent batch instead of one HTTP call per row."""
-        payload_by_key: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
-        for item in relations or []:
-            relation = self._safe_dict(item)
-            source_type = relation.get("source_type")
-            source_id = relation.get("source_id")
-            relation_name = relation.get("relation")
-            target_type = relation.get("target_type")
-            target_id = relation.get("target_id")
-            if not all((source_type, source_id, relation_name, target_type, target_id)):
-                continue
-            key = (
-                str(source_type),
-                str(source_id),
-                str(relation_name),
-                str(target_type),
-                str(target_id),
-            )
-            payload_by_key[key] = {
-                "project_id": str(project_id),
-                "source_type": key[0],
-                "source_id": key[1],
-                "relation": key[2],
-                "target_type": key[3],
-                "target_id": key[4],
-                "metadata": self._safe_dict(relation.get("metadata")),
-            }
-
-        payload = list(payload_by_key.values())
-        if not payload:
-            return 0
-
-        response = (
-            self.client.table(self.TABLE_DATA_RELATIONS)
-            .upsert(
-                payload,
-                on_conflict="project_id,source_type,source_id,relation,target_type,target_id",
-            )
-            .select("id")
-            .execute()
-        )
-        return len(self._safe_list(response))
-
-    def save_research_data(self, *, project_id: str, queries: list[dict[str, Any]] | None = None, research_sets: list[dict[str, Any]] | None = None, relations: list[dict[str, Any]] | None = None) -> dict[str, int]:
-        """Persist the current DATA graph using idempotent upserts."""
-        saved = {"queries": 0, "research_sets": 0, "relations": 0}
-        for query in queries or []:
-            if self.save_youtube_query(project_id=project_id, query=query) is not None: saved["queries"] += 1
-        for research in research_sets or []:
-            if self.save_research_set(project_id=project_id, research=research) is not None: saved["research_sets"] += 1
-        saved["relations"] = self.save_data_relations(
-            project_id=project_id,
-            relations=relations,
-        )
-        return saved
-
-    # ------------------------------------------------------------------
-    # OPPORTUNITY DATA (channels / niches / historical snapshots)
-    # ------------------------------------------------------------------
-
-    TABLE_CHANNELS = "channels"
-    TABLE_CHANNEL_SNAPSHOTS = "channel_snapshots"
-    TABLE_NICHES = "niches"
-    TABLE_NICHE_SNAPSHOTS = "niche_snapshots"
-
-    def load_opportunity_data(self, *, project_id: str | None = None) -> dict[str, Any]:
-        """Load a bounded working set; Supabase remains the complete history."""
-        expected_project = str(project_id) if project_id is not None else None
-
-        def configured_limit(name: str, default: int, maximum: int) -> int:
-            try:
-                value = int(os.getenv(name, str(default)))
-            except (TypeError, ValueError):
-                value = default
-            return max(1, min(value, maximum))
-
-        limits = {
-            "channels": configured_limit("DIRECTOR_CHANNELS_IN_MEMORY", 500, 2000),
-            "channel_snapshots": configured_limit("DIRECTOR_CHANNEL_SNAPSHOTS_IN_MEMORY", 500, 5000),
-            "niches": configured_limit("DIRECTOR_NICHES_IN_MEMORY", 250, 1000),
-            "niche_snapshots": configured_limit("DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY", 500, 5000),
-        }
-        started_at = time.monotonic()
-        history_analytics = {
-            "channels": self._summarize_project_table(self.TABLE_CHANNELS, project_id=expected_project, fields=("channel_id",)),
-            "channel_snapshots": self._summarize_project_table(self.TABLE_CHANNEL_SNAPSHOTS, project_id=expected_project, fields=("channel_id",)),
-            "niches": self._summarize_project_table(self.TABLE_NICHES, project_id=expected_project, fields=("niche_id", "name")),
-            "niche_snapshots": self._summarize_project_table(self.TABLE_NICHE_SNAPSHOTS, project_id=expected_project, fields=("niche_id",)),
-        }
-        result = {
-            "history_analytics": history_analytics,
-            "channels": self._recent_for_project(
-                self.TABLE_CHANNELS, limit=limits["channels"],
-                project_id=expected_project, order_key="id",
-                default_limit=limits["channels"],
-            ),
-            "channel_snapshots": self._recent_for_project(
-                self.TABLE_CHANNEL_SNAPSHOTS, limit=limits["channel_snapshots"],
-                project_id=expected_project, order_key="captured_at",
-                default_limit=limits["channel_snapshots"],
-            ),
-            "niches": self._recent_for_project(
-                self.TABLE_NICHES, limit=limits["niches"],
-                project_id=expected_project, order_key="id",
-                default_limit=limits["niches"],
-            ),
-            "niche_snapshots": self._recent_for_project(
-                self.TABLE_NICHE_SNAPSHOTS, limit=limits["niche_snapshots"],
-                project_id=expected_project, order_key="captured_at",
-                default_limit=limits["niche_snapshots"],
-            ),
-        }
-        logger.info(
-            "SUPABASE OPPORTUNITY DATA LOADED: project_id=%s counts=%s limits=%s elapsed_seconds=%.3f peak_rss_raw=%s",
-            expected_project or "all",
-            {key: len(rows) for key, rows in result.items()},
-            limits,
-            time.monotonic() - started_at,
-            _peak_rss_raw(),
-        )
-        return result
-
-    def save_opportunity_data(self, *, project_id: str, data: dict[str, Any]) -> dict[str, int]:
-        """Persist channel/niche identities and snapshots idempotently."""
         project_id = str(project_id)
+        batch_size = max(1, min(500, int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))))
         saved = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
+        specs = (
+            ("channels", self.TABLE_CHANNELS, "project_id,channel_id", ("channel_id",)),
+            ("channel_snapshots", self.TABLE_CHANNEL_SNAPSHOTS, "project_id,channel_id,captured_at", ("channel_id", "captured_at")),
+            ("niches", self.TABLE_NICHES, "project_id,niche_id", ("niche_id", "name")),
+            ("niche_snapshots", self.TABLE_NICHE_SNAPSHOTS, "project_id,niche_id,captured_at", ("niche_id", "captured_at")),
+        )
+        batch_counts: dict[str, int] = {}
+        for key, table_name, conflict_key, required_fields in specs:
+            payloads: list[dict[str, Any]] = []
+            for item in data.get(key) or []:
+                if not isinstance(item, dict) or not all(item.get(field) for field in required_fields):
+                    continue
+                payload = dict(item)
+                payload["project_id"] = project_id
+                raw_data = payload.pop("data_json", None)
+                if raw_data is None:
+                    raw_data = payload.pop("data", {})
+                else:
+                    payload.pop("data", None)
+                payload["data_json"] = raw_data or {}
+                payloads.append(payload)
 
-        for item in data.get("channels") or []:
-            if not isinstance(item, dict) or not item.get("channel_id"):
-                continue
-            payload = dict(item)
-            payload["project_id"] = project_id
-            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
-            response = self.client.table(self.TABLE_CHANNELS).upsert(payload, on_conflict="project_id,channel_id").select("id").execute()
-            if self._first_id(response) is not None:
-                saved["channels"] += 1
+            batch_counts[key] = (len(payloads) + batch_size - 1) // batch_size
+            for offset in range(0, len(payloads), batch_size):
+                batch = payloads[offset:offset + batch_size]
+                response = (
+                    self.client.table(table_name)
+                    .upsert(batch, on_conflict=conflict_key)
+                    .select("id")
+                    .execute()
+                )
+                saved[key] += len(self._safe_list(response))
 
-        for item in data.get("channel_snapshots") or []:
-            if not isinstance(item, dict) or not item.get("channel_id") or not item.get("captured_at"):
-                continue
-            payload = dict(item)
-            payload["project_id"] = project_id
-            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
-            response = self.client.table(self.TABLE_CHANNEL_SNAPSHOTS).upsert(payload, on_conflict="project_id,channel_id,captured_at").select("id").execute()
-            if self._first_id(response) is not None:
-                saved["channel_snapshots"] += 1
-
-        for item in data.get("niches") or []:
-            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("name"):
-                continue
-            payload = dict(item)
-            payload["project_id"] = project_id
-            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
-            response = self.client.table(self.TABLE_NICHES).upsert(payload, on_conflict="project_id,niche_id").select("id").execute()
-            if self._first_id(response) is not None:
-                saved["niches"] += 1
-
-        for item in data.get("niche_snapshots") or []:
-            if not isinstance(item, dict) or not item.get("niche_id") or not item.get("captured_at"):
-                continue
-            payload = dict(item)
-            payload["project_id"] = project_id
-            payload["data_json"] = payload.pop("data_json", payload.pop("data", {})) or {}
-            response = self.client.table(self.TABLE_NICHE_SNAPSHOTS).upsert(payload, on_conflict="project_id,niche_id,captured_at").select("id").execute()
-            if self._first_id(response) is not None:
-                saved["niche_snapshots"] += 1
-
+        logger.info(
+            "SUPABASE OPPORTUNITY DATA SAVED: project_id=%s counts=%s batches=%s elapsed_seconds=%.3f",
+            project_id,
+            saved,
+            batch_counts,
+            time.monotonic() - started_at,
+        )
         return saved
 
     # ------------------------------------------------------------------

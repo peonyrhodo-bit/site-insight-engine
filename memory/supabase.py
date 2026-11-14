@@ -681,73 +681,116 @@ class SupabaseMemoryBackend:
         videos: list[dict[str, Any]] | None = None,
         snapshots: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Persist normalized YouTube DATA returned by Research/MCP."""
+        """Persist YouTube evidence in bounded batches, not one HTTP call per row."""
+        started_at = time.monotonic()
         project_id = str(project_id)
-        saved_videos = 0
-        saved_snapshots = 0
-        snapshot_ids: list[int] = []
+        batch_size = max(1, min(500, int(os.getenv("SUPABASE_DATA_WRITE_BATCH_SIZE", "100"))))
         saved_video_ids: list[str] = []
         saved_snapshot_video_ids: list[str] = []
         saved_snapshot_query_ids: list[list[str]] = []
+        snapshot_ids: list[int] = []
 
+        # De-duplicate videos before bulk upsert: Postgres cannot affect the
+        # same conflict key twice in one INSERT ... ON CONFLICT statement.
+        video_payloads: dict[str, dict[str, Any]] = {}
         for video in videos or []:
             if not isinstance(video, dict):
                 continue
             video_id = str(video.get("video_id") or "").strip()
             if not video_id:
                 continue
-            data_json = self._safe_dict(video.get("metadata"))
+            data_json = self._safe_dict(video.get("metadata")).copy()
             data_json["project_id"] = project_id
-            payload = {
+            video_payloads[video_id] = {
                 "video_id": video_id,
                 "data_json": data_json,
                 "first_seen": video.get("first_seen_at"),
                 "last_seen": video.get("last_seen_at"),
             }
+
+        video_rows = list(video_payloads.values())
+        for offset in range(0, len(video_rows), batch_size):
+            batch = video_rows[offset:offset + batch_size]
             response = (
                 self.client.table("videos")
-                .upsert(payload, on_conflict="video_id")
+                .upsert(batch, on_conflict="video_id")
                 .select("video_id")
                 .execute()
             )
-            if self._safe_list(response):
-                saved_videos += 1
-                saved_video_ids.append(video_id)
+            saved_video_ids.extend(
+                str(row["video_id"])
+                for row in self._safe_list(response)
+                if row.get("video_id")
+            )
 
+        # Preserve the per-snapshot query/video mapping used by the research
+        # completion checks. The returned rows are keyed by the stable snapshot
+        # ID stored in data_json, so response ordering is not significant.
+        snapshot_payloads: list[dict[str, Any]] = []
+        snapshot_metadata: dict[str, tuple[str, list[str]]] = {}
         for snapshot in snapshots or []:
             if not isinstance(snapshot, dict):
                 continue
             video_id = str(snapshot.get("video_id") or "").strip()
-            if not video_id:
+            snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+            if not video_id or not snapshot_id:
                 continue
-            data_json = self._safe_dict(snapshot.get("metadata"))
+            data_json = self._safe_dict(snapshot.get("metadata")).copy()
             data_json["project_id"] = project_id
-            data_json["snapshot_id"] = snapshot.get("snapshot_id")
+            data_json["snapshot_id"] = snapshot_id
             data_json["research_id"] = snapshot.get("research_id")
-            data_json["query_ids"] = list(snapshot.get("query_ids") or [])
-            data_json["statistics"] = self._safe_dict(
-                snapshot.get("metrics")
-            )
-            payload = {
+            query_ids = [str(value) for value in (snapshot.get("query_ids") or [])]
+            data_json["query_ids"] = query_ids
+            data_json["statistics"] = self._safe_dict(snapshot.get("metrics")).copy()
+            snapshot_payloads.append({
                 "video_id": video_id,
                 "data_json": data_json,
-            }
+            })
+            snapshot_metadata[snapshot_id] = (video_id, query_ids)
+
+        saved_snapshot_rows: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(snapshot_payloads), batch_size):
+            batch = snapshot_payloads[offset:offset + batch_size]
             response = (
                 self.client.table("video_snapshots")
-                .insert(payload)
-                .select("id")
+                .insert(batch)
+                .select("id,video_id,data_json")
                 .execute()
             )
-            row_id = self._first_id(response)
-            if row_id is not None:
-                saved_snapshots += 1
-                snapshot_ids.append(row_id)
-                saved_snapshot_video_ids.append(video_id)
-                saved_snapshot_query_ids.append([str(value) for value in (snapshot.get("query_ids") or [])])
+            for row in self._safe_list(response):
+                data_json = row.get("data_json")
+                snapshot_id = (
+                    str(data_json.get("snapshot_id") or "").strip()
+                    if isinstance(data_json, dict) else ""
+                )
+                if snapshot_id and row.get("id") is not None:
+                    saved_snapshot_rows[snapshot_id] = row
 
+        for snapshot_id, (video_id, query_ids) in snapshot_metadata.items():
+            row = saved_snapshot_rows.get(snapshot_id)
+            if row is None:
+                continue
+            try:
+                snapshot_ids.append(int(row["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            saved_snapshot_video_ids.append(video_id)
+            saved_snapshot_query_ids.append(query_ids)
+
+        logger.info(
+            "SUPABASE YOUTUBE DATA SAVED: project_id=%s videos=%s/%s snapshots=%s/%s video_batches=%s snapshot_batches=%s elapsed_seconds=%.3f",
+            project_id,
+            len(saved_video_ids),
+            len(video_rows),
+            len(snapshot_ids),
+            len(snapshot_payloads),
+            (len(video_rows) + batch_size - 1) // batch_size,
+            (len(snapshot_payloads) + batch_size - 1) // batch_size,
+            time.monotonic() - started_at,
+        )
         return {
-            "videos": saved_videos,
-            "snapshots": saved_snapshots,
+            "videos": len(saved_video_ids),
+            "snapshots": len(snapshot_ids),
             "snapshot_ids": snapshot_ids,
             "video_ids": saved_video_ids,
             "snapshot_video_ids": saved_snapshot_video_ids,

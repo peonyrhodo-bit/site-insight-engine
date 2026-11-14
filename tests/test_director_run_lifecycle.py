@@ -197,12 +197,12 @@ async def test_unknown_director_status_is_not_marked_succeeded(monkeypatch):
     monkeypatch.setattr(
         server.runtime,
         "get_director",
-        lambda **kwargs: FakeDirector(status="waiting"),
+        lambda **kwargs: FakeDirector(status="unexpected"),
     )
 
     result = await server._execute_autonomous_cycle(project_id="test-project")
 
-    assert result["status"] == "waiting"
+    assert result["status"] == "unexpected"
     assert memory.rows[result["run_id"]]["status"] == "partial"
 
 

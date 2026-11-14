@@ -178,7 +178,7 @@ class SupabaseBatchPersistenceTests(unittest.TestCase):
         client = FakeSupabaseClient()
         backend = SupabaseMemoryBackend(client=client)
         data = {
-            "channels": [{"channel_id": f"channel-{i}", "data": {"title": str(i)}} for i in range(205)],
+            "channels": [{"channel_id": f"channel-{i}", "data": {"title": str(i)}, "unexpected_column": "never-send"} for i in range(205)],
             "channel_snapshots": [
                 {"channel_id": f"channel-{i}", "captured_at": f"2026-01-01T00:{i % 60:02d}:00Z", "data": {}}
                 for i in range(205)
@@ -203,6 +203,10 @@ class SupabaseBatchPersistenceTests(unittest.TestCase):
             "niches": 205,
             "niche_snapshots": 205,
         })
+        first_channel_payload = next(call[2][0] for call in client.calls if call[0] == "channels")
+        self.assertEqual(first_channel_payload["data_json"], {"title": "0"})
+        self.assertNotIn("unexpected_column", first_channel_payload)
+        self.assertEqual(first_channel_payload["project_id"], "default")
 
 
 

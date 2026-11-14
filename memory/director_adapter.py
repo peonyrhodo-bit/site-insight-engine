@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from director.trace_context import get_correlation_id
+from memory.read_status import MemoryReadError
 
 logger = logging.getLogger("memory.director_adapter")
 
@@ -601,7 +602,10 @@ class ServerMemory:
         limit_constraints: int = 20,
     ) -> dict[str, Any]:
         if not self.memory:
-            return {}
+            raise MemoryReadError(
+                "unavailable",
+                errors={"backend": "Memory storage is not initialized"},
+            )
 
         try:
             result = self.memory.get_context(
@@ -620,15 +624,41 @@ class ServerMemory:
                 result = await result
 
             if not isinstance(result, dict):
-                return {}
+                raise TypeError("Memory get_context returned a non-dictionary result")
 
             self._normalize_recommendation_ids(result)
+            read_info = result.get("_memory_read")
+            if not isinstance(read_info, dict):
+                # Backends without per-table status (e.g. the bounded
+                # in-process backend) return atomically from get_context.
+                read_info = {
+                    "status": "complete",
+                    "tables": {},
+                    "errors": {},
+                }
+                result["_memory_read"] = read_info
+
+            status = str(read_info.get("status") or "error").lower()
+            if status != "complete":
+                errors = read_info.get("errors")
+                if not isinstance(errors, dict):
+                    errors = {"context": f"Memory read status was {status}"}
+                raise MemoryReadError(
+                    status if status in {"partial", "error"} else "error",
+                    context=result,
+                    errors={str(key): str(value) for key, value in errors.items()},
+                )
 
             return result
 
-        except Exception:
+        except MemoryReadError:
+            raise
+        except Exception as exc:
             logger.exception("Memory get_context failed")
-            return {}
+            raise MemoryReadError(
+                "error",
+                errors={"context": str(exc)},
+            ) from exc
 
     async def save_run(
         self,

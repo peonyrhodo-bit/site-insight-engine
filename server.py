@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import logging
 import os
 import secrets
@@ -754,6 +755,13 @@ class DataAdapter:
             )
 
 
+    async def _call_storage(self, method: Any, **kwargs: Any) -> Any:
+        """Run synchronous storage adapters off the event loop; support async adapters too."""
+        result = await asyncio.to_thread(method, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     async def ingest_research_execution(
         self,
         *,
@@ -944,7 +952,8 @@ class DataAdapter:
         if channels:
             opportunity_saver = getattr(self.storage, "save_opportunity_data", None)
             if callable(opportunity_saver) and self.opportunity_registry is not None:
-                opportunity_result = opportunity_saver(
+                opportunity_result = await self._call_storage(
+                    opportunity_saver,
                     project_id=project_id,
                     data=self.opportunity_registry.to_dict(),
                 )
@@ -952,7 +961,8 @@ class DataAdapter:
 
         saver = getattr(self.storage, "save_youtube_data", None)
         if callable(saver):
-            youtube_result = saver(
+            youtube_result = await self._call_storage(
+                saver,
                 project_id=project_id,
                 videos=[video.to_dict() for video in videos],
                 snapshots=[snapshot.to_dict() for snapshot in snapshots],
@@ -997,7 +1007,8 @@ class DataAdapter:
 
         research_saver = getattr(self.storage, "save_research_data", None)
         if callable(research_saver):
-            research_saver(
+            await self._call_storage(
+                research_saver,
                 project_id=project_id,
                 queries=[
                     query.to_dict()
@@ -1113,7 +1124,8 @@ class DataAdapter:
                     )
 
                 if callable(loader) and getattr(self, "_loaded_project_id", None) != project_id:
-                    persisted = loader(
+                    persisted = await self._call_storage(
+                        loader,
                         project_id=project_id,
                     )
 
@@ -1158,7 +1170,10 @@ class DataAdapter:
                     None,
                 )
                 if callable(opportunity_loader) and self.opportunity_registry is not None and getattr(self, "_loaded_project_id", None) != project_id:
-                    persisted_opportunity = opportunity_loader(project_id=project_id)
+                    persisted_opportunity = await self._call_storage(
+                        opportunity_loader,
+                        project_id=project_id,
+                    )
                     if isinstance(persisted_opportunity, dict):
                         history = persisted_opportunity.pop("history_analytics", {})
                         if isinstance(history, dict):
@@ -1176,7 +1191,8 @@ class DataAdapter:
                 )
 
                 if callable(research_loader) and getattr(self, "_loaded_project_id", None) != project_id:
-                    persisted_research = research_loader(
+                    persisted_research = await self._call_storage(
+                        research_loader,
                         project_id=project_id,
                     )
 
@@ -2374,7 +2390,8 @@ async def _find_completed_idempotent_run(*, project_id: str, idempotency_key: st
             and hasattr(backend, "_recent_for_project")
             and hasattr(backend, "TABLE_RUNS")
         ):
-            runs = backend._recent_for_project(
+            runs = await asyncio.to_thread(
+                backend._recent_for_project,
                 backend.TABLE_RUNS,
                 limit=None,
                 project_id=project_id,

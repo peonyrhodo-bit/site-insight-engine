@@ -1362,7 +1362,7 @@ class YouTubeResearchExecutor:
                         new_channels.append(channel.to_dict())
 
                     if new_channels:
-                        await asyncio.to_thread(
+                        opportunity_save = await asyncio.to_thread(
                             self.storage.save_opportunity_data,
                             project_id=project_id,
                             data={
@@ -1376,6 +1376,7 @@ class YouTubeResearchExecutor:
                                 "niche_snapshots": [],
                             },
                         )
+                        await _maybe_await(opportunity_save)
 
                 # Research metadata persistence is separate from YouTube object counts.
             except Exception as exc:
@@ -1563,6 +1564,7 @@ class YouTubeResearchExecutor:
                     project_id=project_id,
                     data={"channels": [], "channel_snapshots": [], "niches": niche_records, "niche_snapshots": niche_snapshot_records},
                 )
+                niche_save = await _maybe_await(niche_save)
                 niche_persistence_confirmed = (
                     int((niche_save or {}).get("niches", 0) or 0) == len(niche_records)
                     and int((niche_save or {}).get("niche_snapshots", 0) or 0) == len(niche_snapshot_records)

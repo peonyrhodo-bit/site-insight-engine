@@ -1062,25 +1062,47 @@ class SupabaseMemoryBackend:
         batch_size = max(1, min(500, batch_size))
         saved = {"channels": 0, "channel_snapshots": 0, "niches": 0, "niche_snapshots": 0}
         specs = (
-            ("channels", self.TABLE_CHANNELS, "project_id,channel_id", ("channel_id",)),
-            ("channel_snapshots", self.TABLE_CHANNEL_SNAPSHOTS, "project_id,channel_id,captured_at", ("channel_id", "captured_at")),
-            ("niches", self.TABLE_NICHES, "project_id,niche_id", ("niche_id", "name")),
-            ("niche_snapshots", self.TABLE_NICHE_SNAPSHOTS, "project_id,niche_id,captured_at", ("niche_id", "captured_at")),
+            (
+                "channels", self.TABLE_CHANNELS, "project_id,channel_id",
+                ("channel_id",),
+                ("channel_id", "title", "description", "custom_url", "country",
+                 "published_at", "video_count", "subscriber_count", "view_count"),
+            ),
+            (
+                "channel_snapshots", self.TABLE_CHANNEL_SNAPSHOTS,
+                "project_id,channel_id,captured_at", ("channel_id", "captured_at"),
+                ("channel_id", "captured_at", "subscriber_count", "video_count",
+                 "view_count", "new_video_count", "subscriber_growth", "view_growth"),
+            ),
+            (
+                "niches", self.TABLE_NICHES, "project_id,niche_id",
+                ("niche_id", "name"),
+                ("niche_id", "name", "description", "aliases", "language", "region", "status"),
+            ),
+            (
+                "niche_snapshots", self.TABLE_NICHE_SNAPSHOTS,
+                "project_id,niche_id,captured_at", ("niche_id", "captured_at"),
+                ("niche_id", "captured_at", "video_count", "channel_count", "median_views",
+                 "average_views", "growth_rate", "new_video_count", "new_channel_count",
+                 "top_channel_share", "competition_score", "opportunity_score"),
+            ),
         )
         batch_counts: dict[str, int] = {}
-        for key, table_name, conflict_key, required_fields in specs:
+        for key, table_name, conflict_key, required_fields, allowed_fields in specs:
             payloads: list[dict[str, Any]] = []
             for item in data.get(key) or []:
                 if not isinstance(item, dict) or not all(item.get(field) for field in required_fields):
                     continue
-                payload = dict(item)
+                payload = {
+                    field: item[field]
+                    for field in allowed_fields
+                    if field in item
+                }
                 payload["project_id"] = project_id
-                raw_data = payload.pop("data_json", None)
+                raw_data = item.get("data_json")
                 if raw_data is None:
-                    raw_data = payload.pop("data", {})
-                else:
-                    payload.pop("data", None)
-                payload["data_json"] = raw_data or {}
+                    raw_data = item.get("data")
+                payload["data_json"] = self._safe_dict(raw_data)
                 payloads.append(payload)
 
             batch_counts[key] = (len(payloads) + batch_size - 1) // batch_size

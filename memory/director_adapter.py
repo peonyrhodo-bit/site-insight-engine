@@ -1116,8 +1116,9 @@ class ServerMemory:
             metadata["project_id"] = project_id
             record["metadata"] = metadata
 
-            result = self.memory.save_constraint(
-                record
+            result = await self._call_off_thread(
+                self.memory.save_constraint,
+                record,
             )
 
             if hasattr(result, "__await__"):

@@ -459,6 +459,12 @@ class AnalyticsAdapter:
                     "Analytics preparation failed"
                 )
 
+        if isinstance(history_analytics, dict) and history_analytics:
+            for payload_key in ("analytics", "analytics_raw"):
+                payload = analytics_data.get(payload_key)
+                if isinstance(payload, dict):
+                    payload["full_history"] = history_analytics
+
         # ---------------------------------------------------------------
         # Topics
         # ---------------------------------------------------------------
@@ -1047,6 +1053,7 @@ class DataAdapter:
 
         result: dict[str, Any] = {
             "project_id": project_id,
+            "history_analytics": {},
             "observations": [],
             "previous_observations": [],
             "trend_current_observations": [],
@@ -1092,6 +1099,9 @@ class DataAdapter:
                     )
 
                     if isinstance(persisted, dict):
+                        history = persisted.pop("history_analytics", {})
+                        if isinstance(history, dict):
+                            result["history_analytics"]["youtube"] = history
                         # Restore directly into the live registry to avoid
                         # temporarily holding two complete copies in memory.
                         self.youtube_registry.clear()
@@ -1131,6 +1141,9 @@ class DataAdapter:
                 if callable(opportunity_loader) and self.opportunity_registry is not None and getattr(self, "_loaded_project_id", None) != project_id:
                     persisted_opportunity = opportunity_loader(project_id=project_id)
                     if isinstance(persisted_opportunity, dict):
+                        history = persisted_opportunity.pop("history_analytics", {})
+                        if isinstance(history, dict):
+                            result["history_analytics"]["opportunity"] = history
                         from data.opportunity_registry import OpportunityDataRegistry
                         self.opportunity_registry = OpportunityDataRegistry.from_dict(persisted_opportunity)
 
@@ -1149,6 +1162,9 @@ class DataAdapter:
                     )
 
                     if isinstance(persisted_research, dict):
+                        history = persisted_research.get("history_analytics", {})
+                        if isinstance(history, dict):
+                            result["history_analytics"]["research"] = history
                         queries = persisted_research.get("queries") or []
                         for row in queries:
                             if not isinstance(row, dict):
@@ -1383,15 +1399,9 @@ class DataAdapter:
                     # been analyzed yet".
                     try:
                         result["data_inventory"] = {
-                            "video_count": len(
-                                self.youtube_registry.videos()
-                            ),
-                            "snapshot_count": len(
-                                self.youtube_registry.snapshots()
-                            ),
-                            "query_count": len(
-                                self.youtube_registry.queries()
-                            ),
+                            "video_count": result.get("history_analytics", {}).get("youtube", {}).get("video_count", len(self.youtube_registry.videos())),
+                            "snapshot_count": result.get("history_analytics", {}).get("youtube", {}).get("snapshot_count", len(self.youtube_registry.snapshots())),
+                            "query_count": result.get("history_analytics", {}).get("research", {}).get("queries", {}).get("matched_rows", len(self.youtube_registry.queries())),
                             "latest_snapshot_at": max(
                                 (str(getattr(item, "captured_at", "") or "") for item in self.youtube_registry.snapshots()),
                                 default=None,
@@ -1406,12 +1416,12 @@ class DataAdapter:
                                 for query in self.youtube_registry.queries()
                                 if query_counts_toward_today(query)
                             ),
-                            "research_set_count": len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0,
-                            "relation_count": len(self.relations.all_relations()) if self.relations is not None else 0,
-                            "channel_count": self.opportunity_registry.counts().get("channels", 0) if self.opportunity_registry is not None else 0,
-                            "channel_snapshot_count": self.opportunity_registry.counts().get("channel_snapshots", 0) if self.opportunity_registry is not None else 0,
-                            "niche_count": self.opportunity_registry.counts().get("niches", 0) if self.opportunity_registry is not None else 0,
-                            "niche_snapshot_count": self.opportunity_registry.counts().get("niche_snapshots", 0) if self.opportunity_registry is not None else 0,
+                            "research_set_count": result.get("history_analytics", {}).get("research", {}).get("research_sets", {}).get("matched_rows", len(self.research_manager.all()) if self.research_manager is not None and hasattr(self.research_manager, "all") else 0),
+                            "relation_count": result.get("history_analytics", {}).get("research", {}).get("relations", {}).get("matched_rows", len(self.relations.all_relations()) if self.relations is not None else 0),
+                            "channel_count": result.get("history_analytics", {}).get("opportunity", {}).get("channels", {}).get("matched_rows", self.opportunity_registry.counts().get("channels", 0) if self.opportunity_registry is not None else 0),
+                            "channel_snapshot_count": result.get("history_analytics", {}).get("opportunity", {}).get("channel_snapshots", {}).get("matched_rows", self.opportunity_registry.counts().get("channel_snapshots", 0) if self.opportunity_registry is not None else 0),
+                            "niche_count": result.get("history_analytics", {}).get("opportunity", {}).get("niches", {}).get("matched_rows", self.opportunity_registry.counts().get("niches", 0) if self.opportunity_registry is not None else 0),
+                            "niche_snapshot_count": result.get("history_analytics", {}).get("opportunity", {}).get("niche_snapshots", {}).get("matched_rows", self.opportunity_registry.counts().get("niche_snapshots", 0) if self.opportunity_registry is not None else 0),
                         }
                     except Exception:
                         result["data_inventory"] = {

@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - unavailable on some platforms
 from supabase import Client, create_client
 
 from memory.read_status import MemoryTableReadError
+from analytics.streaming import StreamingYouTubeAnalytics
 
 logger = logging.getLogger(__name__)
 
@@ -504,91 +505,77 @@ class SupabaseMemoryBackend:
         *,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        """Load a compact Director working set without retaining full video payloads.
+        """Scan every persisted video/snapshot page and retain bounded working data.
 
-        Rows are streamed from Supabase page by page. Only topic metadata and
-        the newest configured number of numeric snapshots per video are kept
-        in memory. Full source records and older history remain in Supabase.
+        Complete-history analytics are accumulated online. Only a configured
+        sample is restored into the process-local registry; source history is
+        never deleted or limited in Supabase.
         """
         from data.youtube import YouTubeSnapshot, YouTubeVideo
 
         started_at = time.monotonic()
         expected_project = str(project_id) if project_id is not None else None
         try:
-            configured_page_size = int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500"))
+            page_size = max(50, min(int(os.getenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "500")), 1000))
         except (TypeError, ValueError):
-            configured_page_size = 500
-        page_size = max(50, min(configured_page_size, 1000))
+            page_size = 500
+        try:
+            video_limit = max(100, min(int(os.getenv("DIRECTOR_ANALYSIS_WORKING_VIDEOS", "3000")), 10000))
+            snapshot_limit = max(200, min(int(os.getenv("DIRECTOR_ANALYSIS_WORKING_SNAPSHOTS", "6000")), 20000))
+            analytics_sample = max(20, min(int(os.getenv("DIRECTOR_ANALYSIS_TOP_EVIDENCE", "100")), 500))
+        except (TypeError, ValueError):
+            video_limit, snapshot_limit, analytics_sample = 3000, 6000, 100
+
+        accumulator = StreamingYouTubeAnalytics(sample_limit=analytics_sample)
         videos: list[dict[str, Any]] = []
-        video_ids: set[str] = set()
+        snapshots: list[dict[str, Any]] = []
         video_rows_scanned = 0
+        snapshot_rows_scanned = 0
+        unscoped_snapshot_rows = 0
 
         for row in self._iter_paginated_rows(
-            "videos",
-            order_key="video_id",
-            page_size=page_size,
+            "videos", order_key="video_id", page_size=page_size,
             columns="video_id,data_json,first_seen,last_seen",
         ):
             video_rows_scanned += 1
             if expected_project is not None and self._project_id_from_row(row) != expected_project:
                 continue
-
             data = self._safe_dict(row.get("data_json"))
             snippet = self._safe_dict(data.get("snippet"))
             video_id = row.get("video_id") or data.get("id")
             if video_id is None:
                 continue
-
-            compact_metadata = self._analysis_metadata(data)
+            metadata = self._analysis_metadata(data)
             video = YouTubeVideo(
-                video_id=video_id,
-                youtube_id=str(video_id),
+                video_id=video_id, youtube_id=str(video_id),
                 title=str(snippet.get("title") or data.get("title") or ""),
                 channel_id=snippet.get("channelId") or data.get("channel_id"),
                 channel_title=snippet.get("channelTitle") or data.get("channel_title"),
                 description=None,
                 published_at=snippet.get("publishedAt") or data.get("published_at"),
-                first_seen_at=row.get("first_seen"),
-                last_seen_at=row.get("last_seen"),
-                source="supabase",
-                metadata=compact_metadata,
+                first_seen_at=row.get("first_seen"), last_seen_at=row.get("last_seen"),
+                source="supabase", metadata=metadata,
             )
-            videos.append(video.to_dict())
-            video_ids.add(str(video_id))
-
-        try:
-            snapshots_per_video = max(
-                1, min(int(os.getenv("DIRECTOR_SNAPSHOTS_PER_VIDEO", "2")), 20)
-            )
-        except (TypeError, ValueError):
-            snapshots_per_video = 2
-
-        snapshots: list[dict[str, Any]] = []
-        snapshot_counts: dict[str, int] = {}
-        snapshot_rows_scanned = 0
+            video_dict = video.to_dict()
+            accumulator.add_video(video_dict)
+            if len(videos) < video_limit:
+                videos.append(video_dict)
 
         for row in self._iter_paginated_rows(
-            "video_snapshots",
-            order_key="id",
-            descending=True,
-            page_size=page_size,
-            columns="id,video_id,created_at,data_json",
+            "video_snapshots", order_key="id", descending=True,
+            page_size=page_size, columns="id,video_id,created_at,data_json",
         ):
             snapshot_rows_scanned += 1
             row_project = self._project_id_from_row(row)
             if expected_project is not None:
-                if row_project is not None and row_project != expected_project:
+                if row_project is None:
+                    unscoped_snapshot_rows += 1
                     continue
-                if row_project is None and str(row.get("video_id")) not in video_ids:
+                if row_project != expected_project:
                     continue
-
-            video_key = str(row.get("video_id") or "")
-            if not video_key:
+            accumulator.add_snapshot(row)
+            if len(snapshots) >= snapshot_limit:
                 continue
-            seen = snapshot_counts.get(video_key, 0)
-            if seen >= snapshots_per_video:
-                continue
-
             data = self._safe_dict(row.get("data_json"))
             statistics = self._safe_dict(data.get("statistics"))
             radar = self._safe_dict(data.get("_radar"))
@@ -596,32 +583,44 @@ class SupabaseMemoryBackend:
             for key in ("views", "age_hours", "engagement", "views_per_hour"):
                 if key in radar:
                     metrics[key] = radar[key]
-
             snapshot_id = data.get("snapshot_id") or row.get("id")
-            if snapshot_id is None:
+            video_id = row.get("video_id")
+            if snapshot_id is None or video_id is None:
                 continue
+            snapshots.append(YouTubeSnapshot(
+                snapshot_id=snapshot_id, video_id=video_id,
+                captured_at=row.get("created_at"), metrics=metrics,
+                metadata={}, source="supabase",
+            ).to_dict())
 
-            snapshot = YouTubeSnapshot(
-                snapshot_id=snapshot_id,
-                video_id=row.get("video_id"),
-                captured_at=row.get("created_at"),
-                metrics=metrics,
-                metadata={},
-                source="supabase",
+        history_analytics = accumulator.to_dict()
+        if unscoped_snapshot_rows:
+            history_analytics["status"] = "partial"
+            history_analytics["completeness_note"] = (
+                "Some legacy snapshots had no project_id and were excluded "
+                "rather than attributed to the wrong project."
             )
-            snapshots.append(snapshot.to_dict())
-            snapshot_counts[video_key] = seen + 1
-
+        history_analytics.update({
+            "project_id": expected_project,
+            "video_rows_scanned": video_rows_scanned,
+            "snapshot_rows_scanned": snapshot_rows_scanned,
+            "unscoped_snapshot_rows_excluded": unscoped_snapshot_rows,
+            "working_videos_retained": len(videos),
+            "working_snapshots_retained": len(snapshots),
+            "working_set_limits": {"videos": video_limit, "snapshots": snapshot_limit},
+        })
         logger.info(
-            "SUPABASE COMPACT ANALYSIS DATA LOADED: project_id=%s "
-            "video_rows_scanned=%d videos=%d snapshot_rows_scanned=%d "
-            "snapshots=%d snapshots_per_video=%d page_size=%d "
-            "elapsed_seconds=%.3f peak_rss_raw=%s",
-            expected_project or "all", video_rows_scanned, len(videos),
-            snapshot_rows_scanned, len(snapshots), snapshots_per_video,
-            page_size, time.monotonic() - started_at, _peak_rss_raw(),
+            "SUPABASE FULL HISTORY ANALYTICS COMPLETE: project_id=%s videos_scanned=%d "
+            "snapshots_scanned=%d working_videos=%d working_snapshots=%d "
+            "unscoped_snapshots_excluded=%d elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all", video_rows_scanned, snapshot_rows_scanned,
+            len(videos), len(snapshots), unscoped_snapshot_rows,
+            time.monotonic() - started_at, _peak_rss_raw(),
         )
-        return {"queries": [], "videos": videos, "snapshots": snapshots}
+        return {
+            "queries": [], "videos": videos, "snapshots": snapshots,
+            "history_analytics": history_analytics,
+        }
 
     def save_youtube_data(
         self,
@@ -790,6 +789,50 @@ class SupabaseMemoryBackend:
 
         return counts
 
+    def _summarize_project_table(
+        self,
+        table_name: str,
+        *,
+        project_id: str | None,
+        fields: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Scan every row while retaining only bounded counters."""
+        from collections import Counter
+
+        expected = str(project_id) if project_id is not None else None
+        counts: dict[str, Counter[str]] = {field: Counter() for field in fields}
+        rows_scanned = 0
+        matched = 0
+        for row in self._iter_paginated_rows(
+            table_name, order_key="id", page_size=500,
+        ):
+            rows_scanned += 1
+            if expected is not None and self._project_id_from_row(row) != expected:
+                continue
+            matched += 1
+            data = self._safe_dict(row.get("data_json"))
+            for field in fields:
+                value = row.get(field)
+                if value is None:
+                    value = data.get(field)
+                if value is None:
+                    continue
+                label = str(value).strip()[:160]
+                if label:
+                    counts[field][label] += 1
+                    if len(counts[field]) > 2000:
+                        for key, _ in counts[field].most_common()[1000:]:
+                            del counts[field][key]
+        return {
+            "status": "complete",
+            "rows_scanned": rows_scanned,
+            "matched_rows": matched,
+            "distributions": {
+                field: [{"value": key, "count": count} for key, count in counter.most_common(100)]
+                for field, counter in counts.items()
+            },
+        }
+
     # DATA / RESEARCH
     # ------------------------------------------------------------------
 
@@ -798,11 +841,24 @@ class SupabaseMemoryBackend:
         expected_project = str(project_id) if project_id is not None else None
         # Keep the process-local graph bounded. The complete history remains
         # in Supabase; Director startup only needs a recent working index.
-        return {
+        started_at = time.monotonic()
+        result = {
             "queries": self._recent_for_project(self.TABLE_YOUTUBE_QUERIES, limit=2000, project_id=expected_project, order_key="id", default_limit=2000),
             "research_sets": self._recent_for_project(self.TABLE_RESEARCH_SETS, limit=1000, project_id=expected_project, order_key="id", default_limit=1000),
             "relations": self._recent_for_project(self.TABLE_DATA_RELATIONS, limit=5000, project_id=expected_project, order_key="id", default_limit=5000),
+            "history_analytics": {
+                "queries": self._summarize_project_table(self.TABLE_YOUTUBE_QUERIES, project_id=expected_project, fields=("status", "language", "region")),
+                "research_sets": self._summarize_project_table(self.TABLE_RESEARCH_SETS, project_id=expected_project, fields=("status", "language", "region")),
+                "relations": self._summarize_project_table(self.TABLE_DATA_RELATIONS, project_id=expected_project, fields=("source_type", "relation", "target_type")),
+            },
         }
+        logger.info(
+            "SUPABASE RESEARCH HISTORY SCANNED: project_id=%s counts=%s elapsed_seconds=%.3f peak_rss_raw=%s",
+            expected_project or "all",
+            {key: value["matched_rows"] for key, value in result["history_analytics"].items()},
+            time.monotonic() - started_at, _peak_rss_raw(),
+        )
+        return result
 
     def save_youtube_query(self, *, project_id: str, query: dict[str, Any]) -> int | None:
         query = self._safe_dict(query)
@@ -939,7 +995,14 @@ class SupabaseMemoryBackend:
             "niche_snapshots": configured_limit("DIRECTOR_NICHE_SNAPSHOTS_IN_MEMORY", 500, 5000),
         }
         started_at = time.monotonic()
+        history_analytics = {
+            "channels": self._summarize_project_table(self.TABLE_CHANNELS, project_id=expected_project, fields=("channel_id",)),
+            "channel_snapshots": self._summarize_project_table(self.TABLE_CHANNEL_SNAPSHOTS, project_id=expected_project, fields=("channel_id",)),
+            "niches": self._summarize_project_table(self.TABLE_NICHES, project_id=expected_project, fields=("niche_id", "name")),
+            "niche_snapshots": self._summarize_project_table(self.TABLE_NICHE_SNAPSHOTS, project_id=expected_project, fields=("niche_id",)),
+        }
         result = {
+            "history_analytics": history_analytics,
             "channels": self._recent_for_project(
                 self.TABLE_CHANNELS, limit=limits["channels"],
                 project_id=expected_project, order_key="id",

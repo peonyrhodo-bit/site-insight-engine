@@ -510,7 +510,7 @@ class YouTubeResearchExecutor:
         max_age_seconds = max(0.0, max_age_seconds)
 
         try:
-            payload = await _maybe_await(self.storage.load_youtube_data(project_id=project_id))
+            payload = await _maybe_await(await asyncio.to_thread(self.storage.load_youtube_data, project_id=project_id))
             payload = payload if isinstance(payload, dict) else {}
         except Exception as exc:
             return {

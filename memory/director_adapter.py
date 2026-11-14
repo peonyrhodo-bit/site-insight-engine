@@ -6,6 +6,8 @@ server.py only constructs this adapter and delegates to it.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import os
 from datetime import datetime, timezone
@@ -560,6 +562,13 @@ class ServerMemory:
     def enabled(self) -> bool:
         return self.memory is not None
 
+    async def _call_off_thread(self, method: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run synchronous Memory/Supabase calls away from the Director event loop."""
+        result = await asyncio.to_thread(method, *args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     def _normalize_recommendation_ids(
         self,
         context: dict[str, Any],
@@ -608,7 +617,8 @@ class ServerMemory:
             )
 
         try:
-            result = self.memory.get_context(
+            result = await self._call_off_thread(
+                self.memory.get_context,
                 project_id=project_id,
                 limit_runs=limit_runs,
                 limit_decisions=limit_decisions,
@@ -681,11 +691,10 @@ class ServerMemory:
             data = dict(payload)
             data["project_id"] = project_id
 
-            result = self.memory.save_run(
+            result = await self._call_off_thread(
+                self.memory.save_run,
                 language=payload.get("language"),
-                region_code=payload.get(
-                    "region_code"
-                ),
+                region_code=payload.get("region_code"),
                 data=data,
             )
 
@@ -710,18 +719,24 @@ class ServerMemory:
         )
         try:
             if hasattr(self.backend, "_recent_for_project"):
-                old_runs = self.backend._recent_for_project(
+                old_runs = await self._call_off_thread(
+                    self.backend._recent_for_project,
                     self.backend.TABLE_RUNS,
                     limit=None,
                     project_id=project_id,
                     order_key="created_at",
                 )
             else:
-                old_runs = self.backend.get_recent_runs(
-                    limit=100000, project_id=project_id
+                old_runs = await self._call_off_thread(
+                    self.backend.get_recent_runs,
+                    limit=100000,
+                    project_id=project_id,
                 )
         except TypeError:
-            old_runs = self.backend.get_recent_runs(limit=100000)
+            old_runs = await self._call_off_thread(
+                self.backend.get_recent_runs,
+                limit=100000,
+            )
         except Exception:
             logger.exception("Could not inspect active Director runs for project=%s", project_id)
             raise
@@ -789,7 +804,8 @@ class ServerMemory:
         payload = dict(run)
         payload["project_id"] = project_id
         try:
-            result = self.backend.save_run(
+            result = await self._call_off_thread(
+                self.backend.save_run,
                 language=payload.get("language"),
                 region_code=payload.get("region_code"),
                 data=payload,
@@ -816,7 +832,11 @@ class ServerMemory:
         payload = dict(fields)
         payload["project_id"] = project_id
         payload["updated_at"] = utc_now()
-        result = self.memory.update_run(run_id=run_id, data=payload)
+        result = await self._call_off_thread(
+            self.memory.update_run,
+            run_id=run_id,
+            data=payload,
+        )
         if hasattr(result, "__await__"):
             result = await result
         if result is not True:
@@ -845,10 +865,9 @@ class ServerMemory:
             if not record:
                 return None
 
-            result = self.memory.save_decision(
-                decision=str(
-                    record.get("decision", "")
-                ),
+            result = await self._call_off_thread(
+                self.memory.save_decision,
+                decision=str(record.get("decision", "")),
                 data={
                     key: value
                     for key, value in record.items()
@@ -896,8 +915,9 @@ class ServerMemory:
                 )
                 return None
 
-            result = self.memory.save_recommendation(
-                record
+            result = await self._call_off_thread(
+                self.memory.save_recommendation,
+                record,
             )
 
             if hasattr(result, "__await__"):
@@ -925,10 +945,9 @@ class ServerMemory:
                 project_id=project_id,
             )
 
-            result = (
-                self.memory.apply_recommendation_feedback(
-                    record
-                )
+            result = await self._call_off_thread(
+                self.memory.apply_recommendation_feedback,
+                record,
             )
 
             if hasattr(result, "__await__"):
@@ -988,7 +1007,8 @@ class ServerMemory:
                 else payload.get("run_id")
             )
 
-            saved = self.memory.save_result(
+            saved = await self._call_off_thread(
+                self.memory.save_result,
                 result_type=result_type,
                 summary=summary,
                 action_id=payload.get("action_id"),
@@ -1021,7 +1041,8 @@ class ServerMemory:
             payload = dict(data or {})
             payload["project_id"] = project_id
 
-            result = self.memory.save_chat_message(
+            result = await self._call_off_thread(
+                self.memory.save_chat_message,
                 role=role,
                 message=message,
                 data=payload,
@@ -1052,7 +1073,8 @@ class ServerMemory:
             payload["project_id"] = project_id
             payload.setdefault("correlation_id", get_correlation_id())
 
-            result = self.memory.save_event(
+            result = await self._call_off_thread(
+                self.memory.save_event,
                 event_type=event_type,
                 data=payload,
             )

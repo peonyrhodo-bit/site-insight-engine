@@ -313,7 +313,7 @@ class DirectorAutonomy:
                 queries_collected = int(execution.get("queries_collected", 0) or 0)
             except (TypeError, ValueError):
                 queries_collected = 0
-            return status not in {"completed", "partial"} or queries_collected <= 0
+            return status != "completed" or queries_collected <= 0
 
         # ---------------------------------------------------------
         # WAKE

@@ -2849,8 +2849,17 @@ async def _execute_autonomous_cycle_locked(
         failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}
         failure_phase = failure.get("phase") if isinstance(failure, dict) else None
         failure_message = failure.get("error") if isinstance(failure, dict) else None
+        # DirectorCycle uses its own lifecycle vocabulary. Translate normal
+        # terminal states into the durable run vocabulary; a normal wait/sleep
+        # means this wake finished, not that persistence was partial.
+        final_status = {
+            "completed": "succeeded",
+            "sleeping": "succeeded",
+            "waiting": "succeeded",
+            "stopped": "skipped",
+        }.get(final_status, final_status)
         if final_status not in {"succeeded", "failed", "partial", "blocked", "skipped"}:
-            # An unknown Director result state is not proof of success.
+            # An unknown or non-terminal Director state is not proof of success.
             final_status = "partial"
         if failure_message:
             # Internal Director errors are returned as a cycle result. Preserve

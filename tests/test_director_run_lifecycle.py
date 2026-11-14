@@ -56,6 +56,30 @@ class FakeDirector:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cycle_status", "expected_run_status"),
+    [
+        ("completed", "succeeded"),
+        ("sleeping", "succeeded"),
+        ("waiting", "succeeded"),
+        ("stopped", "skipped"),
+    ],
+)
+async def test_terminal_director_cycle_status_is_normalized_for_run_storage(
+    monkeypatch, cycle_status, expected_run_status
+):
+    memory = FakeMemory()
+    director = FakeDirector(status=cycle_status)
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    result = await server._execute_autonomous_cycle(project_id="status-project")
+
+    assert result["status"] == cycle_status
+    assert memory.rows[1]["status"] == expected_run_status
+
+
+@pytest.mark.asyncio
 async def test_success_registers_before_execution_and_finishes_with_same_run_id(monkeypatch):
     memory = FakeMemory()
     director = FakeDirector()

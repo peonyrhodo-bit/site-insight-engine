@@ -118,6 +118,51 @@ class DirectorAutonomyLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cycle.state.metadata["analyze_available_evidence"])
         self.assertEqual(cycle.status, CycleStatus.SLEEPING)
 
+    async def test_partial_research_stops_retries_without_marking_task_complete(self):
+        research_calls = []
+        analyze_calls = []
+
+        async def assess(state, payload):
+            return {"evidence_sufficient": False, "missing_data": ["same gap"]}
+
+        async def research(state, payload):
+            research_calls.append(1)
+            return {
+                "status": "partial",
+                "task_key": "research:partial",
+                "research_execution": {
+                    "status": "partial",
+                    "queries_collected": 1,
+                },
+            }
+
+        async def analyze(state, payload):
+            analyze_calls.append(1)
+            return {"opportunities": []}
+
+        async def decide(state, payload):
+            return {
+                "decision_id": "decision-wait",
+                "decision_type": "wait",
+                "metadata": {},
+            }
+
+        autonomy = DirectorAutonomy(
+            config=AutonomyConfig(max_steps_per_cycle=16, max_research_steps=3),
+            assess=assess,
+            research=research,
+            analyze=analyze,
+            decide=decide,
+        )
+
+        cycle = await autonomy.run(initial_state=DirectorState())
+
+        self.assertEqual(len(research_calls), 1)
+        self.assertEqual(len(analyze_calls), 1)
+        self.assertTrue(cycle.state.metadata["research_task_exhausted"])
+        self.assertNotIn("research:partial", cycle.state.metadata["completed_task_keys"])
+        self.assertEqual(cycle.status, CycleStatus.SLEEPING)
+
     async def test_task_ledger_is_reset_for_each_wake(self):
         metadata_at_first_assessment = []
 

@@ -2403,8 +2403,10 @@ class Director:
         # Protected-memory failures must not be interpreted as permission to
         # run external research. Quota checks remain an independent gate.
         read_info = self.context.metadata.get("memory_read")
-        protected_read_incomplete = False
-        if self.memory_service is not None:
+        # Autonomous external research requires a configured, freshly verified
+        # memory service. Absence of memory is not an implicit authorization.
+        protected_read_incomplete = self.memory_service is None
+        if not protected_read_incomplete:
             if not isinstance(read_info, dict) or read_info.get("status") != "complete":
                 protected_read_incomplete = True
             else:

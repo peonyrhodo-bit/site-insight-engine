@@ -24,6 +24,7 @@ Rich Memory 2.0 fields are stored inside data_json where possible.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -1257,6 +1258,104 @@ class SupabaseMemoryBackend:
             order_key="created_at",
             default_limit=10,
         )
+
+    # Experimental limits for the opt-in run list, pending offline profiling
+    # and approval before connecting it to the runtime.
+    RUN_REF_LIMIT = 20
+    RUN_REF_PAGE_SIZE = 10
+    RUN_REF_MAX_PAGES = 5
+    RUN_REF_MAX_BYTES = 64 * 1024
+    RUN_REF_COLUMNS = "id,created_at,project_id,started_at,finished_at,updated_at"
+
+    def get_recent_run_refs(
+        self,
+        *,
+        project_id: str,
+        limit: int = RUN_REF_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """Read an explicit project-scoped run window without fetching data_json.
+
+        A NULL direct project could belong to the caller under the full
+        reader's legacy rules. Stop at that row, preserving only the proven
+        newer prefix, rather than skipping it or guessing from other fields.
+        This read model cannot establish protected memory completeness.
+        """
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("A nonempty project_id is required")
+        if type(limit) is not int or not 1 <= limit <= self.RUN_REF_LIMIT:
+            raise ValueError("Run reference limit is outside the supported range")
+
+        refs: list[dict[str, Any]] = []
+        size = 2  # JSON array brackets.
+        offset = 0
+        total = None
+        seen_ids: set[int] = set()
+
+        try:
+            for _ in range(self.RUN_REF_MAX_PAGES):
+                response = (
+                    self.client.table(self.TABLE_RUNS)
+                    .select(self.RUN_REF_COLUMNS, count="exact")
+                    .order("created_at", desc=True)
+                    .order("id", desc=True)
+                    .range(offset, offset + self.RUN_REF_PAGE_SIZE - 1)
+                    .execute()
+                )
+                count = getattr(response, "count", None)
+                page = getattr(response, "data", None)
+                if (
+                    type(count) is not int
+                    or count < offset
+                    or (total is not None and count != total)
+                    or not isinstance(page, list)
+                    or len(page) > min(self.RUN_REF_PAGE_SIZE, count - offset)
+                    or (not page and offset < count)
+                ):
+                    raise ValueError("Run reference page completeness is unknown")
+                total = count
+
+                for row in page:
+                    if not isinstance(row, dict) or type(row.get("id")) is not int:
+                        raise ValueError("Run reference contains an invalid source ID")
+                    run_id = row["id"]
+                    if run_id in seen_ids:
+                        raise ValueError("Run reference repeated across pages")
+                    seen_ids.add(run_id)
+
+                    owner = row.get("project_id")
+                    if not isinstance(owner, str):
+                        raise ValueError("Run reference requires legacy project resolution")
+                    if owner != project_id:
+                        continue
+
+                    ref = {
+                        "source_table": self.TABLE_RUNS,
+                        "source_record_id": run_id,
+                        "id": run_id,
+                        "project_id": owner,
+                        "created_at": row["created_at"],
+                        "started_at": row["started_at"],
+                        "finished_at": row["finished_at"],
+                        "updated_at": row["updated_at"],
+                        "details_omitted": True,
+                    }
+                    ref_size = len(json.dumps(ref, ensure_ascii=False).encode("utf-8"))
+                    size += ref_size + (2 if refs else 0)  # Default JSON separator.
+                    if size > self.RUN_REF_MAX_BYTES:
+                        raise ValueError("Run reference output byte budget exceeded")
+                    refs.append(ref)
+                    if len(refs) == limit:
+                        return refs
+
+                offset += len(page)
+                if offset == count:
+                    return refs
+
+            raise ValueError("Run reference page budget exceeded")
+        except Exception as exc:
+            raise MemoryTableReadError(
+                self.TABLE_RUNS, partial_rows=refs, cause=exc,
+            ) from exc
 
     # ------------------------------------------------------------------
     # DECISIONS

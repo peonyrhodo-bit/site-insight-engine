@@ -441,6 +441,9 @@ class Director:
         silently treating a missing source as a healthy source.
         """
         runtime_health = dict(self.context.metadata.get("runtime_health") or {})
+        # A previous successful read is not authorization for this inspection.
+        # Non-dict/legacy failures must not leave stale complete metadata behind.
+        self.context.metadata.pop("memory_read", None)
 
         if self.memory_service is not None:
             loader = getattr(self.memory_service, "get_context", None)
@@ -2397,7 +2400,35 @@ class Director:
             len(plan.queries), [q.query for q in plan.queries],
             plan.metadata.get("quota_budget", {}),
         )
-        if executor is not None:
+        # Protected-memory failures must not be interpreted as permission to
+        # run external research. Quota checks remain an independent gate.
+        read_info = self.context.metadata.get("memory_read")
+        # Autonomous external research requires a configured, freshly verified
+        # memory service. Absence of memory is not an implicit authorization.
+        protected_read_incomplete = self.memory_service is None
+        if not protected_read_incomplete:
+            if not isinstance(read_info, dict) or read_info.get("status") != "complete":
+                protected_read_incomplete = True
+            else:
+                tables = read_info.get("tables")
+                # Atomic in-process backends expose a complete context with
+                # no per-table diagnostics; ServerMemory normalizes them to {}.
+                # A nonempty table-status map must prove all protected reads.
+                protected_read_incomplete = not isinstance(tables, dict) or (
+                    bool(tables) and any(
+                        not isinstance(tables.get(name), dict)
+                        or tables[name].get("status") != "complete"
+                        for name in ("constraints", "recommendations", "decisions")
+                    )
+                )
+        if protected_read_incomplete:
+            execution = {
+                "status": "blocked",
+                "reason": "memory_incomplete_protected_state",
+                "queries_planned": len(plan.queries),
+                "queries_collected": 0,
+            }
+        elif executor is not None:
             execution = executor(plan)
             if hasattr(execution, "__await__"):
                 execution = await execution

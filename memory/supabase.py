@@ -1572,56 +1572,53 @@ class SupabaseMemoryBackend:
         limit: int = 20,
         project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        try:
-            rows = self._recent_for_project(
-                self.TABLE_RECOMMENDATIONS,
-                limit=limit,
-                project_id=project_id,
-                order_key="id",
-            )
+        rows = self._recent_for_project(
+            self.TABLE_RECOMMENDATIONS,
+            limit=limit,
+            project_id=project_id,
+            order_key="id",
+        )
 
-            for row in rows:
-                data = row.get("data_json")
+        for row in rows:
+            data = row.get("data_json")
 
-                if isinstance(data, dict):
-                    source_data = data.get(
-                        "source_data"
+            if isinstance(data, dict):
+                source_data = data.get(
+                    "source_data"
+                )
+
+                metadata = data.get(
+                    "metadata"
+                )
+
+                if isinstance(
+                    source_data,
+                    dict,
+                ):
+                    row["source_data"] = (
+                        source_data
                     )
 
-                    metadata = data.get(
-                        "metadata"
-                    )
+                if isinstance(
+                    metadata,
+                    dict,
+                ):
+                    row["metadata"] = metadata
 
-                    if isinstance(
-                        source_data,
-                        dict,
-                    ):
-                        row["source_data"] = (
-                            source_data
-                        )
+                for key in (
+                    "user_response",
+                    "result_summary",
+                    "lesson",
+                    "shown_at",
+                    "accepted_at",
+                    "rejected_at",
+                    "completed_at",
+                ):
+                    if key in data:
+                        row[key] = data[key]
 
-                    if isinstance(
-                        metadata,
-                        dict,
-                    ):
-                        row["metadata"] = metadata
+        return rows
 
-                    for key in (
-                        "user_response",
-                        "result_summary",
-                        "lesson",
-                        "shown_at",
-                        "accepted_at",
-                        "rejected_at",
-                        "completed_at",
-                    ):
-                        if key in data:
-                            row[key] = data[key]
-
-            return rows
-
-        except Exception:
-            return []
 
     # ------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK
@@ -1867,36 +1864,34 @@ class SupabaseMemoryBackend:
         limit: int = 20,
         project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        try:
-            rows = self._recent_for_project(
-                self.TABLE_CONSTRAINTS,
-                limit=limit,
-                project_id=project_id,
-                order_key="id",
+        rows = self._recent_for_project(
+            self.TABLE_CONSTRAINTS,
+            limit=limit,
+            project_id=project_id,
+            order_key="id",
+        )
+
+        for row in rows:
+            data = row.get("data_json")
+
+            if not isinstance(data, dict):
+                continue
+
+            for key in (
+                "active_from",
+                "review_at",
+                "expires_at",
+            ):
+                if key in data:
+                    row[key] = data[key]
+
+            metadata = data.get(
+                "metadata"
             )
 
-            for row in rows:
-                data = row.get("data_json")
+            if isinstance(metadata, dict):
+                row["metadata"] = metadata
 
-                if not isinstance(data, dict):
-                    continue
+        return rows
 
-                for key in (
-                    "active_from",
-                    "review_at",
-                    "expires_at",
-                ):
-                    if key in data:
-                        row[key] = data[key]
 
-                metadata = data.get(
-                    "metadata"
-                )
-
-                if isinstance(metadata, dict):
-                    row["metadata"] = metadata
-
-            return rows
-
-        except Exception:
-            return []

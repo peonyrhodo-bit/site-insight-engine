@@ -209,7 +209,7 @@ class SupabaseMemoryBackend:
         project_id: str | None,
         order_key: str = "created_at",
         default_limit: int = 20,
-        page_size: int = 1000,
+        page_size: int = 50,
     ) -> list[dict[str, Any]]:
         """Load the requested newest rows without relying on the API's default cap.
 

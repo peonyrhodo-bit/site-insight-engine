@@ -69,6 +69,23 @@ class MemoryPaginationTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in result], [10, 9])
         self.assertEqual(client.windows, [(0, 49), (50, 99), (100, 149), (150, 199)])
 
+    def test_full_history_same_as_legacy_page_size(self):
+        rows = [
+            {"id": i, "created_at": f"{i:04d}", "project_id": "a", "data_json": {"value": i}}
+            for i in range(157, 0, -1)
+        ]
+        backend, client = self.make_backend(rows)
+        bounded = backend._recent_for_project("director_runs", limit=None, project_id="a")
+        self.assertEqual([r["id"] for r in bounded], list(range(157, 0, -1)))
+        self.assertEqual(client.windows, [(0, 49), (50, 99), (100, 149), (150, 199)])
+
+        legacy_backend, legacy_client = self.make_backend(rows)
+        original = legacy_backend._recent_for_project(
+            "director_runs", limit=None, project_id="a", page_size=1000
+        )
+        self.assertEqual(bounded, original)
+        self.assertEqual(legacy_client.windows, [(0, 999)])
+
     def test_read_failure_is_not_silent(self):
         rows = [{"id": i, "project_id": "other"} for i in range(60, 0, -1)]
         backend, _ = self.make_backend(rows, fail_at=50)

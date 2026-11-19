@@ -96,3 +96,30 @@ def test_missing_protected_read_metadata_blocks_executor():
     result = asyncio.run(director._autonomy_research(state, None))
     executor.assert_not_called()
     assert result["research_execution"]["reason"] == "memory_incomplete_protected_state"
+
+
+def test_complete_atomic_memory_without_per_table_status_allows_research():
+    # ServerMemory.get_context normalizes a complete atomic backend to tables={}.
+    executor = Mock(return_value={"status": "blocked", "reason": "offline_stub"})
+    director = Director(project_id="p", memory_service=object(), research_service=SimpleNamespace(execute=executor))
+    plan = SimpleNamespace(research_id="offline", objective="offline", queries=[], metadata={"operations": []}, to_dict=lambda: {})
+    director.plan_research = Mock(return_value=plan)
+    director.inspect = AsyncMock(return_value=SimpleNamespace(metadata={}))
+    director.context.metadata["memory_read"] = {"status": "complete", "tables": {}, "errors": {}}
+    state = SimpleNamespace(metadata={}, cycle_count=1, current_research_id=None)
+    result = asyncio.run(director._autonomy_research(state, None))
+    executor.assert_called_once_with(plan)
+    assert result["research_execution"]["reason"] == "offline_stub"
+
+
+def test_missing_protected_table_in_partial_diagnostics_blocks_research():
+    executor = Mock(return_value={"status": "completed"})
+    director = Director(project_id="p", memory_service=object(), research_service=SimpleNamespace(execute=executor))
+    plan = SimpleNamespace(research_id="offline", objective="offline", queries=[], metadata={"operations": []}, to_dict=lambda: {})
+    director.plan_research = Mock(return_value=plan)
+    director.inspect = AsyncMock(return_value=SimpleNamespace(metadata={}))
+    director.context.metadata["memory_read"] = {"status": "complete", "tables": {"decisions": {"status": "complete"}}, "errors": {}}
+    state = SimpleNamespace(metadata={}, cycle_count=1, current_research_id=None)
+    result = asyncio.run(director._autonomy_research(state, None))
+    executor.assert_not_called()
+    assert result["research_execution"]["reason"] == "memory_incomplete_protected_state"

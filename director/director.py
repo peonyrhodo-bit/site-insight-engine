@@ -2406,10 +2406,15 @@ class Director:
                 protected_read_incomplete = True
             else:
                 tables = read_info.get("tables")
-                protected_read_incomplete = not isinstance(tables, dict) or any(
-                    not isinstance(tables.get(name), dict)
-                    or tables[name].get("status") != "complete"
-                    for name in ("constraints", "recommendations", "decisions")
+                # Atomic in-process backends expose a complete context with
+                # no per-table diagnostics; ServerMemory normalizes them to {}.
+                # A nonempty table-status map must prove all protected reads.
+                protected_read_incomplete = not isinstance(tables, dict) or (
+                    bool(tables) and any(
+                        not isinstance(tables.get(name), dict)
+                        or tables[name].get("status") != "complete"
+                        for name in ("constraints", "recommendations", "decisions")
+                    )
                 )
         if protected_read_incomplete:
             execution = {

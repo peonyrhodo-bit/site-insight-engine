@@ -136,3 +136,18 @@ def test_inspection_clears_stale_complete_read_after_nondict_response():
     asyncio.run(director.inspect())
     assert director.context.metadata.get("memory_read") is None
     assert director.context.metadata["runtime_health"]["memory"]["status"] == "degraded"
+
+
+def test_autonomous_research_without_memory_service_fails_closed():
+    executor = Mock(return_value={"status": "completed"})
+    director = Director(project_id="p", memory_service=None, research_service=SimpleNamespace(execute=executor))
+    plan = SimpleNamespace(research_id="offline", objective="offline", queries=[], metadata={"operations": []}, to_dict=lambda: {})
+    director.plan_research = Mock(return_value=plan)
+    director.inspect = AsyncMock(return_value=SimpleNamespace(metadata={}))
+    # Even stale complete metadata must not authorize an unconfigured backend.
+    director.context.metadata["memory_read"] = {"status": "complete", "tables": {}}
+    state = SimpleNamespace(metadata={}, cycle_count=1, current_research_id=None)
+    result = asyncio.run(director._autonomy_research(state, None))
+    executor.assert_not_called()
+    assert result["research_execution"]["status"] == "blocked"
+    assert result["research_execution"]["reason"] == "memory_incomplete_protected_state"

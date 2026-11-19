@@ -123,3 +123,16 @@ def test_missing_protected_table_in_partial_diagnostics_blocks_research():
     result = asyncio.run(director._autonomy_research(state, None))
     executor.assert_not_called()
     assert result["research_execution"]["reason"] == "memory_incomplete_protected_state"
+
+
+def test_inspection_clears_stale_complete_read_after_nondict_response():
+    # A previous complete read must not authorize a later failed inspection.
+    memory = SimpleNamespace(get_context=Mock(return_value=None))
+    director = Director(project_id="p", memory_service=memory)
+    director.context.metadata["memory_read"] = {
+        "status": "complete",
+        "tables": {name: {"status": "complete"} for name in ("decisions", "recommendations", "constraints")},
+    }
+    asyncio.run(director.inspect())
+    assert director.context.metadata.get("memory_read") is None
+    assert director.context.metadata["runtime_health"]["memory"]["status"] == "degraded"

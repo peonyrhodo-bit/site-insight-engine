@@ -441,6 +441,9 @@ class Director:
         silently treating a missing source as a healthy source.
         """
         runtime_health = dict(self.context.metadata.get("runtime_health") or {})
+        # A previous successful read is not authorization for this inspection.
+        # Non-dict/legacy failures must not leave stale complete metadata behind.
+        self.context.metadata.pop("memory_read", None)
 
         if self.memory_service is not None:
             loader = getattr(self.memory_service, "get_context", None)

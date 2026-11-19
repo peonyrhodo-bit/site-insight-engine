@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 from memory.read_status import MemoryTableReadError
 from memory.supabase import SupabaseMemoryBackend
@@ -69,3 +69,30 @@ def test_complete_protected_memory_keeps_executor_available():
     result = asyncio.run(director._autonomy_research(state, None))
     executor.assert_called_once_with(plan)
     assert result["research_execution"]["reason"] == "offline_stub"
+
+
+def test_partial_protected_rows_preserved_in_context():
+    backend = _backend()
+    for name in ("runs", "decisions", "events", "chat_messages", "actions", "results", "recommendations", "constraints"):
+        setattr(backend, "get_recent_" + name, Mock(return_value=[]))
+    partial = [{"id": 1, "status": "active"}]
+    backend.get_recent_constraints.side_effect = MemoryTableReadError(
+        "constraints", partial_rows=partial, cause=RuntimeError("next page failed")
+    )
+    context = backend.get_context(project_id="p")
+    assert context["constraints"] == partial
+    assert context["_memory_read"]["tables"]["constraints"] == {"status": "partial", "rows": 1}
+    assert context["_memory_read"]["status"] == "partial"
+
+
+def test_missing_protected_read_metadata_blocks_executor():
+    executor = Mock(return_value={"status": "completed"})
+    director = Director(project_id="p", memory_service=object(), research_service=SimpleNamespace(execute=executor))
+    plan = SimpleNamespace(research_id="offline", objective="offline", queries=[], metadata={"operations": []}, to_dict=lambda: {})
+    director.plan_research = Mock(return_value=plan)
+    director.inspect = AsyncMock(return_value=SimpleNamespace(metadata={}))
+    director.context.metadata.pop("memory_read", None)
+    state = SimpleNamespace(metadata={}, cycle_count=1, current_research_id=None)
+    result = asyncio.run(director._autonomy_research(state, None))
+    executor.assert_not_called()
+    assert result["research_execution"]["reason"] == "memory_incomplete_protected_state"

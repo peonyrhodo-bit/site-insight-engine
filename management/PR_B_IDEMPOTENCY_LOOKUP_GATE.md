@@ -171,3 +171,17 @@ Acceptance gate before runtime integration: no unbounded history scans, project 
 | Query budget | No `limit=None`, `select=*`, or unbounded history pagination in reservation paths |
 
 **Current status:** documentation and offline tests only; no live data changes, migrations, runtime switch, merge, or deploy.
+
+## Verified concurrency-model checkpoint — 2026-11-20
+
+Commit `6ce12c821820eec3902c33ad49fcaca74634b2e5` passed four GitHub Actions workflows. Reliability audit reported **176 passed, 4 warnings, 11 subtests passed**, and its explicit PR-B step reported **12 passed**.
+
+The final two tests simulate atomic reservations with a process-local, thread-safe fake. They verify intended outcomes for same-key races, completed replay, failed-key conflict, and project isolation **only in the model**. They do **not** validate PostgreSQL uniqueness, transaction isolation, Supabase RPC, multi-process behavior, or crash recovery. Do not claim that runtime idempotency is implemented.
+
+### Remaining implementation gates
+
+- Define the transaction boundary for reservation, completion, and failed-run state; specify how active-project uniqueness interacts with per-project/key uniqueness.
+- Implement the server-side transaction/RPC and required indexes only after explicit schema/migration approval. No production fallback to unbounded JSON history scans.
+- Test two independent database connections/processes against an isolated test database, including simultaneous reservation and crash between reservation and completion.
+- Confirm legacy-key backfill and legacy-active-run compatibility before switching reads.
+- Keep PR-B draft and unmerged until those gates and owner-approved rollout conditions are satisfied.

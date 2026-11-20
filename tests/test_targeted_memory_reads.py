@@ -162,3 +162,61 @@ async def test_supabase_read_failure_propagates_through_adapter():
 
     assert error.value.status == "error"
     assert "402" in error.value.errors["recommendations"]
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_keeps_projects_isolated():
+    from memory.inmemory import InMemoryMemoryBackend
+
+    backend = InMemoryMemoryBackend()
+    backend._recommendations.extend([
+        {"id": 1, "project_id": "alpha", "title": "A"},
+        {"id": 2, "project_id": "beta", "title": "B"},
+    ])
+    backend._events.extend([
+        {"id": 3, "project_id": "alpha", "event": "A"},
+        {"id": 4, "project_id": "beta", "event": "B"},
+    ])
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    recommendations = await adapter.get_collection(
+        "recommendations", project_id="alpha",
+    )
+    events = await adapter.get_collection("events", project_id="beta")
+
+    assert [row["id"] for row in recommendations] == [1]
+    assert [row["id"] for row in events] == [4]
+
+
+@pytest.mark.asyncio
+async def test_api_routes_preserve_response_shape_without_full_context(monkeypatch):
+    import server
+
+    calls = []
+
+    class MemoryStub:
+        async def get_collection(self, name, *, project_id, limit):
+            calls.append((name, project_id, limit))
+            return [{"id": 9, "recommendation_id": "legacy-9"}] if name == "recommendations" else [{"id": 8}]
+
+        async def get_context(self, **kwargs):
+            raise AssertionError("API should not request full memory context")
+
+    monkeypatch.setattr(server.runtime, "memory", MemoryStub())
+
+    recommendations = await server.director_recommendations(
+        project_id="alpha", limit=4,
+    )
+    events = await server.events(project_id="beta", limit=6)
+
+    assert recommendations == {
+        "project_id": "alpha",
+        "recommendations": [{"id": 9, "recommendation_id": "legacy-9"}],
+    }
+    assert events == {"project_id": "beta", "events": [{"id": 8}]}
+    assert calls == [
+        ("recommendations", "alpha", 4),
+        ("events", "beta", 6),
+    ]

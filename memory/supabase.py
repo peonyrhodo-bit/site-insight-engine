@@ -1244,6 +1244,48 @@ class SupabaseMemoryBackend:
         response = self.client.table(self.TABLE_RUNS).update(payload).eq("id", run_id).select("id").execute()
         return bool(self._safe_list(response))
 
+    def get_active_run_metadata(self, *, project_id: str) -> list[dict[str, Any]]:
+        """Fetch active runs using indexed columns; no full-history JSON download.
+
+        Read-only candidate for PR-B. Not wired into create_run: legacy nested
+        project/status semantics and stale-run resolution need separate review.
+        """
+        if not project_id or not str(project_id).strip():
+            raise ValueError("project_id is required")
+        response = (
+            self.client.table(self.TABLE_RUNS)
+            .select("id,project_id,status,created_at,updated_at,started_at,current_step")
+            .eq("project_id", str(project_id))
+            .in_("status", ["requested", "running"])
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return self._safe_list(response)
+
+    def get_idempotency_run_candidates(
+        self, *, project_id: str, idempotency_key: str
+    ) -> list[dict[str, Any]]:
+        """Experimental JSON-key lookup; not a completeness guarantee.
+
+        This is deliberately NOT used for Director deduplication: old records
+        may store keys outside data_json, and a missing candidate is not proof
+        that a matching run does not exist. No full-history fallback here.
+        """
+        if not str(project_id).strip() or not str(idempotency_key).strip():
+            raise ValueError("project_id and idempotency_key are required")
+        response = (
+            self.client.table(self.TABLE_RUNS)
+            .select("*")
+            .contains("data_json", {"idempotency_key": idempotency_key})
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return [
+            row for row in self._safe_list(response)
+            if self._project_id_from_row(row) == str(project_id)
+            and self._safe_dict(row.get("data_json")).get("idempotency_key") == idempotency_key
+        ]
+
     def get_recent_runs(
         self,
         *,

@@ -43,3 +43,31 @@ Project: `site-insight-memory` (`oxbxnswywgpdlcfltmbq`), `public.director_runs`.
 - Only metadata/schema and aggregate counts were queried. **No migrations, updates, deletes, deployment or runtime calls**.
 
 Design implication: prefer a migration-reviewed durable keyed lookup with a careful compatibility path for nested JSON keys; do not assume legacy-key absence outside this observed snapshot.
+
+## Proposed SQL design — review only, NOT authorized for execution
+
+Preferred approach: add nullable `idempotency_key text` to `public.director_runs`, maintain a partial unique btree index on `(project_id, idempotency_key)` where both are non-null, and populate the column atomically when reserving a keyed run. Preserve `director_runs_one_active_per_project_idx` unchanged.
+
+**Migration prerequisites:**
+1. Inspect null/blank project IDs, duplicate `(project_id, data_json->>'idempotency_key')` combinations, and active rows. The 2026-11-20 audit found zero keyed legacy rows, but validate again immediately before migration.
+2. Define explicit normalization: request keys are trimmed at the HTTP boundary; empty strings do not reserve. Project IDs must be non-null for keyed reservations. Treat existing historical JSON keys with exactly the same semantics as current code.
+3. Backfill top-level keys from `data_json` in batches or one transaction only after inspecting duplicates; do not silently drop duplicate historical keys or auto-delete rows. Historical duplicate semantics currently depend on created-at order and need a deterministic conflict policy before a unique index.
+4. Establish transaction-safe reservation: `INSERT ... ON CONFLICT` alone is insufficient if another per-project active run already exists; map conflicts to existing 409 behavior and avoid a second Director cycle. The existing unique active-per-project index and new unique keyed index enforce distinct invariants.
+5. Ensure completion/failure updates persist `idempotency_status` and `result` consistently; use an indexed metadata-only lookup by `project_id` and `idempotency_key`, then fetch only the matched row's `data_json` if replaying.
+6. Fail closed if migration/lookup is unavailable; never fall back to an unbounded full-history scan in production. If compatibility is needed during rollout, use a separately approved bounded/indexed legacy strategy.
+
+### Illustrative SQL, **not a migration**
+
+```sql
+-- PROPOSAL ONLY. DO NOT RUN WITHOUT OWNER APPROVAL AND PRE-FLIGHT CHECKS.
+ALTER TABLE public.director_runs ADD COLUMN idempotency_key text;
+
+-- After validated backfill, duplicates audit and rollout plan:
+CREATE UNIQUE INDEX director_runs_project_idempotency_key_uq
+  ON public.director_runs (project_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL AND project_id IS NOT NULL;
+```
+
+**Security gate:** the audit reported RLS disabled on `public.director_runs`. Verify Data API exposure, service credentials, privileges, and the intended per-project authorization model before rollout; never treat a project filter alone as access control.
+
+**Rollout gate:** agree on rollback (application compatibility with old schema, index removal strategy, handling in-flight runs), staged test environment, query-plan verification and production egress measurement. Migration and deployment remain separately owner-approved.

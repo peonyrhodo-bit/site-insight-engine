@@ -3832,12 +3832,19 @@ async def director_wakeup(
 @app.post("/director/wakeup")
 async def director_wakeup_trigger(
     project_id: str = DEFAULT_PROJECT_ID,
+    x_director_run_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     if not AUTONOMOUS_ENABLED:
         raise HTTPException(
             status_code=403,
             detail="Автономный режим отключён.",
         )
+
+    configured_token = os.getenv("DIRECTOR_MANUAL_RUN_TOKEN", "")
+    if not configured_token or not x_director_run_token or not secrets.compare_digest(
+        x_director_run_token, configured_token
+    ):
+        raise HTTPException(status_code=403, detail="Manual Director wakeup is not authorized")
 
     if runtime.wakeup is None:
         raise HTTPException(

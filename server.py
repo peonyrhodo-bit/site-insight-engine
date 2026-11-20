@@ -2925,7 +2925,15 @@ async def _execute_autonomous_cycle_locked(
 async def director_autonomous_run(
     project_id: str = DEFAULT_PROJECT_ID,
     objective: str | None = None,
+    x_director_run_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
+    # Explicit manual execution is independent of unattended scheduling.
+    # Fail closed unless a dedicated operator token is configured.
+    configured_token = os.getenv("DIRECTOR_MANUAL_RUN_TOKEN", "")
+    if not configured_token or not x_director_run_token or not secrets.compare_digest(
+        x_director_run_token, configured_token
+    ):
+        raise HTTPException(status_code=403, detail="Manual Director run is not authorized")
     try:
         return await _execute_autonomous_cycle(
             project_id=project_id,

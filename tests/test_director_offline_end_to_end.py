@@ -11,6 +11,8 @@ from director.autonomy import AutonomyConfig, DirectorAutonomy
 
 
 class MemoryLedger:
+    enabled = True
+
     def __init__(self):
         self.runs = {}
         self.calls = []

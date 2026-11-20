@@ -45,9 +45,9 @@ BEGIN
        AND r.idempotency_key = p_idempotency_key;
 
     IF NOT FOUND THEN
-        -- Different key already holds active-project slot, or a concurrent
-        -- deletion/transition. Never execute work on this outcome.
-        RETURN QUERY SELECT 'active_project_conflict'::text,
+        -- Could be a different active key or an invisible concurrent winner;
+        -- caller must reconcile in a new statement. Never execute work.
+        RETURN QUERY SELECT 'reconcile_required'::text,
                             NULL::bigint, NULL::bigint, NULL::jsonb;
     ELSIF v_fingerprint IS DISTINCT FROM p_fingerprint THEN
         RETURN QUERY SELECT 'fingerprint_conflict'::text,

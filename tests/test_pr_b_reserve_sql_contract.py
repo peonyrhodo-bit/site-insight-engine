@@ -21,7 +21,7 @@ def test_reserve_uses_atomic_unique_constraint_and_indexed_reconciliation():
 
 def test_reserve_fails_closed_for_conflict_and_invalid_completed_result():
     for outcome in (
-        "active_project_conflict", "fingerprint_conflict",
+        "reconcile_required", "fingerprint_conflict",
         "storage_error", "in_progress_conflict", "replay", "reserved",
     ):
         assert f"'{outcome}'::text" in SQL

@@ -32,6 +32,10 @@ jobs:
         env:
           PYTHONPATH: .
         run: python -m pytest -q
+      - name: Validate isolated PR-B SQL fixture and connection gate (offline)
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/test_pr_b_sql_fixture_contract.py tests/test_pr_b_postgres_integration_gate.py
       - name: Run PR-B characterization explicitly
         env:
           PYTHONPATH: .

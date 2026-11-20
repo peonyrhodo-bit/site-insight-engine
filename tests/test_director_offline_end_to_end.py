@@ -143,3 +143,43 @@ async def test_second_wake_without_decision_does_not_persist_previous_recommenda
     assert "result" in names
     assert "event" in names
     assert memory.runs[1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_disabled_worker_and_authorized_manual_http_run_share_safe_offline_cycle(monkeypatch):
+    """Startup stays passive; token-gated HTTP can still run the real persistence path."""
+    import httpx
+
+    memory = MemoryLedger()
+    director = OfflineDirector()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+    monkeypatch.setattr(server, "AUTONOMOUS_ENABLED", False)
+    monkeypatch.setattr(server.runtime, "autonomous_worker", None)
+    monkeypatch.setenv("DIRECTOR_MANUAL_RUN_TOKEN", "offline-only-secret")
+    server._DIRECTOR_CYCLE_LOCKS.pop("offline-project", None)
+
+    await server.startup()
+    assert server.runtime.autonomous_worker is None
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://offline.test") as client:
+        denied = await client.post(
+            "/director/autonomous/run", params={"project_id": "offline-project"}
+        )
+        assert denied.status_code == 403
+        assert memory.calls == []
+
+        allowed = await client.post(
+            "/director/autonomous/run",
+            params={"project_id": "offline-project"},
+            headers={"X-Director-Run-Token": "offline-only-secret"},
+        )
+
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["run_id"] == 1
+    assert memory.runs[1]["status"] == "succeeded"
+    assert director.trace.index("research") < director.trace.index("recommend")
+    assert [name for name, _ in memory.calls if name in {"decision", "recommendation", "result", "event"}] == [
+        "decision", "recommendation", "result", "event"
+    ]

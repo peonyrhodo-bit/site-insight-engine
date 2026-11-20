@@ -236,3 +236,41 @@ A database-side reservation routine (RPC or equivalent transaction) accepts `pro
 - Query plan proves bounded/indexed lookups, without full-history or full-`data_json` scans.
 
 **Approval boundary:** This section is a design specification only. No SQL was executed, no migration was applied, and no production code path was switched. The PostgreSQL function, indexes, and isolated-DB tests require separate implementation approval.
+
+## Isolated PostgreSQL integration-test contract — not executed
+
+**Verified baseline:** commit `4c1666c067e5c3c1cd873b1399c931bb2f84c819`: four GitHub Actions workflows passed; Reliability audit reported **180 passed** and its explicit PR-B step **16 passed**. The 16 tests remain mock/model tests, not evidence of transactional database correctness.
+
+### Test environment prerequisites
+
+- Use a disposable PostgreSQL instance or isolated Supabase test project, **never** the production project `site-insight-memory`. Supply a test-only connection URL via CI secret; redact DSNs and tokens in logs.
+- Create only the minimal test schema and transactional reservation function in that disposable database, after implementation approval. Run schema setup/teardown only against an allowlisted test database identity; reject absent or production-looking DSNs.
+- Use at least two independent database connections, with synchronization barriers so conflicting transactions overlap deterministically. Do not use a single connection or Python-only lock to claim cross-process safety.
+- Add query-count and execution-plan assertions for indexed project/key and active-project lookups. No unbounded `select=*` history scan.
+- Do not invoke Director, YouTube, Render, or production Supabase during tests.
+
+### Required integration scenarios
+
+| ID | Setup and concurrent action | Expected invariant |
+| --- | --- | --- |
+| PG-01 | Two transactions reserve same project/key simultaneously | One committed reservation; loser returns typed conflict or winner's completed replay |
+| PG-02 | Same project, different keys concurrently | Existing one-active-project unique guard permits only one active run |
+| PG-03 | Same key in distinct projects | Both reserve independently |
+| PG-04 | Commit reservation, disconnect before running cycle | Retry sees in-progress conflict; no second reservation |
+| PG-05 | Commit terminal result/status, disconnect before HTTP response | Retry replays byte-equivalent persisted result |
+| PG-06 | Roll back terminal transaction after writing result but before commit | No completed status and no visible result |
+| PG-07 | Commit outcome unknown due to network disconnect | Indexed lookup reconciles; never blindly re-executes |
+| PG-08 | Older fencing generation tries to finalize after takeover | Zero rows updated; newer owner remains authoritative |
+| PG-09 | Same key, changed request fingerprint | Typed conflict; no result leak or execution |
+| PG-10 | Completed row missing/malformed result | Typed storage error; no synthesized success |
+| PG-11 | Failed key and missing/malformed heartbeat | Conflict/fail-closed; no automatic restart |
+| PG-12 | Legacy JSON-only active run and duplicate legacy keys | Migration gate blocks unsafe activation |
+| PG-13 | Simulated permission error, query timeout, quota/connection failure | Fail closed; no Director cycle starts |
+| PG-14 | Concurrent terminal updates to JSON payload | No lost updates; final result and status atomic |
+| PG-15 | Query plan on representative large fixture | Indexed bounded lookup, no sequential full-history JSON scan |
+
+### Acceptance and evidence
+
+Capture CI run URLs, PostgreSQL version, test schema migration hash, anonymized query plans, concurrency barriers, and exact passed/failed counts. Require **all** scenarios to pass and security review of RLS/privileges before any production migration request. A green unit suite alone is insufficient.
+
+**Current boundary:** contract only. No test PostgreSQL provisioned, no integration tests run, no SQL applied, and no merge/deploy authorized.

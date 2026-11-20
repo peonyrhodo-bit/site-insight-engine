@@ -133,3 +133,41 @@ At commit `2397221a4e6ef0a0a9124b977047a777f18d2218`, the Reliability audit work
 3. If legacy rows cannot be safely normalized, fail closed for projects with unresolved legacy-active ambiguity; do not silently skip them.
 
 Acceptance gate before runtime integration: no unbounded history scans, project isolation, stale heartbeat conservatism, unique-violation conflict mapping, explicit failure on backend errors, and concurrency tests. No migration or production read/write is authorized by this document.
+
+## Owner-review migration and concurrency runbook (proposal only)
+
+### Preflight — no production queries without explicit approval
+
+- Verify the target environment and billing/egress state; never use `select=*` or download every `data_json` for discovery.
+- Obtain a read-only query plan for a **bounded** legacy predicate, with explicit row and byte limits. If no efficient index or safely bounded query exists, stop and request a separately approved index/backfill plan. A LIMIT alone does not guarantee a bounded database scan.
+- Count, by project and status, rows with missing top-level `project_id`/`status` but populated JSON equivalents. Capture only IDs, top-level columns, and normalized JSON scalar expressions; avoid full payloads.
+- Detect conflicting normalized projects, duplicate active runs, invalid timestamps, and any rows that would violate `director_runs_one_active_per_project_idx`. Fail closed on ambiguity; never pick an arbitrary winner.
+- Review RLS and role privileges (RLS was disabled in the prior read-only audit). Restrict migration execution to an approved privileged role and record rollback/backup strategy.
+
+### Separately approved schema/data migration
+
+1. In a controlled maintenance window, pause creation of Director runs across **all** workers, not just process-local locks. If this cannot be guaranteed, do not backfill.
+2. Backfill missing top-level `project_id` and `status` in small transactional batches after validating exact legacy-to-column mappings. Use conditional updates so reruns are idempotent; log only IDs/counts.
+3. Recheck the active-run partial unique index, legacy anomalies, and row counts. Abort and investigate on constraint violations; do not silently mark a legacy active run completed or failed.
+4. Add nullable top-level `idempotency_key`, backfill only verified nonempty JSON keys, and resolve per-project duplicates before a partial unique index. Never collapse keys across projects.
+5. Implement atomic same-project/key reservation and result persistence, preserving completed replay, in-progress/failed 409, storage failure 503, and original result integrity. The existing JSON read-modify-write path is not an atomic reservation.
+6. Keep the old read path behind an explicit compatibility gate until the post-migration checks pass; switch only with a separately approved deployment and monitored rollback plan.
+
+### Offline concurrency acceptance matrix
+
+| Case | Required result |
+| --- | --- |
+| Two workers, same project and key | Exactly one durable reservation; loser sees 409 or completed replay, never a second cycle |
+| Two workers, same project, different keys | Active-project uniqueness still prevents concurrent Director cycles |
+| Same key, different projects | Independent reservations and results |
+| Completed key, valid persisted result | Return the original persisted result, without rerunning |
+| Completed key, missing/malformed result | Fail closed; never synthesize success |
+| Failed or in-progress key | 409; no new cycle |
+| Legacy JSON-only active run | Detected or explicitly blocked; never silently ignored |
+| Missing/malformed heartbeat | Conservatively treated as active |
+| Stale run | Transactionally and safely resolved before a new reservation; no overlapping workers |
+| Backend read/update failure or Supabase 402 | 503 or propagated failure; never a fresh cycle |
+| Concurrent JSON updates | No lost fields; transactional/conditional persistence required |
+| Query budget | No `limit=None`, `select=*`, or unbounded history pagination in reservation paths |
+
+**Current status:** documentation and offline tests only; no live data changes, migrations, runtime switch, merge, or deploy.

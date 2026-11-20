@@ -1621,7 +1621,9 @@ class SupabaseMemoryBackend:
             return rows
 
         except Exception:
-            return []
+            # Never turn an incomplete protected-memory read into a
+            # successful empty recommendation list.
+            raise
 
     # ------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK

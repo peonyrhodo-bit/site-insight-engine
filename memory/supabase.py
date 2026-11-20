@@ -1244,6 +1244,24 @@ class SupabaseMemoryBackend:
         response = self.client.table(self.TABLE_RUNS).update(payload).eq("id", run_id).select("id").execute()
         return bool(self._safe_list(response))
 
+    def get_active_run_metadata(self, *, project_id: str) -> list[dict[str, Any]]:
+        """Fetch active runs using indexed columns; no full-history JSON download.
+
+        Read-only candidate for PR-B. Not wired into create_run: legacy nested
+        project/status semantics and stale-run resolution need separate review.
+        """
+        if not project_id or not str(project_id).strip():
+            raise ValueError("project_id is required")
+        response = (
+            self.client.table(self.TABLE_RUNS)
+            .select("id,project_id,status,created_at,updated_at,started_at,current_step")
+            .eq("project_id", str(project_id))
+            .in_("status", ["requested", "running"])
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return self._safe_list(response)
+
     def get_recent_runs(
         self,
         *,

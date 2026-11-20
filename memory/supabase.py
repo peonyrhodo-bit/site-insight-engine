@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any
 
 try:
@@ -1262,8 +1263,7 @@ class SupabaseMemoryBackend:
     # Experimental limits for the opt-in run list, pending offline profiling
     # and approval before connecting it to the runtime.
     RUN_REF_LIMIT = 20
-    RUN_REF_PAGE_SIZE = 10
-    RUN_REF_MAX_PAGES = 5
+    RUN_REF_SCAN_LIMIT = 50
     RUN_REF_MAX_BYTES = 64 * 1024
     RUN_REF_COLUMNS = "id,created_at,project_id,started_at,finished_at,updated_at"
 
@@ -1287,75 +1287,101 @@ class SupabaseMemoryBackend:
 
         refs: list[dict[str, Any]] = []
         size = 2  # JSON array brackets.
-        offset = 0
-        total = None
-        seen_ids: set[int] = set()
-
         try:
-            for _ in range(self.RUN_REF_MAX_PAGES):
-                response = (
-                    self.client.table(self.TABLE_RUNS)
-                    .select(self.RUN_REF_COLUMNS, count="exact")
-                    .order("created_at", desc=True)
-                    .order("id", desc=True)
-                    .range(offset, offset + self.RUN_REF_PAGE_SIZE - 1)
-                    .execute()
-                )
-                count = getattr(response, "count", None)
-                page = getattr(response, "data", None)
-                if (
-                    type(count) is not int
-                    or count < offset
-                    or (total is not None and count != total)
-                    or not isinstance(page, list)
-                    or len(page) > min(self.RUN_REF_PAGE_SIZE, count - offset)
-                    or (not page and offset < count)
+            # Offset pages issued as separate GETs can silently omit rows
+            # under concurrent writes, even if the exact total is unchanged.
+            response = (
+                self.client.table(self.TABLE_RUNS)
+                .select(self.RUN_REF_COLUMNS, count="exact")
+                .order("created_at", desc=True)
+                .order("id", desc=True)
+                .range(0, self.RUN_REF_SCAN_LIMIT - 1)
+                .execute()
+            )
+            count = getattr(response, "count", None)
+            page = getattr(response, "data", None)
+            if (
+                type(count) is not int
+                or count < 0
+                or not isinstance(page, list)
+                or len(page) > min(self.RUN_REF_SCAN_LIMIT, count)
+                or (not page and count > 0)
+            ):
+                raise ValueError("Run reference window completeness is unknown")
+
+            # Validate the entire response before accepting even a short
+            # requested prefix. PostgreSQL DESC places NULL timestamps first.
+            seen_ids: set[int] = set()
+            previous = None
+            for row in page:
+                if not isinstance(row, dict) or type(row.get("id")) is not int:
+                    raise ValueError("Run reference contains an invalid source ID")
+                run_id = row["id"]
+                if run_id in seen_ids:
+                    raise ValueError("Run reference repeated within the window")
+                seen_ids.add(run_id)
+                if "project_id" not in row or (
+                    row["project_id"] is not None and not isinstance(row["project_id"], str)
                 ):
-                    raise ValueError("Run reference page completeness is unknown")
-                total = count
+                    raise ValueError("Run reference contains an invalid project field")
 
-                for row in page:
-                    if not isinstance(row, dict) or type(row.get("id")) is not int:
-                        raise ValueError("Run reference contains an invalid source ID")
-                    run_id = row["id"]
-                    if run_id in seen_ids:
-                        raise ValueError("Run reference repeated across pages")
-                    seen_ids.add(run_id)
+                created_at = self._run_ref_timestamp(row, "created_at")
+                for field in ("started_at", "finished_at", "updated_at"):
+                    self._run_ref_timestamp(row, field)
+                order = (created_at is None, created_at, run_id)
+                if previous is not None and order >= previous:
+                    raise ValueError("Run reference window is out of order")
+                previous = order
 
-                    owner = row.get("project_id")
-                    if not isinstance(owner, str):
-                        raise ValueError("Run reference requires legacy project resolution")
-                    if owner != project_id:
-                        continue
+            for row in page:
+                owner = row["project_id"]
+                if owner is None:
+                    raise ValueError("Run reference requires legacy project resolution")
+                if owner != project_id:
+                    continue
 
-                    ref = {
-                        "source_table": self.TABLE_RUNS,
-                        "source_record_id": run_id,
-                        "id": run_id,
-                        "project_id": owner,
-                        "created_at": row["created_at"],
-                        "started_at": row["started_at"],
-                        "finished_at": row["finished_at"],
-                        "updated_at": row["updated_at"],
-                        "details_omitted": True,
-                    }
-                    ref_size = len(json.dumps(ref, ensure_ascii=False).encode("utf-8"))
-                    size += ref_size + (2 if refs else 0)  # Default JSON separator.
-                    if size > self.RUN_REF_MAX_BYTES:
-                        raise ValueError("Run reference output byte budget exceeded")
-                    refs.append(ref)
-                    if len(refs) == limit:
-                        return refs
-
-                offset += len(page)
-                if offset == count:
+                ref = {
+                    "source_table": self.TABLE_RUNS,
+                    "source_record_id": row["id"],
+                    "id": row["id"],
+                    "project_id": owner,
+                    "created_at": row["created_at"],
+                    "started_at": row["started_at"],
+                    "finished_at": row["finished_at"],
+                    "updated_at": row["updated_at"],
+                    "details_omitted": True,
+                }
+                ref_size = len(json.dumps(ref, ensure_ascii=False).encode("utf-8"))
+                size += ref_size + (2 if refs else 0)  # Default JSON separator.
+                if size > self.RUN_REF_MAX_BYTES:
+                    raise ValueError("Run reference output byte budget exceeded")
+                refs.append(ref)
+                if len(refs) == limit:
                     return refs
 
-            raise ValueError("Run reference page budget exceeded")
+            if len(page) == count:
+                return refs
+            raise ValueError("Run reference window ended before the requested project limit")
         except Exception as exc:
             raise MemoryTableReadError(
                 self.TABLE_RUNS, partial_rows=refs, cause=exc,
             ) from exc
+
+    @staticmethod
+    def _run_ref_timestamp(row: dict[str, Any], field: str) -> datetime | None:
+        if field in row:
+            value = row[field]
+            if value is None:
+                return None
+            if isinstance(value, str):
+                try:
+                    timestamp = datetime.fromisoformat(value)
+                except ValueError:
+                    pass
+                else:
+                    if timestamp.tzinfo is not None:
+                        return timestamp
+        raise ValueError(f"Run reference contains an invalid {field} timestamp")
 
     # ------------------------------------------------------------------
     # DECISIONS

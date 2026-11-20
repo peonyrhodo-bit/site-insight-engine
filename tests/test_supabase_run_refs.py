@@ -13,7 +13,7 @@ from memory.supabase import SupabaseMemoryBackend
 class RunTable:
     """Model projection, stable ordering and range caps without a connection."""
 
-    def __init__(self, rows, *, response_cap=10, fail_at=None):
+    def __init__(self, rows, *, response_cap=50, fail_at=None):
         self.rows = rows
         self.response_cap = response_cap
         self.fail_at = fail_at
@@ -85,10 +85,11 @@ def test_projected_window_ignores_recursive_history_and_preserves_full_source(hi
     assert [ref["source_record_id"] for ref in refs] == list(range(19, -1, -1))
     assert all(ref["details_omitted"] and "data_json" not in ref for ref in refs)
     assert len(json_bytes(refs)) == 4220
-    assert table.projected_bytes == 2590
+    assert table.projected_bytes == len(json_bytes([{
+        key: row[key] for key in backend.RUN_REF_COLUMNS.split(",")
+    } for row in sorted(rows, key=lambda row: row["id"], reverse=True)[:50]]))
     assert table.calls == [
-        (backend.RUN_REF_COLUMNS, 0, 9, [("created_at", True), ("id", True)]),
-        (backend.RUN_REF_COLUMNS, 10, 19, [("created_at", True), ("id", True)]),
+        (backend.RUN_REF_COLUMNS, 0, 49, [("created_at", True), ("id", True)]),
     ]
 
     full = backend.get_recent_runs(project_id="a", limit=1)[0]
@@ -97,18 +98,18 @@ def test_projected_window_ignores_recursive_history_and_preserves_full_source(hi
     assert rows[19]["data_json"] == nested
 
 
-def test_mixed_projects_and_short_pages_preserve_full_reader_order():
+def test_mixed_projects_preserve_full_reader_order():
     rows = [
         run(1), run(2, payload={"project_id": "b"}),
         run(3, "b", payload={"project_id": "a"}), run(4),
     ]
     rows[0]["created_at"] = "2026-11-20T00:00:00Z"
-    table = RunTable(rows, response_cap=1)
+    table = RunTable(rows)
     backend = SupabaseMemoryBackend(client=table)
     refs = backend.get_recent_run_refs(project_id="a")
     full = backend.get_recent_runs(project_id="a")
     assert [ref["id"] for ref in refs] == [row["id"] for row in full] == [1, 4, 2]
-    assert [start for _, start, _, _ in table.calls[:-1]] == [0, 1, 2, 3]
+    assert [start for _, start, _, _ in table.calls] == [0, 0]
 
 
 def test_nested_legacy_project_stops_at_first_unknown_owner():
@@ -133,19 +134,88 @@ def test_first_page_failure_is_distinct_from_a_confirmed_empty_window():
     assert "simulated page failure" in str(exc.value.cause)
 
 
-@pytest.mark.parametrize("fail_at,reason,expected_pages", [
-    (10, "simulated page failure", 2),
-    (None, "page budget exceeded", 5),
-])
-def test_incomplete_scan_preserves_proven_prefix(fail_at, reason, expected_pages):
+@pytest.mark.parametrize("response_cap", [1, 50])
+def test_short_or_exhausted_window_preserves_proven_prefix(response_cap):
     rows = [run(i, "b") for i in range(60)] + [run(61)]
-    table = RunTable(rows, fail_at=fail_at)
+    table = RunTable(rows, response_cap=response_cap)
     backend = SupabaseMemoryBackend(client=table)
     with pytest.raises(MemoryTableReadError) as exc:
         backend.get_recent_run_refs(project_id="a")
     assert [ref["id"] for ref in exc.value.partial_rows] == [61]
+    assert "window ended" in str(exc.value.cause)
+    assert len(table.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["insert", "delete", "move", "same-count replacement"])
+def test_truncated_window_never_requests_an_offset_after_concurrent_change(change):
+    rows = [run(1), run(2), run(3)]
+    table = RunTable(rows, response_cap=1)
+    original_execute = table.execute
+
+    def execute():
+        assert not table.calls, "Reading another window could skip a row"
+        response = original_execute()
+        if change == "insert":
+            rows.append(run(4))
+        elif change == "delete":
+            del rows[-1]
+        elif change == "move":
+            rows[0]["created_at"] = "2026-11-20T00:00:00Z"
+        else:
+            del rows[-1]
+            rows.insert(0, run(0))
+        return response
+
+    table.execute = execute
+    backend = SupabaseMemoryBackend(client=table)
+    with pytest.raises(MemoryTableReadError) as exc:
+        backend.get_recent_run_refs(project_id="a", limit=2)
+    assert [ref["id"] for ref in exc.value.partial_rows] == [3]
+    assert "window ended" in str(exc.value.cause)
+    assert len(table.calls) == 1
+
+
+def test_short_window_can_prove_requested_prefix_with_gapped_source_ids():
+    table = RunTable([run(1), run(4), run(9)], response_cap=2)
+    backend = SupabaseMemoryBackend(client=table)
+    assert [ref["id"] for ref in backend.get_recent_run_refs(project_id="a", limit=2)] == [9, 4]
+    assert len(table.calls) == 1
+
+
+@pytest.mark.parametrize("rows,count,reason", [
+    ([run(3), run(3)], 2, "repeated"),
+    ([run(3), run(4)], 2, "out of order"),
+    ([run(3), None], 2, "invalid source ID"),
+    ([run(3), {**run(2), "project_id": []}], 2, "invalid project field"),
+    ([run(3), {**run(2), "started_at": {"raw": "unexpected"}}], 2, "invalid started_at"),
+    ([run(3), {**run(2), "created_at": "2026-11-19T12:00:00"}], 2, "invalid created_at"),
+    ([run(3), {key: value for key, value in run(2).items() if key != "project_id"}], 2, "invalid project field"),
+    ([run(3)], 0, "completeness is unknown"),
+    ([], 2, "completeness is unknown"),
+    ([], -1, "completeness is unknown"),
+    ([run(3)], None, "completeness is unknown"),
+])
+def test_invalid_window_rejected_even_if_requested_prefix_looks_valid(rows, count, reason):
+    table = RunTable([])
+    table.execute = lambda: SimpleNamespace(data=rows, count=count)
+    backend = SupabaseMemoryBackend(client=table)
+    with pytest.raises(MemoryTableReadError) as exc:
+        backend.get_recent_run_refs(project_id="a", limit=1)
+    assert not exc.value.partial_rows
     assert reason in str(exc.value.cause)
-    assert len(table.calls) == expected_pages
+
+
+def test_order_validation_uses_timestamp_value_and_nulls_first():
+    rows = [
+        {**run(1), "created_at": None},
+        {**run(2), "created_at": "2026-11-19T14:00:00+01:00"},
+        {**run(3), "created_at": "2026-11-19T14:00:00+02:00"},
+    ]
+    table = RunTable([])
+    table.execute = lambda: SimpleNamespace(data=rows, count=len(rows))
+    assert [ref["id"] for ref in SupabaseMemoryBackend(client=table).get_recent_run_refs(
+        project_id="a",
+    )] == [1, 2, 3]
 
 
 def test_utf8_output_budget_never_returns_an_oversized_reference(monkeypatch):
@@ -175,7 +245,8 @@ def test_sdk_builds_projected_read_with_exact_count():
         assert request.url.path == "/director_runs"
         assert request.url.params["select"] == SupabaseMemoryBackend.RUN_REF_COLUMNS
         assert request.url.params["order"] == "created_at.desc,id.desc"
-        assert request.url.params["limit"] == "10"
+        assert request.url.params["limit"] == "50"
+        assert request.url.params["offset"] == "0"
         assert request.headers["prefer"] == "count=exact"
         row = run(42)
         del row["data_json"]

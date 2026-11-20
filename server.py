@@ -4101,12 +4101,14 @@ async def startup() -> None:
     )
 
     logger.info(
-        "Director continuous cycle: enabled",
+        "Director continuous cycle: %s",
+        "enabled" if AUTONOMOUS_ENABLED else "disabled",
     )
 
-    runtime.autonomous_worker = asyncio.create_task(
-        _autonomous_worker_loop(),
-    )
+    if AUTONOMOUS_ENABLED:
+        runtime.autonomous_worker = asyncio.create_task(
+            _autonomous_worker_loop(),
+        )
 
 
 @app.on_event("shutdown")

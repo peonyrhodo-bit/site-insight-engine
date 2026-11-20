@@ -365,3 +365,92 @@ def test_idempotency_contract_isolated_by_project_and_rejects_failed_key():
     db.rows[("alpha", "key-1")] = "failed"
     assert db.reserve("alpha", "key-1") == "conflict"
     assert db.reserve("beta", "key-1") == "conflict"
+
+
+class FakeDurableReservationStore:
+    """Offline transactional contract model, not a Supabase implementation."""
+
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self.rows = {}
+        self.executions = 0
+
+    def reserve(self, project, key, fingerprint):
+        with self._lock:
+            identity = (project, key)
+            row = self.rows.get(identity)
+            if row is not None:
+                if row["fingerprint"] != fingerprint:
+                    return ("conflict", None)
+                if row["status"] == "completed":
+                    result = row["result"]
+                    if not isinstance(result, dict) or not result:
+                        return ("storage_error", None)
+                    return ("replay", result)
+                return ("conflict", None)
+            self.rows[identity] = {
+                "fingerprint": fingerprint,
+                "status": "in_progress",
+                "result": None,
+                "generation": 1,
+            }
+            self.executions += 1
+            return ("reserved", 1)
+
+    def complete(self, project, key, generation, result, *, crash_before_commit=False):
+        with self._lock:
+            row = self.rows[(project, key)]
+            if row["generation"] != generation or row["status"] != "in_progress":
+                return False
+            if crash_before_commit:
+                raise RuntimeError("connection lost before commit")
+            # Atomic in-memory assignment models one database commit.
+            self.rows[(project, key)] = {
+                **row, "status": "completed", "result": result
+            }
+            return True
+
+
+def test_crash_before_completion_does_not_replay_partial_result():
+    store = FakeDurableReservationStore()
+    assert store.reserve("alpha", "key", "request-a") == ("reserved", 1)
+    with pytest.raises(RuntimeError, match="before commit"):
+        store.complete(
+            "alpha", "key", 1, {"run_id": 10},
+            crash_before_commit=True,
+        )
+    assert store.reserve("alpha", "key", "request-a") == ("conflict", None)
+    assert store.rows[("alpha", "key")]["result"] is None
+    assert store.executions == 1
+
+
+def test_crash_after_completion_replays_exact_persisted_result():
+    store = FakeDurableReservationStore()
+    store.reserve("alpha", "key", "request-a")
+    original = {"run_id": 10, "status": "completed", "nested": {"ok": True}}
+    assert store.complete("alpha", "key", 1, original)
+    # A worker crash after commit does not erase the durable result.
+    assert store.reserve("alpha", "key", "request-a") == ("replay", original)
+    assert store.executions == 1
+
+
+def test_changed_request_fingerprint_and_missing_result_fail_closed():
+    store = FakeDurableReservationStore()
+    store.reserve("alpha", "key", "request-a")
+    assert store.reserve("alpha", "key", "request-b") == ("conflict", None)
+    store.complete("alpha", "key", 1, {})
+    assert store.reserve("alpha", "key", "request-a") == ("storage_error", None)
+    assert store.executions == 1
+
+
+def test_superseded_worker_fencing_token_blocks_late_completion():
+    store = FakeDurableReservationStore()
+    store.reserve("alpha", "key", "request-a")
+    # Model a separately authorized takeover; not a production retry policy.
+    store.rows[("alpha", "key")]["generation"] = 2
+    assert not store.complete("alpha", "key", 1, {"old": True})
+    assert store.complete("alpha", "key", 2, {"new": True})
+    assert store.reserve("alpha", "key", "request-a") == (
+        "replay", {"new": True}
+    )

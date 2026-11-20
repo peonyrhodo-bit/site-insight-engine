@@ -25,7 +25,7 @@ BEGIN
 
     -- ON CONFLICT covers both the project/key unique constraint and the
     -- one-active-per-project partial unique index. The follow-up SELECT is
-    -- a separate READ COMMITTED statement after conflict resolution.
+    -- a separate internal SQL statement, but visibility under concurrent\n    -- commits must be verified by a subsequent caller-side statement.
     INSERT INTO pr_b_reservations (
         project_id, idempotency_key, request_fingerprint, status
     ) VALUES (p_project_id, p_idempotency_key, p_fingerprint, 'requested')

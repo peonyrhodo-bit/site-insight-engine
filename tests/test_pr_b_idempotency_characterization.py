@@ -187,3 +187,41 @@ def test_active_run_metadata_propagates_backend_error():
     backend.client = SimpleNamespace(table=lambda _: Query())
     with pytest.raises(RuntimeError, match="supabase unavailable"):
         backend.get_active_run_metadata(project_id="alpha")
+
+
+def test_legacy_json_only_active_run_is_not_returned_by_narrow_query():
+    """Document migration gate: indexed columns cannot see JSON-only legacy rows."""
+    from memory.supabase import SupabaseMemoryBackend
+
+    legacy_row = {
+        "id": 19,
+        "project_id": None,
+        "status": None,
+        "data_json": {"project_id": "alpha", "status": "running"},
+    }
+
+    class Query:
+        def select(self, columns):
+            assert "data_json" not in columns
+            return self
+
+        def eq(self, column, value):
+            assert (column, value) == ("project_id", "alpha")
+            return self
+
+        def in_(self, column, values):
+            assert column == "status"
+            return self
+
+        def order(self, *args, **kwargs):
+            return self
+
+        def execute(self):
+            # Supabase filters out the legacy row because its indexed columns
+            # are NULL, despite matching data_json values.
+            assert legacy_row["project_id"] is None
+            return SimpleNamespace(data=[])
+
+    backend = object.__new__(SupabaseMemoryBackend)
+    backend.client = SimpleNamespace(table=lambda _: Query())
+    assert backend.get_active_run_metadata(project_id="alpha") == []

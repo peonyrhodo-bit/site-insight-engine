@@ -85,8 +85,12 @@ async def test_partial_page_failure_is_not_silently_accepted():
     adapter.backend = Backend()
     adapter.memory = object()
 
-    with pytest.raises(MemoryReadError):
+    with pytest.raises(MemoryReadError) as error:
         await adapter.get_collection("recommendations", project_id="alpha")
+
+    assert error.value.status == "partial"
+    assert error.value.context["recommendations"] == [{"id": 1}]
+    assert "page two failed" in error.value.errors["recommendations"]
 
 
 @pytest.mark.asyncio

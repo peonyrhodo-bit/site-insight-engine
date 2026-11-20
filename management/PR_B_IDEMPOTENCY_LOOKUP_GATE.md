@@ -121,3 +121,15 @@ Commit `46da23e449d50f8a8504fa47fec4adc5d4e36dbf` passed three GitHub Actions wo
 These are characterization tests of the current implementation, **not proof that the proposed indexed design is implemented or concurrency-safe**. The separate new PR-B workflow did not show as an executed run; the existing Reliability workflow is the verified execution path.
 
 Next safe implementation step, pending scope approval: create a narrow read-only backend method for indexed active-run metadata lookup and a distinct idempotency lookup interface, backed by offline fake clients and failure tests. Do not enable a new query against an unindexed production column or migrate schema without separate owner approval.
+
+## Legacy active-run compatibility gate — 2026-11-20
+
+At commit `2397221a4e6ef0a0a9124b977047a777f18d2218`, the Reliability audit workflow passed **172 repository tests** and explicitly passed **8 PR-B characterization tests**. The added test documents that `get_active_run_metadata` intentionally filters top-level `project_id` and `status` and cannot discover legacy rows where both values exist only in `data_json`.
+
+**Do not wire this method into `ServerMemory.create_run` yet.** A top-level-only query is not a drop-in replacement for the current all-history scan. The existing partial unique index protects top-level active statuses only; JSON-only legacy rows require an explicit compatibility decision. Options for owner review:
+
+1. Read-only, bounded inventory of legacy JSON-only active rows using an appropriately indexed expression predicate; assess query plan and Supabase quota before any live read.
+2. Owner-approved, idempotent backfill of missing top-level `project_id` and `status` values after validating duplicates, status semantics, and existing partial uniqueness constraints.
+3. If legacy rows cannot be safely normalized, fail closed for projects with unresolved legacy-active ambiguity; do not silently skip them.
+
+Acceptance gate before runtime integration: no unbounded history scans, project isolation, stale heartbeat conservatism, unique-violation conflict mapping, explicit failure on backend errors, and concurrency tests. No migration or production read/write is authorized by this document.

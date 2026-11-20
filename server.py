@@ -2860,7 +2860,8 @@ async def _execute_autonomous_cycle_locked(
                 f"Director run event was not persisted for run_id={run_id}"
             )
 
-        final_status = str(serialized.get("status") or "succeeded").strip().lower()
+        raw_cycle_status = serialized.get("status") or "succeeded"
+        final_status = str(getattr(raw_cycle_status, "value", raw_cycle_status)).strip().lower()
         state = serialized.get("state", {})
         state_metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
         failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}

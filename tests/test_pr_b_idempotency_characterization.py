@@ -110,3 +110,80 @@ def test_supabase_update_run_reads_json_before_writing():
         }
         for call in calls
     )
+
+
+def test_active_run_metadata_is_narrow_and_project_scoped():
+    from memory.supabase import SupabaseMemoryBackend
+
+    calls = []
+
+    class Query:
+        def select(self, columns):
+            calls.append(("select", columns))
+            return self
+
+        def eq(self, column, value):
+            calls.append(("eq", column, value))
+            return self
+
+        def in_(self, column, values):
+            calls.append(("in", column, values))
+            return self
+
+        def order(self, column, *, desc):
+            calls.append(("order", column, desc))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"id": 4, "status": "running"}])
+
+    class Client:
+        def table(self, name):
+            assert name == "director_runs"
+            return Query()
+
+    backend = object.__new__(SupabaseMemoryBackend)
+    backend.client = Client()
+
+    assert backend.get_active_run_metadata(project_id="alpha") == [
+        {"id": 4, "status": "running"}
+    ]
+    assert calls == [
+        ("select", "id,project_id,status,created_at,updated_at,started_at,current_step"),
+        ("eq", "project_id", "alpha"),
+        ("in", "status", ["requested", "running"]),
+        ("order", "created_at", True),
+    ]
+
+
+def test_active_run_metadata_rejects_blank_project_without_query():
+    from memory.supabase import SupabaseMemoryBackend
+
+    backend = object.__new__(SupabaseMemoryBackend)
+    with pytest.raises(ValueError, match="project_id"):
+        backend.get_active_run_metadata(project_id="  ")
+
+
+def test_active_run_metadata_propagates_backend_error():
+    from memory.supabase import SupabaseMemoryBackend
+
+    class Query:
+        def select(self, *args):
+            return self
+
+        def eq(self, *args):
+            return self
+
+        def in_(self, *args):
+            return self
+
+        def order(self, *args, **kwargs):
+            return self
+
+        def execute(self):
+            raise RuntimeError("supabase unavailable")
+
+    backend = object.__new__(SupabaseMemoryBackend)
+    backend.client = SimpleNamespace(table=lambda _: Query())
+    with pytest.raises(RuntimeError, match="supabase unavailable"):
+        backend.get_active_run_metadata(project_id="alpha")

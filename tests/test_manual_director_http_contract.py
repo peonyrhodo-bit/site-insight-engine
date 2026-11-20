@@ -38,3 +38,28 @@ async def test_manual_route_accepts_valid_header_and_passes_parameters(monkeypat
     assert response.status_code == 200
     assert response.json() == {"status": "fixture"}
     assert calls == [("fixture-project", "fixture")]
+
+
+@pytest.mark.asyncio
+async def test_manual_wakeup_requires_token_when_autonomy_enabled(monkeypatch):
+    class FakeWakeup:
+        def __init__(self):
+            self.calls = []
+        def notify_manual(self, *, project_id):
+            self.calls.append(project_id)
+            return {"project_id": project_id}
+
+    wakeup = FakeWakeup()
+    monkeypatch.setattr(server, "AUTONOMOUS_ENABLED", True)
+    monkeypatch.setattr(server.runtime, "wakeup", wakeup)
+    monkeypatch.setenv("DIRECTOR_MANUAL_RUN_TOKEN", "offline-test-secret")
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://offline.test") as client:
+        missing = await client.post("/director/wakeup", params={"project_id": "fixture"})
+        wrong = await client.post("/director/wakeup", params={"project_id": "fixture"}, headers={"X-Director-Run-Token": "wrong"})
+        assert missing.status_code == 403
+        assert wrong.status_code == 403
+        assert wakeup.calls == []
+        allowed = await client.post("/director/wakeup", params={"project_id": "fixture"}, headers={"X-Director-Run-Token": "offline-test-secret"})
+    assert allowed.status_code == 200, allowed.text
+    assert wakeup.calls == ["fixture"]

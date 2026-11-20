@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "audit/**"
+      - "test/pr-b-isolated-postgres-harness-20261120"
 
 permissions:
   contents: read

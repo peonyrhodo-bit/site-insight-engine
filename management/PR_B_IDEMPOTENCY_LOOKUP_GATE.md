@@ -185,3 +185,54 @@ The final two tests simulate atomic reservations with a process-local, thread-sa
 - Test two independent database connections/processes against an isolated test database, including simultaneous reservation and crash between reservation and completion.
 - Confirm legacy-key backfill and legacy-active-run compatibility before switching reads.
 - Keep PR-B draft and unmerged until those gates and owner-approved rollout conditions are satisfied.
+
+## PostgreSQL transactional reservation design — proposal, not executable migration
+
+### Data model and immutable identity
+
+- Keep `director_runs.id` as the run identity and the existing unique active-project partial index.
+- Add nullable `idempotency_key` on `director_runs`, with unique partial index on `(project_id, idempotency_key)` where key is not null, **only after approved deduplication/backfill**. Normalize/validate key length and emptiness at the API boundary; do not silently truncate.
+- Treat `project_id` + `idempotency_key` as an immutable reservation identity. Preserve original request fingerprint (objective/parameters) so the same key cannot replay a different request. A mismatched fingerprint must return conflict.
+- Persist terminal result as an immutable, separately addressable payload or transactionally written `data_json` field; never derive a completed response from status alone.
+
+### Transaction contract
+
+A database-side reservation routine (RPC or equivalent transaction) accepts `project_id`, key, request fingerprint, and initial run metadata. Its entire decision executes in one transaction, using uniqueness constraints as the final arbiter:
+
+1. Validate nonempty project/key and authenticated project authorization.
+2. Look up the existing unique `(project_id,key)` row under appropriate row lock. If completed and its result is valid, return the original result; if running/requested/failed or fingerprint differs, return a typed conflict. If completed without a valid persisted result, return a typed storage error, never success.
+3. For a new key, enforce the existing one-active-run-per-project invariant in the **same transaction**. Insert the reserved run with `status=requested` and `idempotency_status=in_progress`; return its run ID only after commit. If a competing transaction wins, catch the uniqueness conflict and re-read the winning row by indexed project/key to classify replay vs conflict.
+4. Do not hold the database transaction open while executing the Director cycle or calling YouTube. Complete or fail the reserved run in a separate short transaction, conditionally by run ID, project ID, expected state, and ownership/fencing token.
+5. Atomically persist final result and terminal status. A crash before that commit leaves the reservation in progress, not spuriously completed. A crash after commit permits exact completed replay. Never write `completed` first and its result later.
+
+### Crash, timeout, and fencing
+
+- A lease expiry alone does **not** prove the old worker stopped. Use a monotonically increasing fencing generation/token and conditional writes; a superseded worker must be unable to commit results or overwrite the new owner's status.
+- Reclaiming a stale run requires an explicitly specified policy for in-flight external side effects. If the Director can trigger non-idempotent YouTube actions, do not automatically retry solely on elapsed heartbeat.
+- Missing/invalid heartbeat is active/ambiguous, not stale. A failed reservation retains its key and yields conflict unless an owner-approved retry protocol exists.
+- Releasing the active-project uniqueness guard and setting terminal result/status must occur together.
+
+### API and failure mapping
+
+| Database outcome | HTTP behavior |
+| --- | --- |
+| New reservation committed | Execute once using committed run ID |
+| Same key, completed, same fingerprint, valid result | 200 with exact persisted original response |
+| Same key, running/requested/failed | 409, no execution |
+| Same key, different fingerprint | 409, no execution |
+| Another key already active for project | 409, no execution |
+| Completed but result missing/malformed | 503, no execution |
+| DB timeout, quota 402, authorization/read/write failure | 503, no execution |
+| Uncertain commit outcome (connection dropped) | Reconcile by indexed key; never blindly insert/re-execute |
+
+### Offline test and later isolated-DB verification gates
+
+- Two independent clients reserve the same key concurrently; exactly one inserts, other classifies the winning row.
+- Two keys for one project cannot both execute; same key across two projects remains independent.
+- Crash before completion leaves conflict; crash after atomic completion replays exact result.
+- Lost connection after reservation commit must not trigger blind retry; query by indexed key to reconcile.
+- Fencing token rejects late completion from superseded worker.
+- Mismatched request fingerprint, invalid terminal payload, duplicate legacy keys, and legacy JSON-only active rows fail closed.
+- Query plan proves bounded/indexed lookups, without full-history or full-`data_json` scans.
+
+**Approval boundary:** This section is a design specification only. No SQL was executed, no migration was applied, and no production code path was switched. The PostgreSQL function, indexes, and isolated-DB tests require separate implementation approval.

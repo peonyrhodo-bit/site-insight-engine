@@ -91,3 +91,25 @@ Read-only code trace from `server.py` (main branch, 2026-11-20):
 5. **Legacy behavior:** project-scoped replay must preserve the exact saved result; compare nested-only keys, missing project IDs, and historical duplicates explicitly.
 
 **Review decision requested:** before any migration, approve a concrete reservation protocol and conflict/status matrix (same key vs different key; active vs completed vs failed vs malformed; same project vs another project), not merely an index.
+
+## Write-path audit — second unbounded read discovered
+
+The `ServerMemory.create_run` method in `memory/director_adapter.py` independently performs another `_recent_for_project(TABLE_RUNS, limit=None, project_id=...)` before inserting a run. **Optimizing only `server.py::_find_completed_idempotent_run` will not remove full-history reads from the Director start path.** This must be accounted for in PR-B scope and egress estimates.
+
+Current `create_run` logic:
+- Scans historical runs to identify `requested`/`running` rows.
+- Determines staleness from `updated_at`, `started_at`, `created_at` (including nested JSON fallbacks). Missing or malformed timestamps are conservatively considered active.
+- Marks an old active row `failed` when its timestamp exceeds `DIRECTOR_RUN_STALE_TIMEOUT_SECONDS` (minimum 60, default 1800), then inserts a new row.
+- On insert, converts unique-index errors into `DirectorCycleAlreadyRunning` (HTTP 409 at the caller); other failures propagate.
+- **Race risk:** stale cleanup and insertion are separate operations; a long-running process without a heartbeat could be marked failed and overlapped. Keep the current conservative missing-timestamp behavior; evaluate a transactional/conditional stale claim before changing semantics.
+
+Write-result audit:
+- `ServerMemory.update_run` propagates backend errors and raises if the result is not exactly `True`.
+- `SupabaseMemoryBackend.update_run` first selects the matched row's `data_json`, merges fields client-side, then updates by `id` and selects `id`. This is a **read-modify-write race**: concurrent updates can overwrite JSON changes.
+- `ServerMemory.save_run` (non-reservation path) catches exceptions and returns `None`, unlike `create_run`. Do not accidentally use this best-effort path for durable idempotency.
+- Successful keyed cycle writes `idempotency_status="completed"` and `result` through `update_run`; failures attempt to persist `failed`, logging if that update fails. This must remain fail-closed for retries.
+
+### Revised implementation gate
+PR-B should address **both** full-history readers on the keyed Director start path: (1) lookup by key and (2) active-run detection in `create_run`. Use indexed, narrow active-run metadata queries preserving the existing partial unique active-project index, and a safe transactional stale-resolution protocol. Avoid changing stale timeout semantics without separate review. Add tests for the second read, update races, stale claims, and persistence failures.
+
+No runtime code, migrations, SQL writes or production changes authorized.

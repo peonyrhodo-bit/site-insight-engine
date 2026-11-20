@@ -71,3 +71,23 @@ CREATE UNIQUE INDEX director_runs_project_idempotency_key_uq
 **Security gate:** the audit reported RLS disabled on `public.director_runs`. Verify Data API exposure, service credentials, privileges, and the intended per-project authorization model before rollout; never treat a project filter alone as access control.
 
 **Rollout gate:** agree on rollback (application compatibility with old schema, index removal strategy, handling in-flight runs), staged test environment, query-plan verification and production egress measurement. Migration and deployment remain separately owner-approved.
+
+## Request lifecycle trace and additional correctness gates
+
+Read-only code trace from `server.py` (main branch, 2026-11-20):
+
+- Both GET and POST Director run endpoints call `_run_director`.
+- `_run_director` trims a nonempty key, builds `f"{project_id}:{key}"`, uses `_DIRECTOR_REQUEST_LOCKS.setdefault(..., asyncio.Lock())`, then checks `_DIRECTOR_REQUEST_RESULTS` (process-local dict). **Neither cache nor lock is shared between Render processes.**
+- A cache miss invokes `_find_completed_idempotent_run` (current unbounded Supabase read), then `_run_director_once`.
+- `_run_director_once` reserves a run with nested `idempotency_key` and `idempotency_status="in_progress"`; on success, updates nested status to `completed` and persists full `result`; on failure, attempts to mark it `failed`.
+- `_find_completed_idempotent_run` rejects `failed` and `in_progress` with 409, replays `completed` only when `result` is a dict, and raises 503 on a history read failure.
+
+**Correctness risks to resolve before implementation:**
+
+1. **Atomicity:** `lookup -> create_run` is not an atomic transaction. The existing unique partial index on active project status limits simultaneous active runs but does not replace a durable uniqueness guarantee for completed keys. Define how concurrent processes distinguish same-key conflict, different-key active run, and completed replay.
+2. **Status ambiguity:** a keyed row marked `completed` with missing/non-dict `result`, or with an unknown status, is currently skipped and may allow another run. New implementation must choose and test fail-closed behavior; do not silently treat malformed historical state as no match.
+3. **Cache consistency:** process-local `_DIRECTOR_REQUEST_RESULTS` may replay a cached result without a fresh database check. Define when it is safe, how stale state is handled, and whether unbounded cache/lock growth should be separately addressed.
+4. **Update failure:** after successful Director work, a failure to persist `completed` must not be interpreted as successful durable idempotency. Verify `runtime.memory.update_run` return/error semantics and test partial persistence.
+5. **Legacy behavior:** project-scoped replay must preserve the exact saved result; compare nested-only keys, missing project IDs, and historical duplicates explicitly.
+
+**Review decision requested:** before any migration, approve a concrete reservation protocol and conflict/status matrix (same key vs different key; active vs completed vs failed vs malformed; same project vs another project), not merely an index.

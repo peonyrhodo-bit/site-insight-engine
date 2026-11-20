@@ -111,3 +111,35 @@ async def test_autonomy_research_decision_recommendation_persisted_end_to_end(mo
     assert calls["recommendation"]["decision_db_id"] == 11
     assert calls["result"]["recommendation_db_id"] == 12
     assert calls["event"]["data"]["result_id"] == 13
+
+
+@pytest.mark.asyncio
+async def test_second_wake_without_decision_does_not_persist_previous_recommendation(monkeypatch):
+    """The same Director instance may be reused; a new wake must stand alone."""
+    memory = MemoryLedger()
+    director = OfflineDirector()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+    server._DIRECTOR_CYCLE_LOCKS.pop("offline-project", None)
+
+    first = await server._execute_autonomous_cycle(project_id="offline-project")
+    assert first["run_id"] == 1
+    assert any(name == "recommendation" for name, _ in memory.calls)
+
+    memory.calls.clear()
+    memory.runs.clear()
+
+    async def sleeping_cycle(objective=None):
+        # This models a subsequent wake with no new recommendation.
+        director.last_result = None
+        return {"status": "sleeping", "message": "no new evidence"}
+
+    director.run_autonomous_cycle = sleeping_cycle
+    await server._execute_autonomous_cycle(project_id="offline-project")
+
+    names = [name for name, _ in memory.calls]
+    assert "recommendation" not in names
+    assert "decision" not in names
+    assert "result" in names
+    assert "event" in names
+    assert memory.runs[1]["status"] == "succeeded"

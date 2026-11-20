@@ -27,3 +27,19 @@ Status: **design-only / no runtime changes**. Owner approval required for schema
 
 ## No-go conditions
 Do not implement an arbitrary last-100/last-N scan, rely only on process-local cache, create a new column without backfill/compatibility, or introduce a migration without owner approval.
+
+## Live read-only schema audit — 2026-11-20
+
+Project: `site-insight-memory` (`oxbxnswywgpdlcfltmbq`), `public.director_runs`.
+- 159 rows; **0** rows with non-empty `data_json->>'idempotency_key'` at audit time. This is a snapshot, not a guarantee that no future or alternate database has legacy keys.
+- Columns include `id`, `project_id`, `status`, `created_at`, `updated_at`, `data_json`; **no top-level `idempotency_key` column**.
+- Existing indexes:
+  - `director_runs_pkey` on `id`;
+  - `director_runs_one_active_per_project_idx`: **unique `project_id` WHERE `status IN ('requested','running')`**;
+  - `director_runs_status_updated_at_idx` on `(status, updated_at DESC)`;
+  - `idx_director_runs_created_at` on `(created_at DESC)`.
+- No indexed `(project_id, idempotency_key)` lookup exists. The current one-active-per-project invariant is independent of key-level idempotency and **must remain intact**.
+- RLS reported disabled on this table; security/role exposure review is required before any schema or API design changes.
+- Only metadata/schema and aggregate counts were queried. **No migrations, updates, deletes, deployment or runtime calls**.
+
+Design implication: prefer a migration-reviewed durable keyed lookup with a careful compatibility path for nested JSON keys; do not assume legacy-key absence outside this observed snapshot.

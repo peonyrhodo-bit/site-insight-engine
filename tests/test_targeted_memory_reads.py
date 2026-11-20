@@ -123,3 +123,38 @@ async def test_unknown_collection_is_rejected():
 
     with pytest.raises(ValueError):
         await adapter.get_collection("runs")
+
+
+def test_supabase_recommendations_do_not_swallow_database_failure():
+    from memory.supabase import SupabaseMemoryBackend
+
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("supabase 402 quota exceeded")
+
+    backend._recent_for_project = fail
+
+    with pytest.raises(RuntimeError, match="402"):
+        backend.get_recent_recommendations(project_id="alpha", limit=5)
+
+
+@pytest.mark.asyncio
+async def test_supabase_read_failure_propagates_through_adapter():
+    from memory.supabase import SupabaseMemoryBackend
+
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("supabase 402 quota exceeded")
+
+    backend._recent_for_project = fail
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    with pytest.raises(MemoryReadError) as error:
+        await adapter.get_collection("recommendations", project_id="alpha", limit=5)
+
+    assert error.value.status == "error"
+    assert "402" in error.value.errors["recommendations"]

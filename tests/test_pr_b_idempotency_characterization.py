@@ -300,3 +300,68 @@ async def test_concurrent_different_projects_can_reserve_independently():
     )
     assert set(results) == {1, 2}
     assert backend.projects == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
+async def test_same_project_same_key_atomic_reservation_contract():
+    """Proposed DB contract, modeled offline; no production implementation yet."""
+    import asyncio
+    import threading
+
+    class FakeAtomicReservations:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.records = {}
+            self.executions = 0
+
+        def reserve(self, project, key):
+            with self.lock:
+                identity = (project, key)
+                if identity in self.records:
+                    row = self.records[identity]
+                    if row["status"] == "completed":
+                        return ("replay", row["result"])
+                    return ("conflict", None)
+                self.records[identity] = {"status": "in_progress", "result": None}
+                self.executions += 1
+                return ("reserved", None)
+
+        def complete(self, project, key, result):
+            with self.lock:
+                self.records[(project, key)] = {
+                    "status": "completed", "result": result
+                }
+
+    db = FakeAtomicReservations()
+    first, second = await asyncio.gather(
+        asyncio.to_thread(db.reserve, "alpha", "same-key"),
+        asyncio.to_thread(db.reserve, "alpha", "same-key"),
+    )
+    assert sorted([first[0], second[0]]) == ["conflict", "reserved"]
+    assert db.executions == 1
+
+    original = {"status": "completed", "run_id": 42, "result": {"ok": True}}
+    db.complete("alpha", "same-key", original)
+    assert db.reserve("alpha", "same-key") == ("replay", original)
+    assert db.executions == 1
+
+
+def test_idempotency_contract_isolated_by_project_and_rejects_failed_key():
+    """Fake reservation semantics to be enforced by future transactional RPC."""
+    class FakeReservations:
+        def __init__(self):
+            self.rows = {}
+
+        def reserve(self, project, key):
+            identity = (project, key)
+            if identity not in self.rows:
+                self.rows[identity] = "in_progress"
+                return "reserved"
+            return "conflict"
+
+    db = FakeReservations()
+    assert db.reserve("alpha", "key-1") == "reserved"
+    assert db.reserve("beta", "key-1") == "reserved"
+    db.rows[("alpha", "key-1")] = "failed"
+    assert db.reserve("alpha", "key-1") == "conflict"
+    assert db.reserve("beta", "key-1") == "conflict"

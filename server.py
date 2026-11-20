@@ -3115,21 +3115,8 @@ async def director_recommendations(
     project_id: str = DEFAULT_PROJECT_ID,
     limit: int = 20,
 ) -> dict[str, Any]:
-    context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit_runs=limit,
-        limit_decisions=limit,
-        limit_events=limit,
-        limit_chat=limit,
-        limit_actions=limit,
-        limit_results=limit,
-        limit_recommendations=limit,
-        limit_constraints=limit,
-    )
-
-    recommendations = context.get(
-        "recommendations",
-        [],
+    recommendations = await runtime.memory.get_collection(
+        "recommendations", project_id=project_id, limit=limit,
     )
 
     return {
@@ -3882,25 +3869,14 @@ async def events(
     project_id: str = DEFAULT_PROJECT_ID,
     limit: int = 50,
 ) -> dict[str, Any]:
-    context = await runtime.memory.get_context(
-        project_id=project_id,
-        limit_runs=limit,
-        limit_decisions=limit,
-        limit_events=limit,
-        limit_chat=limit,
-        limit_actions=limit,
-        limit_results=limit,
-        limit_recommendations=limit,
-        limit_constraints=limit,
+    events = await runtime.memory.get_collection(
+        "events", project_id=project_id, limit=limit,
     )
 
     return {
         "project_id": project_id,
         "events": serialize(
-            context.get(
-                "events",
-                [],
-            )
+            events
         ),
     }
 

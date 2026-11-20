@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from director.trace_context import get_correlation_id
-from memory.read_status import MemoryReadError
+from memory.read_status import MemoryReadError, MemoryTableReadError
 
 logger = logging.getLogger("memory.director_adapter")
 
@@ -596,6 +596,63 @@ class ServerMemory:
                 or row.get("recommendation_id")
                 or row.get("id")
             )
+
+    async def get_collection(
+        self,
+        collection: str,
+        *,
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Read one memory collection without fetching unrelated tables.
+
+        Preserve the full-context fail-closed contract for backends that do
+        not expose a dedicated reader.
+        """
+        readers = {
+            "recommendations": "get_recent_recommendations",
+            "events": "get_recent_events",
+        }
+        if collection not in readers:
+            raise ValueError(f"Unsupported memory collection: {collection}")
+        if self.backend is None:
+            raise MemoryReadError(
+                "unavailable",
+                errors={"backend": "Memory storage is not initialized"},
+            )
+
+        reader = getattr(self.backend, readers[collection], None)
+        if not callable(reader):
+            context = await self.get_context(
+                project_id=project_id,
+                **{f"limit_{collection}": limit},
+            )
+            return context[collection]
+
+        try:
+            rows = await self._call_off_thread(
+                reader, project_id=project_id, limit=limit,
+            )
+            if not isinstance(rows, list):
+                raise TypeError("Memory collection reader returned a non-list")
+            if collection == "recommendations":
+                context = {"recommendations": rows}
+                self._normalize_recommendation_ids(context)
+            return rows
+        except MemoryReadError:
+            raise
+        except MemoryTableReadError as exc:
+            logger.exception("Memory collection read incomplete: %s", collection)
+            raise MemoryReadError(
+                "partial" if exc.partial_rows else "error",
+                context={collection: exc.partial_rows},
+                errors={collection: str(exc.cause or exc)},
+            ) from exc
+        except Exception as exc:
+            logger.exception("Memory collection read failed: %s", collection)
+            raise MemoryReadError(
+                "error", errors={collection: str(exc)},
+            ) from exc
 
     async def get_context(
         self,

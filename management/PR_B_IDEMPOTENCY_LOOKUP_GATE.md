@@ -113,3 +113,11 @@ Write-result audit:
 PR-B should address **both** full-history readers on the keyed Director start path: (1) lookup by key and (2) active-run detection in `create_run`. Use indexed, narrow active-run metadata queries preserving the existing partial unique active-project index, and a safe transactional stale-resolution protocol. Avoid changing stale timeout semantics without separate review. Add tests for the second read, update races, stale claims, and persistence failures.
 
 No runtime code, migrations, SQL writes or production changes authorized.
+
+## Offline characterization CI checkpoint — 2026-11-20
+
+Commit `46da23e449d50f8a8504fa47fec4adc5d4e36dbf` passed three GitHub Actions workflows. The Reliability audit workflow explicitly executed `python -m pytest -q tests/test_pr_b_idempotency_characterization.py` with **4 passed**; its general regression run reported **168 passed, 4 warnings, 11 subtests passed**. Supabase backend regression and history pagination workflows also passed.
+
+These are characterization tests of the current implementation, **not proof that the proposed indexed design is implemented or concurrency-safe**. The separate new PR-B workflow did not show as an executed run; the existing Reliability workflow is the verified execution path.
+
+Next safe implementation step, pending scope approval: create a narrow read-only backend method for indexed active-run metadata lookup and a distinct idempotency lookup interface, backed by offline fake clients and failure tests. Do not enable a new query against an unindexed production column or migrate schema without separate owner approval.

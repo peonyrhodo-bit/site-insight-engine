@@ -1,0 +1,37 @@
+-- PR-B transaction prototype, REVIEW ONLY. NEVER APPLY TO PRODUCTION.
+-- Not executed. For a disposable pr_b_test_* database after explicit approval.
+-- Requires tests with two independent connections before any activation.
+--
+-- Caller must authenticate and authorize project_id before invoking.
+-- This prototype deliberately does not use SECURITY DEFINER.
+--
+-- Reserve:
+-- 1. BEGIN transaction (READ COMMITTED).
+-- 2. INSERT a requested reservation with (project_id, idempotency_key,
+--    request_fingerprint), ON CONFLICT DO NOTHING RETURNING id, generation.
+-- 3. If inserted, COMMIT and return RESERVED.
+-- 4. If not inserted, SELECT by indexed (project_id, idempotency_key):
+--    a. fingerprint differs -> CONFLICT
+--    b. completed with valid result_json -> REPLAY exact persisted JSON
+--    c. completed without valid result -> STORAGE_ERROR
+--    d. requested/running/failed -> CONFLICT
+-- 5. If insertion conflicts on the active-project partial unique index
+--    rather than project/key, return ACTIVE_PROJECT_CONFLICT. Never run cycle.
+-- 6. On timeout or uncertain commit, reconcile by indexed key before
+--    attempting any new work. Never retry side effects automatically.
+--
+-- Finalize (one atomic transaction):
+-- UPDATE pr_b_reservations
+-- SET status = 'completed', result_json = :result_json,
+--     updated_at = clock_timestamp()
+-- WHERE project_id = :project_id
+--   AND idempotency_key = :idempotency_key
+--   AND fencing_generation = :expected_generation
+--   AND status IN ('requested', 'running')
+-- RETURNING id, result_json;
+-- Require exactly one row; otherwise reject stale worker. Commit result and
+-- terminal status together. Validate nonempty JSON object before UPDATE.
+--
+-- IMPORTANT: the above is an algorithm sketch, not an executable function.
+-- Transactional ordering, exception mapping, privilege model, and cross-
+-- worker ownership require review and PG-01..PG-15 integration coverage.

@@ -2185,6 +2185,8 @@ class Director:
         """
         # A prior wake's decision must never be persisted as this wake's decision.
         self.state.metadata.pop("current_decision", None)
+        # Never reuse a prior wake's recommendation when this wake only waits.
+        self.last_result = None
 
         autonomy = DirectorAutonomy(
             config=self.autonomy_config,

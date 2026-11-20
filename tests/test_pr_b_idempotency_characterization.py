@@ -225,3 +225,78 @@ def test_legacy_json_only_active_run_is_not_returned_by_narrow_query():
     backend = object.__new__(SupabaseMemoryBackend)
     backend.client = SimpleNamespace(table=lambda _: Query())
     assert backend.get_active_run_metadata(project_id="alpha") == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_project_starts_only_one_cycle():
+    """Fake durable unique guard: exactly one of two concurrent starts wins."""
+    import asyncio
+    from memory.director_adapter import DirectorCycleAlreadyRunning
+
+    class Backend:
+        TABLE_RUNS = "director_runs"
+
+        def __init__(self):
+            self.lock = __import__("threading").Lock()
+            self.saved = 0
+
+        def _recent_for_project(self, *args, **kwargs):
+            return []
+
+        def save_run(self, *, language, region_code, data):
+            with self.lock:
+                if self.saved:
+                    raise RuntimeError("duplicate key value violates unique constraint")
+                self.saved += 1
+                return 42
+
+    backend = Backend()
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    outcomes = await asyncio.gather(
+        adapter.create_run("alpha", {"status": "requested"}),
+        adapter.create_run("alpha", {"status": "requested"}),
+        return_exceptions=True,
+    )
+    assert sum(item == 42 for item in outcomes) == 1
+    assert sum(isinstance(item, DirectorCycleAlreadyRunning) for item in outcomes) == 1
+    assert backend.saved == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_different_projects_can_reserve_independently():
+    """Fake DB enforces uniqueness per project, not globally."""
+    import asyncio
+    import threading
+
+    class Backend:
+        TABLE_RUNS = "director_runs"
+
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.projects = set()
+
+        def _recent_for_project(self, *args, **kwargs):
+            return []
+
+        def save_run(self, *, language, region_code, data):
+            with self.lock:
+                project = data["project_id"]
+                if project in self.projects:
+                    raise RuntimeError("duplicate key")
+                self.projects.add(project)
+                return len(self.projects)
+
+    backend = Backend()
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    results = await asyncio.gather(
+        adapter.create_run("alpha", {"status": "requested"}),
+        adapter.create_run("beta", {"status": "requested"}),
+    )
+    assert set(results) == {1, 2}
+    assert backend.projects == {"alpha", "beta"}

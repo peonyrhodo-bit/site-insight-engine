@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from director.trace_context import get_correlation_id
-from memory.read_status import MemoryReadError
+from memory.read_status import MemoryReadError, MemoryTableReadError
 
 logger = logging.getLogger("memory.director_adapter")
 
@@ -641,6 +641,13 @@ class ServerMemory:
             return rows
         except MemoryReadError:
             raise
+        except MemoryTableReadError as exc:
+            logger.exception("Memory collection read incomplete: %s", collection)
+            raise MemoryReadError(
+                "partial" if exc.partial_rows else "error",
+                context={collection: exc.partial_rows},
+                errors={collection: str(exc.cause or exc)},
+            ) from exc
         except Exception as exc:
             logger.exception("Memory collection read failed: %s", collection)
             raise MemoryReadError(

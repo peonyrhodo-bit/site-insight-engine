@@ -220,11 +220,10 @@ class SupabaseMemoryBackend:
         requested_limit = (
             None if limit is None else self._limit(limit, default_limit)
         )
-        # Respect the API page cap and avoid fetching 50 full JSON rows
-        # when a caller needs only a handful of recent records.
+        # Project filtering happens after each page (legacy IDs may be
+        # nested in JSON). Keep 50-row pages for project-specific reads:
+        # shrinking to a tiny requested limit causes excessive round trips.
         page_size = max(1, min(int(page_size), 1000))
-        if requested_limit is not None:
-            page_size = min(page_size, requested_limit)
         rows: list[dict[str, Any]] = []
         offset = 0
         expected_project = str(project_id) if project_id is not None else None

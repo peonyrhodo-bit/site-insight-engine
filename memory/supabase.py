@@ -217,10 +217,14 @@ class SupabaseMemoryBackend:
         data_json, so filtering is done after each page is read. Stable ordering
         (with id as a tie-breaker) keeps offset pagination deterministic.
         """
-        page_size = max(1, int(page_size))
         requested_limit = (
             None if limit is None else self._limit(limit, default_limit)
         )
+        # Respect the API page cap and avoid fetching 50 full JSON rows
+        # when a caller needs only a handful of recent records.
+        page_size = max(1, min(int(page_size), 1000))
+        if requested_limit is not None:
+            page_size = min(page_size, requested_limit)
         rows: list[dict[str, Any]] = []
         offset = 0
         expected_project = str(project_id) if project_id is not None else None

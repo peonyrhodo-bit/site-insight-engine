@@ -1084,7 +1084,7 @@ class DataAdapter:
 
         result: dict[str, Any] = {
             "project_id": project_id,
-            "history_analytics": dict(self._loaded_history_analytics) if self._loaded_project_id == project_id else {},
+            "history_analytics": dict(getattr(self, "_loaded_history_analytics", {})) if getattr(self, "_loaded_project_id", None) == project_id else {},
             "observations": [],
             "previous_observations": [],
             "trend_current_observations": [],

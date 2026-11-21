@@ -71,6 +71,7 @@ class StreamingYouTubeAnalytics:
         self.channel_counts: Counter[str] = Counter()
         self.topic_counts: Counter[str] = Counter()
         self.topic_view_stats: dict[str, _OnlineStats] = {}
+        self.snapshot_topic_view_stats: dict[str, _OnlineStats] = {}
         self.video_stats = {name: _OnlineStats() for name in ("views",)}
         self.snapshot_stats = {name: _OnlineStats() for name in self.METRICS}
         self.top_videos: list[dict[str, Any]] = []
@@ -125,6 +126,21 @@ class StreamingYouTubeAnalytics:
         for metric in self.METRICS:
             value = statistics.get(metric, radar.get(metric, data.get(metric)))
             self.snapshot_stats[metric].add(value)
+        # Snapshot evidence is separate: multiple snapshots can belong to one
+        # video, so it must never be merged into per-video averages.
+        explicit_topic = next((
+            data.get(field) for field in ("topic", "niche", "thematic_direction")
+            if isinstance(data.get(field), str) and data.get(field).strip()
+        ), None)
+        snapshot_views = next((
+            _number(statistics.get(key, radar.get(key, data.get(key))))
+            for key in ("viewCount", "views", "view_count")
+            if _number(statistics.get(key, radar.get(key, data.get(key)))) is not None
+        ), None)
+        if explicit_topic and snapshot_views is not None:
+            topic = explicit_topic.strip()[:160]
+            if topic in self.snapshot_topic_view_stats or len(self.snapshot_topic_view_stats) < 1000:
+                self.snapshot_topic_view_stats.setdefault(topic, _OnlineStats()).add(snapshot_views)
         captured = str(row.get("created_at") or "")
         if captured:
             self.latest_snapshot_at = max(captured, self.latest_snapshot_at or captured)
@@ -146,6 +162,14 @@ class StreamingYouTubeAnalytics:
                 for topic, stats in sorted(self.topic_view_stats.items(), key=lambda item: item[1].count, reverse=True)[:100]
             ],
             "snapshot_metrics": {key: value.to_dict() for key, value in self.snapshot_stats.items()},
+            "snapshot_topic_view_metrics": [
+                {"topic": topic, "snapshots_with_views": stats.count,
+                 "average_snapshot_views": stats.to_dict()["average"],
+                 "source": "video_snapshots.data_json",
+                 "unit": "snapshots_not_unique_videos"}
+                for topic, stats in sorted(self.snapshot_topic_view_stats.items(),
+                                           key=lambda item: item[1].count, reverse=True)[:100]
+            ],
             "top_videos": list(self.top_videos),
             "earliest_snapshot_at": self.earliest_snapshot_at,
             "latest_snapshot_at": self.latest_snapshot_at,

@@ -234,3 +234,24 @@ async def test_director_decision_carries_history_evidence():
     decision = await director.decide(analysis)
     assert decision.metadata['history_analytics'] == history
     assert decision.metadata['opportunity_id'] == 'topic-1'
+
+@pytest.mark.asyncio
+async def test_global_history_does_not_falsely_reorder_opportunities():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [
+            {'opportunity_id': 'strong', 'overall_score': 0.9},
+            {'opportunity_id': 'weak', 'overall_score': 0.2},
+        ],
+        'history_analytics': {
+            'youtube': {'status': 'complete', 'video_count': 5000,
+                        'snapshot_count': 10000, 'top_topics': [
+                            {'topic': 'weak', 'videos': 3000}
+                        ]}
+        },
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['opportunity_id'] == 'strong'
+    assert decision.metadata['history_analytics'] == analysis['history_analytics']

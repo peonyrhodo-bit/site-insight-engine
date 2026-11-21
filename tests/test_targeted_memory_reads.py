@@ -263,7 +263,7 @@ async def test_director_links_only_exact_historical_topic_to_candidate():
     director.context.objective = 'Evaluate topics'
     analysis = {
         'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Garden Ideas', 'overall_score': 0.9}],
-        'history_analytics': {'youtube': {'top_topics': [
+        'history_analytics': {'youtube': {'status': 'complete', 'top_topics': [
             {'topic': 'garden ideas', 'videos': 17},
             {'topic': 'garden', 'videos': 900},
         ]}},
@@ -272,3 +272,18 @@ async def test_director_links_only_exact_historical_topic_to_candidate():
     assert decision.metadata['matching_historical_topics'] == [
         {'topic': 'garden ideas', 'videos': 17},
     ]
+
+@pytest.mark.asyncio
+async def test_partial_history_cannot_validate_specific_topic():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Garden Ideas', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'partial', 'top_topics': [{'topic': 'Garden Ideas', 'videos': 17}],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert 'matching_historical_topics' not in decision.metadata
+    assert decision.metadata['history_analytics']['youtube']['status'] == 'partial'

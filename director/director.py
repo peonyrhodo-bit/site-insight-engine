@@ -1543,6 +1543,24 @@ class Director:
                         ]
                         if matched_views:
                             decision.metadata["matching_historical_view_metrics"] = matched_views
+                            topic_counts = {
+                                item["topic"].strip().casefold(): item["videos"]
+                                for item in matching_topics
+                                if isinstance(item.get("videos"), int) and item["videos"] > 0
+                            }
+                            decision.metadata["historical_view_coverage"] = [
+                                {
+                                    "topic": item["topic"],
+                                    "videos_with_views": item["videos_with_views"],
+                                    "topic_video_count": topic_counts[item["topic"].strip().casefold()],
+                                    "fraction": round(
+                                        min(item["videos_with_views"], topic_counts[item["topic"].strip().casefold()])
+                                        / topic_counts[item["topic"].strip().casefold()], 3
+                                    ),
+                                }
+                                for item in matched_views
+                                if item["topic"].strip().casefold() in topic_counts
+                            ]
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

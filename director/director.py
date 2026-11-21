@@ -1561,6 +1561,19 @@ class Director:
                                 for item in matched_views
                                 if item["topic"].strip().casefold() in topic_counts
                             ]
+        coverage = decision.metadata.get("historical_view_coverage", [])
+        if isinstance(coverage, list) and coverage:
+            # Conservative evidence gate: no ranking changes based on thin samples.
+            decision.metadata["historical_evidence_quality"] = [
+                {
+                    "topic": item["topic"],
+                    "status": ("sufficient_sample" if item["videos_with_views"] >= 20
+                               and item["fraction"] >= 0.5 else "limited_sample"),
+                    "minimum_videos_with_views": 20,
+                    "minimum_coverage_fraction": 0.5,
+                }
+                for item in coverage
+            ]
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

@@ -426,3 +426,19 @@ def test_snapshot_topic_views_are_separate_and_require_explicit_topic():
         'unit': 'snapshots_not_unique_videos',
     }]
     assert result['topic_view_metrics'] == []
+
+def test_snapshot_video_id_join_uses_bounded_video_topic_index():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'statistics': {'viewCount': '400'},
+    }})
+    stats.add_snapshot({'video_id': 'unknown', 'data_json': {
+        'statistics': {'viewCount': '900'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'][0]['topic'] == 'Gardening'
+    assert result['snapshot_topic_view_metrics'][0]['average_snapshot_views'] == 400.0
+    assert result['snapshot_topic_join_misses'] == 1
+    assert result['snapshot_video_topic_index_limit'] == 1000

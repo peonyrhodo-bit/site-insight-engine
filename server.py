@@ -713,6 +713,7 @@ class DataAdapter:
         self.relations = None
         self.opportunity_registry = None
         self._loaded_project_id: str | None = None
+        self._loaded_history_analytics: dict[str, Any] = {}
 
         try:
             if YouTubeDataRegistry is not None:
@@ -1083,7 +1084,7 @@ class DataAdapter:
 
         result: dict[str, Any] = {
             "project_id": project_id,
-            "history_analytics": {},
+            "history_analytics": dict(self._loaded_history_analytics) if self._loaded_project_id == project_id else {},
             "observations": [],
             "previous_observations": [],
             "trend_current_observations": [],
@@ -1242,6 +1243,7 @@ class DataAdapter:
                                             "Failed to restore data relation"
                                         )
 
+                self._loaded_history_analytics = dict(result.get("history_analytics", {}))
                 self._loaded_project_id = project_id
                 logger.info(
                     "DIRECTOR MEMORY phase=project_data_loaded project_id=%s memory=%s youtube=%s opportunities=%s relations=%s research_sets=%s",

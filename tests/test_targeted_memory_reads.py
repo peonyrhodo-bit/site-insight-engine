@@ -323,3 +323,6 @@ async def test_director_attaches_only_verified_topic_view_performance():
     assert decision.metadata['matching_historical_view_metrics'] == [
         {'topic': 'gardening', 'videos_with_views': 3, 'average_views': 200.0},
     ]
+    assert decision.metadata['historical_view_coverage'] == [
+        {'topic': 'gardening', 'videos_with_views': 3, 'topic_video_count': 10, 'fraction': 0.3},
+    ]

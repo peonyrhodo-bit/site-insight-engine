@@ -70,6 +70,7 @@ class StreamingYouTubeAnalytics:
         self.snapshot_count = 0
         self.channel_counts: Counter[str] = Counter()
         self.topic_counts: Counter[str] = Counter()
+        self.topic_view_stats: dict[str, _OnlineStats] = {}
         self.video_stats = {name: _OnlineStats() for name in ("views",)}
         self.snapshot_stats = {name: _OnlineStats() for name in self.METRICS}
         self.top_videos: list[dict[str, Any]] = []
@@ -81,18 +82,29 @@ class StreamingYouTubeAnalytics:
         channel = row.get("channel_id") or row.get("channelId")
         _bounded_increment(self.channel_counts, channel)
         metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        topics: set[str] = set()
         for field in ("topic", "category", "niche", "thematic_direction"):
-            _bounded_increment(self.topic_counts, metadata.get(field))
+            value = metadata.get(field)
+            _bounded_increment(self.topic_counts, value)
+            if value is not None and str(value).strip():
+                topics.add(str(value).strip()[:160])
         for field in ("topics", "categories", "niches", "thematic_directions", "tags"):
             values = metadata.get(field)
             if isinstance(values, (list, tuple, set)):
                 for value in values:
                     _bounded_increment(self.topic_counts, value)
+                    if value is not None and str(value).strip():
+                        topics.add(str(value).strip()[:160])
         metrics = row.get("metrics") if isinstance(row.get("metrics"), Mapping) else {}
         views = next((_number(row.get(key)) for key in ("views", "viewCount", "view_count") if _number(row.get(key)) is not None), None)
         if views is None:
             views = next((_number(metrics.get(key)) for key in ("views", "viewCount", "view_count") if _number(metrics.get(key)) is not None), None)
         self.video_stats["views"].add(views)
+        if views is not None:
+            for topic in topics:
+                if topic not in self.topic_view_stats and len(self.topic_view_stats) >= 1000:
+                    continue
+                self.topic_view_stats.setdefault(topic, _OnlineStats()).add(views)
         candidate = {
             "video_id": str(row.get("video_id") or ""),
             "title": str(row.get("title") or "")[:300],
@@ -128,6 +140,10 @@ class StreamingYouTubeAnalytics:
             "top_channels": [{"channel_id": key, "videos": count} for key, count in self.channel_counts.most_common(100)],
             "top_topics": [{"topic": key, "videos": count} for key, count in self.topic_counts.most_common(100)],
             "video_metrics": {key: value.to_dict() for key, value in self.video_stats.items()},
+            "topic_view_metrics": [
+                {"topic": topic, "videos_with_views": stats.count, "average_views": stats.to_dict()["average"]}
+                for topic, stats in sorted(self.topic_view_stats.items(), key=lambda item: item[1].count, reverse=True)[:100]
+            ],
             "snapshot_metrics": {key: value.to_dict() for key, value in self.snapshot_stats.items()},
             "top_videos": list(self.top_videos),
             "earliest_snapshot_at": self.earliest_snapshot_at,

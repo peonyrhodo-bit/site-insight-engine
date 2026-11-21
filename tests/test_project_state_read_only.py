@@ -187,3 +187,27 @@ async def test_trend_cohort_reuses_current_observation_dicts():
         is result["observations"][0]
     )
 
+
+@pytest.mark.asyncio
+async def test_project_state_preserves_history_summary_without_reloading():
+    class HistoryStorage(StorageSpy):
+        def load_youtube_analysis_data(self, *, project_id):
+            self.youtube_load_calls += 1
+            return {
+                'videos': [], 'snapshots': [], 'queries': [],
+                'history_analytics': {'video_count': 321, 'snapshot_count': 654},
+            }
+
+    adapter = DataAdapter.__new__(DataAdapter)
+    storage = HistoryStorage()
+    adapter.storage = storage
+    adapter.youtube_registry = ReadOnlyRegistry()
+    adapter.research_manager = None
+    adapter.relations = None
+    adapter.opportunity_registry = None
+
+    first = await adapter.get_project_state('test-project')
+    second = await adapter.get_project_state('test-project')
+    assert first['history_analytics']['youtube']['video_count'] == 321
+    assert second['history_analytics']['youtube']['snapshot_count'] == 654
+    assert storage.youtube_load_calls == 1

@@ -220,3 +220,17 @@ async def test_api_routes_preserve_response_shape_without_full_context(monkeypat
         ("recommendations", "alpha", 4),
         ("events", "beta", 6),
     ]
+
+@pytest.mark.asyncio
+async def test_director_decision_carries_history_evidence():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate YouTube topics'
+    history = {'youtube': {'video_count': 321, 'snapshot_count': 654}}
+    analysis = {
+        'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Topic 1', 'overall_score': 0.9}],
+        'history_analytics': history,
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['history_analytics'] == history
+    assert decision.metadata['opportunity_id'] == 'topic-1'

@@ -2387,6 +2387,18 @@ class Director:
             "results": [],
         }
 
+        # Do not spend external quota when the memory baseline is unavailable.
+        memory_read = self.context.metadata.get("memory_read")
+        if isinstance(memory_read, dict) and str(
+            memory_read.get("status") or ""
+        ).lower() in {"error", "unavailable"}:
+            return {
+                "status": "blocked",
+                "reason": "memory_read_unavailable",
+                "research_plan": plan.to_dict(),
+                "missing_data": list(self.context.missing_data),
+            }
+
         executor = getattr(
             self.research_service,
             "execute",

@@ -359,3 +359,29 @@ def test_streaming_deduplicates_topic_labels_within_one_video():
     result = stats.to_dict()
     assert result['top_topics'] == [{'topic': 'Gardening', 'videos': 1}]
     assert result['topic_view_metrics'][0]['videos_with_views'] == 1
+
+@pytest.mark.asyncio
+async def test_niche_comparison_excludes_thin_samples_without_reordering():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    decision = await director.decide({
+        'opportunities': [
+            {'opportunity_id': 'a', 'title': 'Gardening', 'overall_score': 0.9},
+            {'opportunity_id': 'b', 'title': 'Cooking', 'overall_score': 0.8},
+        ],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 40},
+                           {'topic': 'Cooking', 'videos': 100}],
+            'topic_view_metrics': [
+                {'topic': 'Gardening', 'videos_with_views': 30, 'average_views': 200.0},
+                {'topic': 'Cooking', 'videos_with_views': 2, 'average_views': 90000.0},
+            ],
+        }},
+    })
+    assert decision.metadata['opportunity_id'] == 'a'
+    assert decision.metadata['historical_niche_comparison'] == [
+        {'topic': 'Gardening', 'videos_with_views': 30,
+         'topic_video_count': 40, 'average_views': 200.0},
+    ]

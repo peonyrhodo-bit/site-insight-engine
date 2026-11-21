@@ -302,3 +302,24 @@ def test_streaming_history_tracks_per_topic_views_only_when_observed():
     }
     assert by_topic['Cooking']['average_views'] == 50.0
     assert next(row['videos'] for row in result['top_topics'] if row['topic'] == 'Gardening') == 3
+
+@pytest.mark.asyncio
+async def test_director_attaches_only_verified_topic_view_performance():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [{'opportunity_id': 'garden', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 10}],
+            'topic_view_metrics': [
+                {'topic': 'gardening', 'videos_with_views': 3, 'average_views': 200.0},
+                {'topic': 'Cooking', 'videos_with_views': 99, 'average_views': 90000.0},
+            ],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['matching_historical_view_metrics'] == [
+        {'topic': 'gardening', 'videos_with_views': 3, 'average_views': 200.0},
+    ]

@@ -1507,6 +1507,11 @@ class Director:
             candidate,
             objective=self.context.objective or "",
         )
+        # Preserve compact historical evidence with the decision so its
+        # rationale can be audited without re-reading Supabase history.
+        history = analysis.get("history_analytics")
+        if isinstance(history, dict) and history:
+            decision.metadata["history_analytics"] = history
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

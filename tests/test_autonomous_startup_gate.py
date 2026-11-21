@@ -78,3 +78,38 @@ async def test_shutdown_without_worker_is_safe(monkeypatch):
     monkeypatch.setattr(server.runtime, "autonomous_worker", None)
     await server.shutdown()
     assert server.runtime.autonomous_worker is None
+
+
+@pytest.mark.asyncio
+async def test_first_autonomous_wake_is_delayed_by_interval(monkeypatch):
+    """Enabling the worker must not immediately execute a costly cycle."""
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    import server
+
+    scheduled = []
+    class FakeScheduler:
+        def list(self, *, project_id):
+            return []
+        def schedule_interval(self, **kwargs):
+            scheduled.append(kwargs)
+    class FakeWakeup:
+        def collect_due(self, scheduler):
+            raise AssertionError("worker should be cancelled before polling")
+    monkeypatch.setattr(server.runtime, "scheduler", FakeScheduler())
+    monkeypatch.setattr(server.runtime, "wakeup", FakeWakeup())
+    monkeypatch.setattr(server, "AUTONOMOUS_WAKE_INTERVAL_SECONDS", 3600)
+    before = datetime.now(timezone.utc)
+    task = asyncio.create_task(server._autonomous_worker_loop())
+    try:
+        for _ in range(100):
+            if scheduled:
+                break
+            await asyncio.sleep(0)
+        assert len(scheduled) == 1
+        delay = (scheduled[0]["first_run_at"] - before).total_seconds()
+        assert 3599 <= delay <= 3605
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

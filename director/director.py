@@ -1512,6 +1512,22 @@ class Director:
         history = analysis.get("history_analytics")
         if isinstance(history, dict) and history:
             decision.metadata["history_analytics"] = history
+            youtube_history = history.get("youtube", {})
+            if isinstance(youtube_history, dict):
+                candidate_labels = (
+                    (candidate.get("topic"), candidate.get("title"), candidate.get("name"))
+                    if isinstance(candidate, dict) else
+                    (getattr(candidate, "topic", None), getattr(candidate, "title", None), getattr(candidate, "name", None))
+                )
+                labels = {str(label).strip().casefold() for label in candidate_labels if label}
+                matching_topics = [
+                    {"topic": item["topic"], "videos": item.get("videos", 0)}
+                    for item in youtube_history.get("top_topics", [])
+                    if isinstance(item, dict) and isinstance(item.get("topic"), str)
+                    and item["topic"].strip().casefold() in labels
+                ]
+                if matching_topics:
+                    decision.metadata["matching_historical_topics"] = matching_topics
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

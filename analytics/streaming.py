@@ -74,6 +74,8 @@ class StreamingYouTubeAnalytics:
         self.snapshot_topic_view_stats: dict[str, _OnlineStats] = {}
         self._video_topics: dict[str, tuple[str, ...]] = {}
         self.snapshot_topic_join_misses = 0
+        self.snapshot_topic_join_hits = 0
+        self.snapshot_explicit_topic_hits = 0
         self.video_stats = {name: _OnlineStats() for name in ("views",)}
         self.snapshot_stats = {name: _OnlineStats() for name in self.METRICS}
         self.top_videos: list[dict[str, Any]] = []
@@ -147,9 +149,12 @@ class StreamingYouTubeAnalytics:
         if snapshot_views is not None:
             if explicit_topic:
                 topics = (explicit_topic.strip()[:160],)
+                self.snapshot_explicit_topic_hits += 1
             else:
                 topics = joined_topics
-                if not topics:
+                if topics:
+                    self.snapshot_topic_join_hits += 1
+                else:
                     self.snapshot_topic_join_misses += 1
             for topic in topics:
                 if topic in self.snapshot_topic_view_stats or len(self.snapshot_topic_view_stats) < 1000:
@@ -166,6 +171,9 @@ class StreamingYouTubeAnalytics:
             "video_count": self.video_count,
             "snapshot_count": self.snapshot_count,
             "snapshot_topic_join_misses": self.snapshot_topic_join_misses,
+            "snapshot_topic_join_hits": self.snapshot_topic_join_hits,
+            "snapshot_explicit_topic_hits": self.snapshot_explicit_topic_hits,
+            "snapshot_topic_attribution": "partial" if self.snapshot_topic_join_misses else "complete_for_snapshots_with_views",
             "snapshot_video_topic_index_limit": 1000,
             "unique_channel_count_observed": len(self.channel_counts),
             "top_channels": [{"channel_id": key, "videos": count} for key, count in self.channel_counts.most_common(100)],

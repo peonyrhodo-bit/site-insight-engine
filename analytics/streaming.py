@@ -141,7 +141,8 @@ class StreamingYouTubeAnalytics:
             "top_topics": [{"topic": key, "videos": count} for key, count in self.topic_counts.most_common(100)],
             "video_metrics": {key: value.to_dict() for key, value in self.video_stats.items()},
             "topic_view_metrics": [
-                {"topic": topic, "videos_with_views": stats.count, "average_views": stats.to_dict()["average"]}
+                {"topic": topic, "videos_with_views": stats.count, "average_views": stats.to_dict()["average"],
+                 "source": "videos.data_json.statistics", "snapshot_views_included": False}
                 for topic, stats in sorted(self.topic_view_stats.items(), key=lambda item: item[1].count, reverse=True)[:100]
             ],
             "snapshot_metrics": {key: value.to_dict() for key, value in self.snapshot_stats.items()},

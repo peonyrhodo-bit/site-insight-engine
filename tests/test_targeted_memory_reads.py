@@ -299,6 +299,7 @@ def test_streaming_history_tracks_per_topic_views_only_when_observed():
     by_topic = {row['topic']: row for row in result['topic_view_metrics']}
     assert by_topic['Gardening'] == {
         'topic': 'Gardening', 'videos_with_views': 2, 'average_views': 200.0,
+        'source': 'videos.data_json.statistics', 'snapshot_views_included': False,
     }
     assert by_topic['Cooking']['average_views'] == 50.0
     assert next(row['videos'] for row in result['top_topics'] if row['topic'] == 'Gardening') == 3
@@ -402,5 +403,6 @@ def test_supabase_streaming_reads_video_views_from_data_json():
     backend._iter_paginated_rows = rows
     result = backend.load_youtube_analysis_data()
     metrics = result['history_analytics']['topic_view_metrics']
-    assert metrics == [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 240.0}]
+    assert metrics == [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 240.0,
+                        'source': 'videos.data_json.statistics', 'snapshot_views_included': False}]
     assert 'views' not in result['videos'][0]

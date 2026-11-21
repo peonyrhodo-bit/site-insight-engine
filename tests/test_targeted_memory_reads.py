@@ -406,3 +406,23 @@ def test_supabase_streaming_reads_video_views_from_data_json():
     assert metrics == [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 240.0,
                         'source': 'videos.data_json.statistics', 'snapshot_views_included': False}]
     assert 'views' not in result['videos'][0]
+
+def test_snapshot_topic_views_are_separate_and_require_explicit_topic():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Gardening', 'statistics': {'viewCount': '100'},
+    }})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Gardening', 'statistics': {'viewCount': '200'},
+    }})
+    stats.add_snapshot({'video_id': 'b', 'data_json': {
+        'statistics': {'viewCount': '9000'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'] == [{
+        'topic': 'Gardening', 'snapshots_with_views': 2,
+        'average_snapshot_views': 150.0, 'source': 'video_snapshots.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['topic_view_metrics'] == []

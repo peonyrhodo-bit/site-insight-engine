@@ -211,3 +211,16 @@ async def test_project_state_preserves_history_summary_without_reloading():
     assert first['history_analytics']['youtube']['video_count'] == 321
     assert second['history_analytics']['youtube']['snapshot_count'] == 654
     assert storage.youtube_load_calls == 1
+
+@pytest.mark.asyncio
+async def test_history_summary_reaches_director_analytics():
+    from server import AnalyticsAdapter
+    summary = {'youtube': {'video_count': 321, 'snapshot_count': 654}}
+    result = await AnalyticsAdapter().analyze({
+        'observations': [], 'previous_observations': [],
+        'metadata': {'history_analytics': summary},
+    })
+    assert result['history_analytics'] == summary
+    for key in ('analytics', 'analytics_raw'):
+        if isinstance(result.get(key), dict):
+            assert result[key]['full_history'] == summary

@@ -347,3 +347,15 @@ async def test_sufficient_historical_sample_is_labeled_without_changing_rank():
     decision = await director.decide(analysis)
     assert decision.metadata['opportunity_id'] == 'gardening'
     assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'
+
+def test_streaming_deduplicates_topic_labels_within_one_video():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({
+        'video_id': 'a', 'views': 100,
+        'metadata': {'topic': 'Gardening', 'niche': 'Gardening',
+                     'tags': ['Gardening', 'Gardening']},
+    })
+    result = stats.to_dict()
+    assert result['top_topics'] == [{'topic': 'Gardening', 'videos': 1}]
+    assert result['topic_view_metrics'][0]['videos_with_views'] == 1

@@ -560,7 +560,18 @@ class SupabaseMemoryBackend:
                 source="supabase", metadata=metadata,
             )
             video_dict = video.to_dict()
-            accumulator.add_video(video_dict)
+            # Persisted YouTube metrics live in data_json.statistics, not in
+            # the normalized YouTubeVideo object. Feed them only to the
+            # streaming accumulator; do not enlarge retained working videos.
+            streaming_video = dict(video_dict)
+            statistics = self._safe_dict(data.get("statistics"))
+            radar = self._safe_dict(data.get("_radar"))
+            for key in ("viewCount", "views", "view_count"):
+                value = statistics.get(key, radar.get(key, data.get(key)))
+                if value is not None:
+                    streaming_video["views"] = value
+                    break
+            accumulator.add_video(streaming_video)
             if len(videos) < video_limit:
                 videos.append(video_dict)
 

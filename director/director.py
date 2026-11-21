@@ -1513,7 +1513,7 @@ class Director:
         if isinstance(history, dict) and history:
             decision.metadata["history_analytics"] = history
             youtube_history = history.get("youtube", {})
-            if isinstance(youtube_history, dict):
+            if isinstance(youtube_history, dict) and youtube_history.get("status") == "complete":
                 candidate_labels = (
                     (candidate.get("topic"), candidate.get("title"), candidate.get("name"))
                     if isinstance(candidate, dict) else

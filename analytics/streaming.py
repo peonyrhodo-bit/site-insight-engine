@@ -85,16 +85,16 @@ class StreamingYouTubeAnalytics:
         topics: set[str] = set()
         for field in ("topic", "category", "niche", "thematic_direction"):
             value = metadata.get(field)
-            _bounded_increment(self.topic_counts, value)
             if value is not None and str(value).strip():
                 topics.add(str(value).strip()[:160])
         for field in ("topics", "categories", "niches", "thematic_directions", "tags"):
             values = metadata.get(field)
             if isinstance(values, (list, tuple, set)):
                 for value in values:
-                    _bounded_increment(self.topic_counts, value)
                     if value is not None and str(value).strip():
                         topics.add(str(value).strip()[:160])
+        for topic in topics:
+            _bounded_increment(self.topic_counts, topic)
         metrics = row.get("metrics") if isinstance(row.get("metrics"), Mapping) else {}
         views = next((_number(row.get(key)) for key in ("views", "viewCount", "view_count") if _number(row.get(key)) is not None), None)
         if views is None:

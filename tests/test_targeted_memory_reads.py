@@ -326,3 +326,24 @@ async def test_director_attaches_only_verified_topic_view_performance():
     assert decision.metadata['historical_view_coverage'] == [
         {'topic': 'gardening', 'videos_with_views': 3, 'topic_video_count': 10, 'fraction': 0.3},
     ]
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'limited_sample'
+
+@pytest.mark.asyncio
+async def test_sufficient_historical_sample_is_labeled_without_changing_rank():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [
+            {'opportunity_id': 'gardening', 'title': 'Gardening', 'overall_score': 0.9},
+            {'opportunity_id': 'cooking', 'title': 'Cooking', 'overall_score': 0.8},
+        ],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 40}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 25, 'average_views': 200.0}],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['opportunity_id'] == 'gardening'
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'

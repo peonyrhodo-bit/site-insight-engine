@@ -1528,6 +1528,21 @@ class Director:
                 ]
                 if matching_topics:
                     decision.metadata["matching_historical_topics"] = matching_topics
+                    matched_names = {item["topic"].strip().casefold() for item in matching_topics}
+                    view_metrics = youtube_history.get("topic_view_metrics", [])
+                    if isinstance(view_metrics, list):
+                        matched_views = [
+                            {"topic": item["topic"], "videos_with_views": item["videos_with_views"],
+                             "average_views": item["average_views"]}
+                            for item in view_metrics
+                            if isinstance(item, dict) and isinstance(item.get("topic"), str)
+                            and item["topic"].strip().casefold() in matched_names
+                            and isinstance(item.get("videos_with_views"), int)
+                            and item["videos_with_views"] > 0
+                            and isinstance(item.get("average_views"), (int, float))
+                        ]
+                        if matched_views:
+                            decision.metadata["matching_historical_view_metrics"] = matched_views
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

@@ -1574,6 +1574,37 @@ class Director:
                 }
                 for item in coverage
             ]
+        # Compare only supported, explicitly matched niche evidence; do not
+        # alter candidate scores based on aggregate/global topic popularity.
+        if isinstance(history, dict):
+            youtube = history.get("youtube", {})
+            if isinstance(youtube, dict) and youtube.get("status") == "complete":
+                topic_counts = {
+                    str(row["topic"]).strip().casefold(): row["videos"]
+                    for row in youtube.get("top_topics", [])
+                    if isinstance(row, dict) and isinstance(row.get("topic"), str)
+                    and isinstance(row.get("videos"), int) and row["videos"] > 0
+                }
+                comparable = []
+                for opportunity in opportunities:
+                    name = (opportunity.get("topic") or opportunity.get("title") or opportunity.get("name")) if isinstance(opportunity, dict) else (getattr(opportunity, "topic", None) or getattr(opportunity, "title", None) or getattr(opportunity, "name", None))
+                    label = str(name).strip().casefold() if name else ""
+                    count = topic_counts.get(label, 0)
+                    for metric in youtube.get("topic_view_metrics", []):
+                        if not isinstance(metric, dict) or str(metric.get("topic", "")).strip().casefold() != label:
+                            continue
+                        observed = metric.get("videos_with_views")
+                        average = metric.get("average_views")
+                        if (count and isinstance(observed, int) and observed >= 20
+                                and observed / count >= 0.5
+                                and isinstance(average, (int, float)) and not isinstance(average, bool)):
+                            comparable.append({
+                                "topic": name, "videos_with_views": observed,
+                                "topic_video_count": count, "average_views": average,
+                            })
+                        break
+                if comparable:
+                    decision.metadata["historical_niche_comparison"] = comparable
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

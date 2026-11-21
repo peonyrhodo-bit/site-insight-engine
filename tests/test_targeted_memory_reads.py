@@ -287,3 +287,18 @@ async def test_partial_history_cannot_validate_specific_topic():
     decision = await director.decide(analysis)
     assert 'matching_historical_topics' not in decision.metadata
     assert decision.metadata['history_analytics']['youtube']['status'] == 'partial'
+
+def test_streaming_history_tracks_per_topic_views_only_when_observed():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}, 'views': 100})
+    stats.add_video({'video_id': 'b', 'metadata': {'topic': 'Gardening'}, 'views': 300})
+    stats.add_video({'video_id': 'c', 'metadata': {'topic': 'Gardening'}})
+    stats.add_video({'video_id': 'd', 'metadata': {'topic': 'Cooking'}, 'views': 50})
+    result = stats.to_dict()
+    by_topic = {row['topic']: row for row in result['topic_view_metrics']}
+    assert by_topic['Gardening'] == {
+        'topic': 'Gardening', 'videos_with_views': 2, 'average_views': 200.0,
+    }
+    assert by_topic['Cooking']['average_views'] == 50.0
+    assert next(row['videos'] for row in result['top_topics'] if row['topic'] == 'Gardening') == 3

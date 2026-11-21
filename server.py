@@ -23,7 +23,7 @@ import logging
 import os
 import secrets
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -2974,7 +2974,7 @@ async def _autonomous_worker_loop() -> None:
                 interval_seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,
                 reason="autonomous_cycle",
                 project_id=DEFAULT_PROJECT_ID,
-                first_run_at=datetime.now(timezone.utc),
+                first_run_at=datetime.now(timezone.utc) + timedelta(\n                    seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,\n                ),
                 metadata={"source": "autonomous_worker"},
             )
 

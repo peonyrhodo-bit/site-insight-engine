@@ -385,3 +385,22 @@ async def test_niche_comparison_excludes_thin_samples_without_reordering():
         {'topic': 'Gardening', 'videos_with_views': 30,
          'topic_video_count': 40, 'average_views': 200.0},
     ]
+
+def test_supabase_streaming_reads_video_views_from_data_json():
+    from memory.supabase import SupabaseMemoryBackend
+    backend = object.__new__(SupabaseMemoryBackend)
+    def rows(table, **kwargs):
+        if table == 'videos':
+            yield {
+                'video_id': 'abc',
+                'data_json': {
+                    'snippet': {'title': 'Garden', 'channelId': 'c'},
+                    'topic': 'Gardening',
+                    'statistics': {'viewCount': '240'},
+                },
+            }
+    backend._iter_paginated_rows = rows
+    result = backend.load_youtube_analysis_data()
+    metrics = result['history_analytics']['topic_view_metrics']
+    assert metrics == [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 240.0}]
+    assert 'views' not in result['videos'][0]

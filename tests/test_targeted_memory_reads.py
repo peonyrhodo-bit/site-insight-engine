@@ -442,3 +442,5 @@ def test_snapshot_video_id_join_uses_bounded_video_topic_index():
     assert result['snapshot_topic_view_metrics'][0]['average_snapshot_views'] == 400.0
     assert result['snapshot_topic_join_misses'] == 1
     assert result['snapshot_video_topic_index_limit'] == 1000
+    assert result['snapshot_topic_join_hits'] == 1
+    assert result['snapshot_topic_attribution'] == 'partial'

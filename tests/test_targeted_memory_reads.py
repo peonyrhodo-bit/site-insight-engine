@@ -502,3 +502,14 @@ def test_bounded_topic_index_reports_overflow_without_unbounded_growth():
     assert result['snapshot_topic_attribution'] == 'partial'
     assert len(stats._video_topics) == 1000
     assert result['video_count'] == 1005
+
+def test_video_topic_index_limit_is_configurable_but_hard_capped():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics(video_topic_index_limit=2)
+    for i in range(3):
+        stats.add_video({'video_id': str(i), 'metadata': {'topic': 'Gardening'}})
+    result = stats.to_dict()
+    assert result['snapshot_video_topic_index_limit'] == 2
+    assert result['video_topic_index_overflow'] == 1
+    assert len(stats._video_topics) == 2
+    assert StreamingYouTubeAnalytics(video_topic_index_limit=999999).video_topic_index_limit == 20000

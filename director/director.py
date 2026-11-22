@@ -2292,6 +2292,8 @@ class Director:
         """
         # A prior wake's decision must never be persisted as this wake's decision.
         self.state.metadata.pop("current_decision", None)
+        # Never reuse a prior wake's recommendation when this wake only waits.
+        self.last_result = None
 
         autonomy = DirectorAutonomy(
             config=self.autonomy_config,
@@ -2491,6 +2493,29 @@ class Director:
             "queries_sent": 0,
             "results": [],
         }
+
+        # External research is opt-in; first cycles use stored evidence only.
+        if os.getenv('DIRECTOR_EXTERNAL_RESEARCH_ENABLED', 'false').lower() not in {
+            '1', 'true', 'yes', 'on'
+        }:
+            return {
+                'status': 'blocked',
+                'reason': 'external_research_disabled',
+                'research_plan': plan.to_dict(),
+                'missing_data': list(self.context.missing_data),
+            }
+
+        # Do not spend external quota when the memory baseline is unavailable.
+        memory_read = self.context.metadata.get("memory_read")
+        if isinstance(memory_read, dict) and str(
+            memory_read.get("status") or ""
+        ).lower() in {"error", "unavailable"}:
+            return {
+                "status": "blocked",
+                "reason": "memory_read_unavailable",
+                "research_plan": plan.to_dict(),
+                "missing_data": list(self.context.missing_data),
+            }
 
         executor = getattr(
             self.research_service,

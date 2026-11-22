@@ -23,7 +23,7 @@ import logging
 import os
 import secrets
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -2862,7 +2862,8 @@ async def _execute_autonomous_cycle_locked(
                 f"Director run event was not persisted for run_id={run_id}"
             )
 
-        final_status = str(serialized.get("status") or "succeeded").strip().lower()
+        raw_cycle_status = serialized.get("status") or "succeeded"
+        final_status = str(getattr(raw_cycle_status, "value", raw_cycle_status)).strip().lower()
         state = serialized.get("state", {})
         state_metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
         failure = state_metadata.get("failure", {}) if isinstance(state_metadata, dict) else {}
@@ -2927,7 +2928,15 @@ async def _execute_autonomous_cycle_locked(
 async def director_autonomous_run(
     project_id: str = DEFAULT_PROJECT_ID,
     objective: str | None = None,
+    x_director_run_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
+    # Explicit manual execution is independent of unattended scheduling.
+    # Fail closed unless a dedicated operator token is configured.
+    configured_token = os.getenv("DIRECTOR_MANUAL_RUN_TOKEN", "")
+    if not configured_token or not x_director_run_token or not secrets.compare_digest(
+        x_director_run_token, configured_token
+    ):
+        raise HTTPException(status_code=403, detail="Manual Director run is not authorized")
     try:
         return await _execute_autonomous_cycle(
             project_id=project_id,
@@ -2967,7 +2976,9 @@ async def _autonomous_worker_loop() -> None:
                 interval_seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,
                 reason="autonomous_cycle",
                 project_id=DEFAULT_PROJECT_ID,
-                first_run_at=datetime.now(timezone.utc),
+                first_run_at=datetime.now(timezone.utc) + timedelta(
+                    seconds=AUTONOMOUS_WAKE_INTERVAL_SECONDS,
+                ),
                 metadata={"source": "autonomous_worker"},
             )
 
@@ -3812,12 +3823,19 @@ async def director_wakeup(
 @app.post("/director/wakeup")
 async def director_wakeup_trigger(
     project_id: str = DEFAULT_PROJECT_ID,
+    x_director_run_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     if not AUTONOMOUS_ENABLED:
         raise HTTPException(
             status_code=403,
             detail="Автономный режим отключён.",
         )
+
+    configured_token = os.getenv("DIRECTOR_MANUAL_RUN_TOKEN", "")
+    if not configured_token or not x_director_run_token or not secrets.compare_digest(
+        x_director_run_token, configured_token
+    ):
+        raise HTTPException(status_code=403, detail="Manual Director wakeup is not authorized")
 
     if runtime.wakeup is None:
         raise HTTPException(
@@ -4079,12 +4097,14 @@ async def startup() -> None:
     )
 
     logger.info(
-        "Director continuous cycle: enabled",
+        "Director continuous cycle: %s",
+        "enabled" if AUTONOMOUS_ENABLED else "disabled",
     )
 
-    runtime.autonomous_worker = asyncio.create_task(
-        _autonomous_worker_loop(),
-    )
+    if AUTONOMOUS_ENABLED:
+        runtime.autonomous_worker = asyncio.create_task(
+            _autonomous_worker_loop(),
+        )
 
 
 @app.on_event("shutdown")

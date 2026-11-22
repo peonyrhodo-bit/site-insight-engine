@@ -143,7 +143,11 @@ def build_decision(
         rationale=str(rationale or "").strip(),
         confidence=confidence,
         opportunity_score=_dimension_score(opportunity, "overall_score"),
-        applicability_score=_dimension_score(opportunity, "applicability"),
+        applicability_score=(
+            _dimension_score(opportunity, "applicability")
+            if _dimension_score(opportunity, "applicability") is not None
+            else _dimension_score(_value(opportunity, "dimensions", {}), "applicability")
+        ),
         evidence=list(evidence or []),
         risks=[str(x) for x in (risks or []) if str(x).strip()],
         missing_data=[
@@ -176,10 +180,6 @@ def decide_from_opportunity(
             dimensions, "applicability"
         )
     applicability = applicability or 0.0
-    # Preserve the normalized analytical score in the persisted decision too.
-    # The original applicability payload may describe constraints without a score.
-    if isinstance(opportunity, dict) and _dimension_score(opportunity, "applicability") is None:
-        opportunity = {**opportunity, "applicability": {"score": applicability}}
 
     risks = list(_value(opportunity, "risks", []) or [])
     missing = list(_value(opportunity, "missing_data", []) or [])

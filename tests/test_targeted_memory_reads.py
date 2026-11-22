@@ -535,11 +535,19 @@ def test_supabase_history_loader_honors_safe_topic_index_setting(monkeypatch):
             yield {'id': 1, 'video_id': 'v2',
                    'data_json': {'statistics': {'viewCount': '20'}}}
     backend._iter_paginated_rows = rows
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[{'video_id': 'v2', 'data_json': {'topic': 'Gardening'}}])
+    backend.client = SimpleNamespace(table=lambda name: Query())
     result = backend.load_youtube_analysis_data()['history_analytics']
     assert result['snapshot_video_topic_index_limit'] == 2
     assert result['video_topic_index_overflow'] == 1
-    assert result['snapshot_topic_join_misses'] == 1
-    assert result['snapshot_topic_attribution'] == 'partial'
+    assert result['snapshot_topic_join_misses'] == 0
+    assert result['snapshot_topic_join_hits'] == 1
 
 @pytest.mark.asyncio
 async def test_director_reports_snapshot_gaps_even_without_comparable_niches():

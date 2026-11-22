@@ -606,3 +606,22 @@ async def test_director_retains_snapshot_gaps_for_partial_supabase_history():
     assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
     assert decision.metadata['snapshot_niche_unmatched_count'] == 8
     assert decision.metadata['snapshot_video_topic_index_overflow'] == 4
+
+
+def test_youtube_tags_are_not_mistaken_for_verified_niches():
+    from analytics.streaming import StreamingYouTubeAnalytics
+
+    analytics = StreamingYouTubeAnalytics()
+    analytics.add_video({
+        "video_id": "video-1",
+        "metadata": {"topic": "Engineering", "tags": ["horror", "viral"]},
+        "views": 100,
+    })
+    analytics.add_snapshot({
+        "video_id": "video-1",
+        "data_json": {"statistics": {"viewCount": "150"}},
+    })
+    summary = analytics.to_dict()
+    assert summary["top_topics"] == [{"topic": "Engineering", "videos": 1}]
+    assert summary["snapshot_topic_join_hits"] == 1
+    assert summary["snapshot_topic_view_metrics"][0]["topic"] == "Engineering"

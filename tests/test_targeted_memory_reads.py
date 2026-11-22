@@ -449,6 +449,12 @@ def test_snapshot_video_id_join_uses_bounded_video_topic_index():
     assert result['snapshot_topic_join_misses'] == 1
     assert result['snapshot_video_topic_index_limit'] == 1000
     assert result['snapshot_topic_join_hits'] == 1
+    assert result['snapshot_topic_join_view_metrics'] == [{
+        'topic': 'Gardening', 'snapshots_with_views': 1,
+        'average_snapshot_views': 400.0,
+        'source': 'video_snapshots.video_id_to_videos.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
     assert result['snapshot_topic_attribution'] == 'partial'
 
 @pytest.mark.asyncio
@@ -570,4 +576,5 @@ def test_snapshot_explicit_topic_takes_priority_over_video_id_join():
     }]
     assert result['snapshot_explicit_topic_hits'] == 1
     assert result['snapshot_topic_join_hits'] == 0
+    assert result['snapshot_topic_join_view_metrics'] == []
     assert result['snapshot_topic_join_misses'] == 0

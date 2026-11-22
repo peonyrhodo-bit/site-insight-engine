@@ -711,3 +711,69 @@ def test_large_synthetic_history_keeps_working_sets_bounded(monkeypatch):
     assert len(result["videos"]) == 100
     assert len(result["snapshots"]) == 200
     assert lookup_sizes and max(lookup_sizes) <= 100
+
+
+def test_overflow_lookup_never_joins_another_projects_video(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1")
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            yield {"video_id": "one", "data_json": {"project_id": "alpha", "topic": "Gardening"}}
+            yield {"video_id": "two", "data_json": {"project_id": "alpha", "topic": "Engineering"}}
+        elif table == "video_snapshots":
+            yield {"id": 1, "video_id": "two", "data_json": {
+                "project_id": "alpha", "statistics": {"viewCount": "100"},
+            }}
+
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[{
+                "video_id": "two", "data_json": {
+                    "project_id": "beta", "topic": "Wrong Project",
+                },
+            }])
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data(project_id="alpha")["history_analytics"]
+    assert result["snapshot_topic_join_hits"] == 0
+    assert result["snapshot_topic_join_misses"] == 1
+    assert result["snapshot_topic_view_metrics"] == []
+
+
+def test_overflow_lookup_failure_is_reported_as_partial(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1")
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            for video_id in ("one", "two"):
+                yield {"video_id": video_id, "data_json": {"topic": "Engineering"}}
+        elif table == "video_snapshots":
+            yield {"id": 1, "video_id": "two", "data_json": {
+                "statistics": {"viewCount": "100"},
+            }}
+
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            raise RuntimeError("Supabase unavailable")
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data()["history_analytics"]
+    assert result["status"] == "partial"
+    assert result["topic_lookup_failures"] == 1
+    assert result["snapshot_topic_join_misses"] == 1

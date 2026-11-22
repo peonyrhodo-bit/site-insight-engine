@@ -375,6 +375,7 @@ async def test_niche_comparison_excludes_thin_samples_without_reordering():
             'status': 'complete',
             'snapshot_topic_attribution': 'partial',
             'snapshot_topic_join_misses': 7,
+            'video_topic_index_overflow': 12,
             'top_topics': [{'topic': 'Gardening', 'videos': 40},
                            {'topic': 'Cooking', 'videos': 100}],
             'topic_view_metrics': [
@@ -390,6 +391,7 @@ async def test_niche_comparison_excludes_thin_samples_without_reordering():
     ]
     assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
     assert decision.metadata['snapshot_niche_unmatched_count'] == 7
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 12
 
 def test_supabase_streaming_reads_video_views_from_data_json():
     from memory.supabase import SupabaseMemoryBackend
@@ -497,5 +499,6 @@ def test_bounded_topic_index_reports_overflow_without_unbounded_growth():
         stats.add_video({'video_id': f'video-{i}', 'metadata': {'topic': 'Gardening'}})
     result = stats.to_dict()
     assert result['video_topic_index_overflow'] == 5
+    assert result['snapshot_topic_attribution'] == 'partial'
     assert len(stats._video_topics) == 1000
     assert result['video_count'] == 1005

@@ -655,6 +655,10 @@ class SupabaseMemoryBackend:
     
 
         history_analytics = accumulator.to_dict()
+        # An overflowing bounded index does not imply missing attribution when
+        # the page-scoped fallback successfully resolved every snapshot join.
+        if not accumulator.snapshot_topic_join_misses and not topic_lookup_failures and not unscoped_snapshot_rows:
+            history_analytics["snapshot_topic_attribution"] = "complete_for_snapshots_with_views"
         if topic_lookup_failures:
             history_analytics["status"] = "partial"
             history_analytics["topic_lookup_failures"] = topic_lookup_failures

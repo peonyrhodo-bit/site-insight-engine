@@ -1605,13 +1605,15 @@ class Director:
                         break
                 if comparable:
                     decision.metadata["historical_niche_comparison"] = comparable
-                # Snapshot attribution is independent of whether any niche
-                # qualifies for a video-based comparison.
+            # Report coverage even when history is partial: partial history
+            # must not qualify for niche comparisons, but gaps remain relevant.
+            if isinstance(youtube, dict):
                 attribution = youtube.get("snapshot_topic_attribution")
                 if attribution in ("partial", "complete_for_snapshots_with_views"):
                     decision.metadata["snapshot_niche_evidence_status"] = attribution
                     decision.metadata["snapshot_niche_unmatched_count"] = youtube.get("snapshot_topic_join_misses", 0)
                     decision.metadata["snapshot_video_topic_index_overflow"] = youtube.get("video_topic_index_overflow", 0)
+                    decision.metadata["historical_scan_status"] = youtube.get("status")
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

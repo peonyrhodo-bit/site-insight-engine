@@ -690,7 +690,16 @@ def test_large_synthetic_history_keeps_working_sets_bounded(monkeypatch):
 
     backend._iter_paginated_rows = rows
     backend.client = SimpleNamespace(table=lambda name: Query())
-    result = backend.load_youtube_analysis_data()
+    import tracemalloc
+    tracemalloc.start()
+    try:
+        result = backend.load_youtube_analysis_data()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Test fixture and result must not grow linearly with all 42k rows.
+    # This measures Python allocations, not total Render RSS.
+    assert peak_bytes < 64 * 1024 * 1024
     history = result["history_analytics"]
     assert history["video_count"] == 21000
     assert history["snapshot_count"] == 21000

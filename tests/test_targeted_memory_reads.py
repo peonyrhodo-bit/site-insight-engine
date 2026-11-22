@@ -513,3 +513,23 @@ def test_video_topic_index_limit_is_configurable_but_hard_capped():
     assert result['video_topic_index_overflow'] == 1
     assert len(stats._video_topics) == 2
     assert StreamingYouTubeAnalytics(video_topic_index_limit=999999).video_topic_index_limit == 20000
+
+def test_supabase_history_loader_honors_safe_topic_index_setting(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+    backend = object.__new__(SupabaseMemoryBackend)
+    monkeypatch.setenv('DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX', '2')
+    def rows(table, **kwargs):
+        if table == 'videos':
+            for i in range(3):
+                yield {'video_id': f'v{i}', 'data_json': {
+                    'topic': 'Gardening', 'statistics': {'viewCount': '10'},
+                }}
+        elif table == 'video_snapshots':
+            yield {'id': 1, 'video_id': 'v2',
+                   'data_json': {'statistics': {'viewCount': '20'}}}
+    backend._iter_paginated_rows = rows
+    result = backend.load_youtube_analysis_data()['history_analytics']
+    assert result['snapshot_video_topic_index_limit'] == 2
+    assert result['video_topic_index_overflow'] == 1
+    assert result['snapshot_topic_join_misses'] == 1
+    assert result['snapshot_topic_attribution'] == 'partial'

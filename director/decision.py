@@ -176,6 +176,10 @@ def decide_from_opportunity(
             dimensions, "applicability"
         )
     applicability = applicability or 0.0
+    # Preserve the normalized analytical score in the persisted decision too.
+    # The original applicability payload may describe constraints without a score.
+    if isinstance(opportunity, dict) and _dimension_score(opportunity, "applicability") is None:
+        opportunity = {**opportunity, "applicability": {"score": applicability}}
 
     risks = list(_value(opportunity, "risks", []) or [])
     missing = list(_value(opportunity, "missing_data", []) or [])

@@ -792,3 +792,75 @@ async def test_request_logging_preserves_correlation_id():
     result = await server.request_logging(request, call_next)
     assert result.headers["X-Correlation-ID"] == "audit-run-17"
     assert server.get_correlation_id() == "-"
+
+
+@pytest.mark.asyncio
+async def test_offline_decision_recommendation_persisted_with_linked_ids(monkeypatch):
+    """Exercise the actual server persistence path without external services."""
+    class LinkedMemory(FakeMemory):
+        def __init__(self):
+            super().__init__()
+            self.decisions = []
+            self.recommendations = []
+            self.results = []
+
+        async def save_decision(self, **kwargs):
+            self.decisions.append(kwargs)
+            return 301
+
+        async def save_recommendation(self, **kwargs):
+            self.recommendations.append(kwargs)
+            return 401
+
+        async def save_result(self, **kwargs):
+            self.results.append(kwargs)
+            return 501
+
+    memory = LinkedMemory()
+    director = FakeDirector()
+    decision = {"decision_id": "dec-offline", "decision_type": "test"}
+    recommendation = {
+        "recommendation_id": "rec-offline",
+        "decision_id": "dec-offline",
+        "title": "Offline stored evidence",
+    }
+    director.last_result = SimpleNamespace(
+        decision=decision, recommendation=recommendation
+    )
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    result = await server._execute_autonomous_cycle(project_id="offline-persist")
+    assert result["run_id"] == 1
+    assert len(memory.decisions) == 1
+    assert memory.decisions[0]["decision"] == decision
+    assert len(memory.recommendations) == 1
+    assert memory.recommendations[0]["recommendation"] == recommendation
+    assert memory.recommendations[0]["decision_db_id"] == 301
+    assert memory.recommendations[0]["run_id"] == 1
+    assert memory.results[0]["decision_db_id"] == 301
+    assert memory.results[0]["recommendation_db_id"] == 401
+    assert memory.events[0]["data"]["recommendation_id"] == 401
+
+
+@pytest.mark.asyncio
+async def test_offline_recommendation_persistence_failure_is_not_success(monkeypatch):
+    class RejectRecommendation(FakeMemory):
+        async def save_decision(self, **kwargs):
+            return 301
+
+        async def save_recommendation(self, **kwargs):
+            return None
+
+    memory = RejectRecommendation()
+    director = FakeDirector()
+    director.last_result = SimpleNamespace(
+        decision={"decision_id": "dec-offline"},
+        recommendation={"recommendation_id": "rec-offline"},
+    )
+    monkeypatch.setattr(server.runtime, "memory", memory)
+    monkeypatch.setattr(server.runtime, "get_director", lambda **kwargs: director)
+
+    with pytest.raises(RuntimeError, match="recommendation was not persisted"):
+        await server._execute_autonomous_cycle(project_id="offline-persist-failure")
+    assert memory.rows[1]["status"] == "partial"

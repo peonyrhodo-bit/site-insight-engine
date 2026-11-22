@@ -2290,7 +2290,10 @@ class Director:
         """
         Start one bounded autonomous wake cycle.
         """
-        # A prior wake's decision must never be persisted as this wake's decision.
+        # Results belong to one wake. Never persist a previous wake's
+        # recommendation when this wake stops before recommending.
+        self.last_result = None
+        self.state.current_recommendation_id = None
         self.state.metadata.pop("current_decision", None)
 
         autonomy = DirectorAutonomy(

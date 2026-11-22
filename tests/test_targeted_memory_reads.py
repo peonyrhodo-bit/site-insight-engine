@@ -625,3 +625,19 @@ def test_youtube_tags_are_not_mistaken_for_verified_niches():
     assert summary["top_topics"] == [{"topic": "Engineering", "videos": 1}]
     assert summary["snapshot_topic_join_hits"] == 1
     assert summary["snapshot_topic_view_metrics"][0]["topic"] == "Engineering"
+
+
+def test_page_scoped_snapshot_topic_join_works_after_index_overflow():
+    from analytics.streaming import StreamingYouTubeAnalytics
+
+    stats = StreamingYouTubeAnalytics(video_topic_index_limit=1)
+    stats.add_video({"video_id": "a", "metadata": {"topic": "Gardening"}})
+    stats.add_video({"video_id": "b", "metadata": {"topic": "Engineering"}})
+    assert stats.video_topic_index_overflow == 1
+    stats.add_snapshot({
+        "video_id": "b", "data_json": {"statistics": {"viewCount": "500"}},
+    }, joined_topics_override=("Engineering",))
+    result = stats.to_dict()
+    assert result["snapshot_topic_join_hits"] == 1
+    assert result["snapshot_topic_join_misses"] == 0
+    assert result["snapshot_topic_join_view_metrics"][0]["topic"] == "Engineering"

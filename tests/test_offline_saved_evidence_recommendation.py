@@ -52,7 +52,7 @@ async def test_saved_opportunity_reaches_correct_decision_and_recommendation(
 
     assert restored is not None
     assert restored.recommendation_id == recommendation.recommendation_id
-    assert restored.decision.decision_id == decision.decision_id
+    assert restored.decision_id == decision.decision_id
     assert restored.title
     assert restored.summary
     assert restored.target is not None

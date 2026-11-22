@@ -1605,13 +1605,13 @@ class Director:
                         break
                 if comparable:
                     decision.metadata["historical_niche_comparison"] = comparable
-                    # Snapshot attribution is separately bounded; never imply
-                    # that complete video-row metrics cover all snapshots.
-                    attribution = youtube.get("snapshot_topic_attribution")
-                    if attribution in ("partial", "complete_for_snapshots_with_views"):
-                        decision.metadata["snapshot_niche_evidence_status"] = attribution
-                        decision.metadata["snapshot_niche_unmatched_count"] = youtube.get("snapshot_topic_join_misses", 0)
-                        decision.metadata["snapshot_video_topic_index_overflow"] = youtube.get("video_topic_index_overflow", 0)
+                # Snapshot attribution is independent of whether any niche
+                # qualifies for a video-based comparison.
+                attribution = youtube.get("snapshot_topic_attribution")
+                if attribution in ("partial", "complete_for_snapshots_with_views"):
+                    decision.metadata["snapshot_niche_evidence_status"] = attribution
+                    decision.metadata["snapshot_niche_unmatched_count"] = youtube.get("snapshot_topic_join_misses", 0)
+                    decision.metadata["snapshot_video_topic_index_overflow"] = youtube.get("video_topic_index_overflow", 0)
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

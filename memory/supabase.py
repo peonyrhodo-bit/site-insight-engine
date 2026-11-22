@@ -529,7 +529,13 @@ class SupabaseMemoryBackend:
         except (TypeError, ValueError):
             video_limit, snapshot_limit, analytics_sample = 3000, 6000, 100
 
-        accumulator = StreamingYouTubeAnalytics(sample_limit=analytics_sample)
+        try:
+            topic_index_limit = max(1, min(int(os.getenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1000")), 20000))
+        except (TypeError, ValueError):
+            topic_index_limit = 1000
+        accumulator = StreamingYouTubeAnalytics(
+            sample_limit=analytics_sample, video_topic_index_limit=topic_index_limit,
+        )
         videos: list[dict[str, Any]] = []
         snapshots: list[dict[str, Any]] = []
         video_rows_scanned = 0

@@ -1,3 +1,5 @@
+> **Исторический набор приёмочных сценариев, не отдельный рабочий план.** Все незавершённые проверки и отметки выполнения ведутся в [едином MASTER_PLAN.md](https://github.com/peonyrhodo-bit/youtube-mcp/blob/main/management/MASTER_PLAN.md). Этот документ сохранён как технический источник критериев до отдельного решения владельца об удалении. Не отмечать пункты здесь и не использовать как самостоятельную очередь.
+
 # YouTube Director 3.0 — acceptance test plan
 
 This plan is for validating the autonomous research cycle without touching production. Run automated tests in CI first; run live acceptance checks only against a disposable/staging environment with explicit quota limits.

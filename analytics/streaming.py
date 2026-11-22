@@ -134,7 +134,7 @@ class StreamingYouTubeAnalytics:
             self.top_videos.sort(key=lambda item: item.get("views") or -1, reverse=True)
             del self.top_videos[self.sample_limit:]
 
-    def add_snapshot(self, row: Mapping[str, Any]) -> None:
+    def add_snapshot(self, row: Mapping[str, Any], *, joined_topics_override: tuple[str, ...] | None = None) -> None:
         self.snapshot_count += 1
         data = row.get("data_json") if isinstance(row.get("data_json"), Mapping) else {}
         statistics = data.get("statistics") if isinstance(data.get("statistics"), Mapping) else {}
@@ -154,7 +154,8 @@ class StreamingYouTubeAnalytics:
             if _number(statistics.get(key, radar.get(key, data.get(key)))) is not None
         ), None)
         video_id = str(row.get("video_id") or "")
-        joined_topics = self._video_topics.get(video_id, ()) if video_id else ()
+        joined_topics = (joined_topics_override if joined_topics_override is not None
+                         else self._video_topics.get(video_id, ()) if video_id else ())
         if snapshot_views is not None:
             if explicit_topic:
                 topics = (explicit_topic.strip()[:160],)

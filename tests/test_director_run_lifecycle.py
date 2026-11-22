@@ -864,3 +864,44 @@ async def test_offline_recommendation_persistence_failure_is_not_success(monkeyp
     with pytest.raises(RuntimeError, match="recommendation was not persisted"):
         await server._execute_autonomous_cycle(project_id="offline-persist-failure")
     assert memory.rows[1]["status"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_offline_saved_recommendation_visible_through_list_and_detail(monkeypatch):
+    """The public API must expose the Director ID restored from source_data."""
+    from memory.director_adapter import ServerMemory
+
+    stored_row = {
+        "id": 401,
+        "project_id": "offline-visibility",
+        "title": "Engineering story",
+        "description": "Try a short engineering story",
+        "source_data": {"director_recommendation_id": "rec-offline"},
+    }
+
+    class ReadBackend:
+        def get_recent_recommendations(self, *, project_id, limit):
+            assert project_id == "offline-visibility"
+            return [dict(stored_row)]
+
+    memory = object.__new__(ServerMemory)
+    memory.backend = ReadBackend()
+    memory.memory = object()
+    monkeypatch.setattr(server.runtime, "memory", memory)
+
+    listing = await server.director_recommendations(
+        project_id="offline-visibility", limit=20
+    )
+    assert len(listing["recommendations"]) == 1
+    assert listing["recommendations"][0]["recommendation_id"] == "rec-offline"
+
+    async def fake_context(**kwargs):
+        assert kwargs["project_id"] == "offline-visibility"
+        return {"recommendations": [dict(listing["recommendations"][0])]}
+
+    monkeypatch.setattr(memory, "get_context", fake_context)
+    detail = await server.director_recommendation(
+        recommendation_id="rec-offline", project_id="offline-visibility"
+    )
+    assert detail["title"] == "Engineering story"
+    assert detail["recommendation_id"] == "rec-offline"

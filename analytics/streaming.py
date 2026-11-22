@@ -97,7 +97,8 @@ class StreamingYouTubeAnalytics:
             value = metadata.get(field)
             if value is not None and str(value).strip():
                 topics.add(str(value).strip()[:160])
-        for field in ("topics", "categories", "niches", "thematic_directions", "tags"):
+        # Free-form YouTube tags are keywords, not validated niche labels.
+        for field in ("topics", "categories", "niches", "thematic_directions"):
             values = metadata.get(field)
             if isinstance(values, (list, tuple, set)):
                 for value in values:

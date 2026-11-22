@@ -64,8 +64,9 @@ class StreamingYouTubeAnalytics:
     METRICS = ("views", "viewCount", "view_count", "likes", "likeCount",
                "comments", "commentCount", "views_per_hour", "engagement")
 
-    def __init__(self, *, sample_limit: int = 100) -> None:
+    def __init__(self, *, sample_limit: int = 100, video_topic_index_limit: int = 1000) -> None:
         self.sample_limit = max(1, int(sample_limit))
+        self.video_topic_index_limit = max(1, min(20000, int(video_topic_index_limit)))
         self.video_count = 0
         self.snapshot_count = 0
         self.channel_counts: Counter[str] = Counter()
@@ -103,7 +104,7 @@ class StreamingYouTubeAnalytics:
             _bounded_increment(self.topic_counts, topic)
         video_id = str(row.get("video_id") or "")
         if video_id and topics:
-            if video_id in self._video_topics or len(self._video_topics) < 1000:
+            if video_id in self._video_topics or len(self._video_topics) < self.video_topic_index_limit:
                 self._video_topics[video_id] = tuple(sorted(topics))
             else:
                 self.video_topic_index_overflow += 1
@@ -178,7 +179,7 @@ class StreamingYouTubeAnalytics:
             "snapshot_topic_join_hits": self.snapshot_topic_join_hits,
             "snapshot_explicit_topic_hits": self.snapshot_explicit_topic_hits,
             "snapshot_topic_attribution": "partial" if (self.snapshot_topic_join_misses or self.video_topic_index_overflow) else "complete_for_snapshots_with_views",
-            "snapshot_video_topic_index_limit": 1000,
+            "snapshot_video_topic_index_limit": self.video_topic_index_limit,
             "video_topic_index_overflow": self.video_topic_index_overflow,
             "unique_channel_count_observed": len(self.channel_counts),
             "top_channels": [{"channel_id": key, "videos": count} for key, count in self.channel_counts.most_common(100)],

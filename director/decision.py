@@ -169,7 +169,13 @@ def decide_from_opportunity(
     """
     score = _dimension_score(opportunity, "overall_score") or 0.0
     confidence = _dimension_score(opportunity, "confidence") or 0.0
-    applicability = _dimension_score(opportunity, "applicability") or 0.0
+    applicability = _dimension_score(opportunity, "applicability")
+    if applicability is None:
+        dimensions = _value(opportunity, "dimensions", {})
+        applicability = _dimension_score(
+            dimensions, "applicability"
+        )
+    applicability = applicability or 0.0
 
     risks = list(_value(opportunity, "risks", []) or [])
     missing = list(_value(opportunity, "missing_data", []) or [])

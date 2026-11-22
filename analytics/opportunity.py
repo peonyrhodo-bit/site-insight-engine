@@ -1065,7 +1065,7 @@ def assess_applicability(
             ]
         )
 
-    if not fit_level:
+    if not fit_level and explicit_score is None:
         missing.append(
             "Project applicability has not been explicitly assessed."
         )

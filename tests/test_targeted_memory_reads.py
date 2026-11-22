@@ -649,3 +649,56 @@ def test_page_scoped_snapshot_topic_join_works_after_index_overflow():
     assert result["snapshot_topic_join_hits"] == 1
     assert result["snapshot_topic_join_misses"] == 0
     assert result["snapshot_topic_join_view_metrics"][0]["topic"] == "Engineering"
+
+
+def test_large_synthetic_history_keeps_working_sets_bounded(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_WORKING_VIDEOS", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_WORKING_SNAPSHOTS", "200")
+    backend = object.__new__(SupabaseMemoryBackend)
+    lookup_sizes = []
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            for i in range(21000):
+                yield {"video_id": f"v{i}", "data_json": {
+                    "topic": "Engineering", "statistics": {"viewCount": "100"},
+                }}
+        elif table == "video_snapshots":
+            for i in range(20999, -1, -1):
+                yield {"id": i + 1, "video_id": f"v{i}",
+                       "data_json": {"statistics": {"viewCount": "200"}}}
+
+    class Query:
+        def __init__(self):
+            self.ids = []
+        def select(self, *args):
+            return self
+        def in_(self, key, values):
+            assert key == "video_id"
+            self.ids = list(values)
+            lookup_sizes.append(len(self.ids))
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[
+                {"video_id": video_id, "data_json": {"topic": "Engineering"}}
+                for video_id in self.ids
+            ])
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data()
+    history = result["history_analytics"]
+    assert history["video_count"] == 21000
+    assert history["snapshot_count"] == 21000
+    assert history["snapshot_topic_join_hits"] == 21000
+    assert history["snapshot_topic_join_misses"] == 0
+    assert history["video_topic_index_overflow"] == 20900
+    assert history["working_videos_retained"] == 100
+    assert history["working_snapshots_retained"] == 200
+    assert len(result["videos"]) == 100
+    assert len(result["snapshots"]) == 200
+    assert lookup_sizes and max(lookup_sizes) <= 100

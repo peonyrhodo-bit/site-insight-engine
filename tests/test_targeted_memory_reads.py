@@ -577,4 +577,10 @@ def test_snapshot_explicit_topic_takes_priority_over_video_id_join():
     assert result['snapshot_explicit_topic_hits'] == 1
     assert result['snapshot_topic_join_hits'] == 0
     assert result['snapshot_topic_join_view_metrics'] == []
+    assert result['snapshot_topic_explicit_view_metrics'] == [{
+        'topic': 'Cooking', 'snapshots_with_views': 1,
+        'average_snapshot_views': 500.0,
+        'source': 'video_snapshots.data_json.explicit_topic',
+        'unit': 'snapshots_not_unique_videos',
+    }]
     assert result['snapshot_topic_join_misses'] == 0

@@ -489,3 +489,13 @@ async def test_supabase_history_to_director_decision_end_to_end_offline():
     assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'
     assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
     assert decision.metadata['snapshot_niche_unmatched_count'] == 1
+
+def test_bounded_topic_index_reports_overflow_without_unbounded_growth():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    for i in range(1005):
+        stats.add_video({'video_id': f'video-{i}', 'metadata': {'topic': 'Gardening'}})
+    result = stats.to_dict()
+    assert result['video_topic_index_overflow'] == 5
+    assert len(stats._video_topics) == 1000
+    assert result['video_count'] == 1005

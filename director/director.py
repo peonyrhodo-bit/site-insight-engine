@@ -1611,6 +1611,7 @@ class Director:
                     if attribution in ("partial", "complete_for_snapshots_with_views"):
                         decision.metadata["snapshot_niche_evidence_status"] = attribution
                         decision.metadata["snapshot_niche_unmatched_count"] = youtube.get("snapshot_topic_join_misses", 0)
+                        decision.metadata["snapshot_video_topic_index_overflow"] = youtube.get("video_topic_index_overflow", 0)
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

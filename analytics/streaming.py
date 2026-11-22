@@ -80,6 +80,7 @@ class StreamingYouTubeAnalytics:
         self.snapshot_topic_join_hits = 0
         self.snapshot_explicit_topic_hits = 0
         self.video_topic_index_overflow = 0
+        self.snapshot_topic_attributed_count = 0
         self.video_stats = {name: _OnlineStats() for name in ("views",)}
         self.snapshot_stats = {name: _OnlineStats() for name in self.METRICS}
         self.top_videos: list[dict[str, Any]] = []
@@ -163,6 +164,8 @@ class StreamingYouTubeAnalytics:
                     self.snapshot_topic_join_hits += 1
                 else:
                     self.snapshot_topic_join_misses += 1
+            if topics:
+                self.snapshot_topic_attributed_count += 1
             for topic in topics:
                 if topic in self.snapshot_topic_view_stats or len(self.snapshot_topic_view_stats) < 1000:
                     self.snapshot_topic_view_stats.setdefault(topic, _OnlineStats()).add(snapshot_views)
@@ -183,6 +186,7 @@ class StreamingYouTubeAnalytics:
             "snapshot_count": self.snapshot_count,
             "snapshot_topic_join_misses": self.snapshot_topic_join_misses,
             "snapshot_topic_join_hits": self.snapshot_topic_join_hits,
+            "snapshot_topic_attributed_count": self.snapshot_topic_attributed_count,
             "snapshot_explicit_topic_hits": self.snapshot_explicit_topic_hits,
             "snapshot_topic_attribution": "partial" if (self.snapshot_topic_join_misses or self.video_topic_index_overflow) else "complete_for_snapshots_with_views",
             "snapshot_video_topic_index_limit": self.video_topic_index_limit,

@@ -705,6 +705,7 @@ def test_large_synthetic_history_keeps_working_sets_bounded(monkeypatch):
     assert history["snapshot_count"] == 21000
     assert history["snapshot_topic_join_hits"] == 21000
     assert history["snapshot_topic_join_misses"] == 0
+    assert history["snapshot_topic_attribution"] == "complete_for_snapshots_with_views"
     assert history["video_topic_index_overflow"] == 20900
     assert history["working_videos_retained"] == 100
     assert history["working_snapshots_retained"] == 200

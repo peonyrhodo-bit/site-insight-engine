@@ -373,6 +373,8 @@ async def test_niche_comparison_excludes_thin_samples_without_reordering():
         ],
         'history_analytics': {'youtube': {
             'status': 'complete',
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 7,
             'top_topics': [{'topic': 'Gardening', 'videos': 40},
                            {'topic': 'Cooking', 'videos': 100}],
             'topic_view_metrics': [
@@ -386,6 +388,8 @@ async def test_niche_comparison_excludes_thin_samples_without_reordering():
         {'topic': 'Gardening', 'videos_with_views': 30,
          'topic_video_count': 40, 'average_views': 200.0},
     ]
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 7
 
 def test_supabase_streaming_reads_video_views_from_data_json():
     from memory.supabase import SupabaseMemoryBackend

@@ -1,0 +1,276 @@
+# PR-B — durable idempotency lookup: implementation gate
+
+Status: **design-only / no runtime changes**. Owner approval required for schema migration and production deployment.
+
+## Verified baseline
+- `server.py::_find_completed_idempotent_run` calls `backend._recent_for_project(TABLE_RUNS, limit=None, ...)`. This reads all historical run rows and `data_json`, then scans in Python.
+- `memory/supabase.py::save_run` stores `idempotency_key` and `idempotency_status` inside `data_json`, not promoted to indexed top-level fields.
+- `update_run` reads and rewrites `data_json` to update status/result.
+- The existing semantics are: same project+key and `completed` with dictionary result -> replay; `failed`/`in_progress` -> HTTP 409; read failure -> HTTP 503 (fail closed). Older keys must remain discoverable.
+
+## Proposed implementation (after schema review and approval)
+1. Inspect current `director_runs` schema, row-level security, existing indexes, duplicate historical keys and query plans **read-only**.
+2. Design a durable keyed lookup on `(project_id, idempotency_key)` with a unique constraint / atomic reservation where feasible. Account for legacy keys nested in `data_json`, and do not silently ignore them.
+3. Separate small metadata lookup (key, project, status, run ID) from fetching a **single** matched run's `result`; avoid downloading `data_json` for unrelated runs.
+4. Use a dedicated method in `memory/` and thin call from `server.py`. Keep all error/409/503 behavior and legacy replay compatibility.
+5. Ensure cross-process atomicity; local in-memory request lock is insufficient. No new YouTube calls during lookup.
+6. Only after reviewing migration/backfill and rollout plan, request explicit owner authorization for schema changes and implementation.
+
+## Required offline regression gates
+- Same key + project completed returns exactly the original result, including after restart.
+- Same key in different projects remains independent; historical rows with nested-only keys remain searchable.
+- Failed/in-progress statuses reject with 409; database outage/partial read rejects with 503.
+- Concurrent identical requests cannot both reserve work (DB-level atomicity).
+- Query uses indexed key lookup; no unbounded `select(*)`/full-history downloads.
+- Existing PR #67 protected-memory fail-closed behavior and PR #69 run refs remain independent.
+- Performance check: compare query plan and transferred bytes against old full-history path, without claiming production savings before measurement.
+
+## No-go conditions
+Do not implement an arbitrary last-100/last-N scan, rely only on process-local cache, create a new column without backfill/compatibility, or introduce a migration without owner approval.
+
+## Live read-only schema audit — 2026-11-20
+
+Project: `site-insight-memory` (`oxbxnswywgpdlcfltmbq`), `public.director_runs`.
+- 159 rows; **0** rows with non-empty `data_json->>'idempotency_key'` at audit time. This is a snapshot, not a guarantee that no future or alternate database has legacy keys.
+- Columns include `id`, `project_id`, `status`, `created_at`, `updated_at`, `data_json`; **no top-level `idempotency_key` column**.
+- Existing indexes:
+  - `director_runs_pkey` on `id`;
+  - `director_runs_one_active_per_project_idx`: **unique `project_id` WHERE `status IN ('requested','running')`**;
+  - `director_runs_status_updated_at_idx` on `(status, updated_at DESC)`;
+  - `idx_director_runs_created_at` on `(created_at DESC)`.
+- No indexed `(project_id, idempotency_key)` lookup exists. The current one-active-per-project invariant is independent of key-level idempotency and **must remain intact**.
+- RLS reported disabled on this table; security/role exposure review is required before any schema or API design changes.
+- Only metadata/schema and aggregate counts were queried. **No migrations, updates, deletes, deployment or runtime calls**.
+
+Design implication: prefer a migration-reviewed durable keyed lookup with a careful compatibility path for nested JSON keys; do not assume legacy-key absence outside this observed snapshot.
+
+## Proposed SQL design — review only, NOT authorized for execution
+
+Preferred approach: add nullable `idempotency_key text` to `public.director_runs`, maintain a partial unique btree index on `(project_id, idempotency_key)` where both are non-null, and populate the column atomically when reserving a keyed run. Preserve `director_runs_one_active_per_project_idx` unchanged.
+
+**Migration prerequisites:**
+1. Inspect null/blank project IDs, duplicate `(project_id, data_json->>'idempotency_key')` combinations, and active rows. The 2026-11-20 audit found zero keyed legacy rows, but validate again immediately before migration.
+2. Define explicit normalization: request keys are trimmed at the HTTP boundary; empty strings do not reserve. Project IDs must be non-null for keyed reservations. Treat existing historical JSON keys with exactly the same semantics as current code.
+3. Backfill top-level keys from `data_json` in batches or one transaction only after inspecting duplicates; do not silently drop duplicate historical keys or auto-delete rows. Historical duplicate semantics currently depend on created-at order and need a deterministic conflict policy before a unique index.
+4. Establish transaction-safe reservation: `INSERT ... ON CONFLICT` alone is insufficient if another per-project active run already exists; map conflicts to existing 409 behavior and avoid a second Director cycle. The existing unique active-per-project index and new unique keyed index enforce distinct invariants.
+5. Ensure completion/failure updates persist `idempotency_status` and `result` consistently; use an indexed metadata-only lookup by `project_id` and `idempotency_key`, then fetch only the matched row's `data_json` if replaying.
+6. Fail closed if migration/lookup is unavailable; never fall back to an unbounded full-history scan in production. If compatibility is needed during rollout, use a separately approved bounded/indexed legacy strategy.
+
+### Illustrative SQL, **not a migration**
+
+```sql
+-- PROPOSAL ONLY. DO NOT RUN WITHOUT OWNER APPROVAL AND PRE-FLIGHT CHECKS.
+ALTER TABLE public.director_runs ADD COLUMN idempotency_key text;
+
+-- After validated backfill, duplicates audit and rollout plan:
+CREATE UNIQUE INDEX director_runs_project_idempotency_key_uq
+  ON public.director_runs (project_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL AND project_id IS NOT NULL;
+```
+
+**Security gate:** the audit reported RLS disabled on `public.director_runs`. Verify Data API exposure, service credentials, privileges, and the intended per-project authorization model before rollout; never treat a project filter alone as access control.
+
+**Rollout gate:** agree on rollback (application compatibility with old schema, index removal strategy, handling in-flight runs), staged test environment, query-plan verification and production egress measurement. Migration and deployment remain separately owner-approved.
+
+## Request lifecycle trace and additional correctness gates
+
+Read-only code trace from `server.py` (main branch, 2026-11-20):
+
+- Both GET and POST Director run endpoints call `_run_director`.
+- `_run_director` trims a nonempty key, builds `f"{project_id}:{key}"`, uses `_DIRECTOR_REQUEST_LOCKS.setdefault(..., asyncio.Lock())`, then checks `_DIRECTOR_REQUEST_RESULTS` (process-local dict). **Neither cache nor lock is shared between Render processes.**
+- A cache miss invokes `_find_completed_idempotent_run` (current unbounded Supabase read), then `_run_director_once`.
+- `_run_director_once` reserves a run with nested `idempotency_key` and `idempotency_status="in_progress"`; on success, updates nested status to `completed` and persists full `result`; on failure, attempts to mark it `failed`.
+- `_find_completed_idempotent_run` rejects `failed` and `in_progress` with 409, replays `completed` only when `result` is a dict, and raises 503 on a history read failure.
+
+**Correctness risks to resolve before implementation:**
+
+1. **Atomicity:** `lookup -> create_run` is not an atomic transaction. The existing unique partial index on active project status limits simultaneous active runs but does not replace a durable uniqueness guarantee for completed keys. Define how concurrent processes distinguish same-key conflict, different-key active run, and completed replay.
+2. **Status ambiguity:** a keyed row marked `completed` with missing/non-dict `result`, or with an unknown status, is currently skipped and may allow another run. New implementation must choose and test fail-closed behavior; do not silently treat malformed historical state as no match.
+3. **Cache consistency:** process-local `_DIRECTOR_REQUEST_RESULTS` may replay a cached result without a fresh database check. Define when it is safe, how stale state is handled, and whether unbounded cache/lock growth should be separately addressed.
+4. **Update failure:** after successful Director work, a failure to persist `completed` must not be interpreted as successful durable idempotency. Verify `runtime.memory.update_run` return/error semantics and test partial persistence.
+5. **Legacy behavior:** project-scoped replay must preserve the exact saved result; compare nested-only keys, missing project IDs, and historical duplicates explicitly.
+
+**Review decision requested:** before any migration, approve a concrete reservation protocol and conflict/status matrix (same key vs different key; active vs completed vs failed vs malformed; same project vs another project), not merely an index.
+
+## Write-path audit — second unbounded read discovered
+
+The `ServerMemory.create_run` method in `memory/director_adapter.py` independently performs another `_recent_for_project(TABLE_RUNS, limit=None, project_id=...)` before inserting a run. **Optimizing only `server.py::_find_completed_idempotent_run` will not remove full-history reads from the Director start path.** This must be accounted for in PR-B scope and egress estimates.
+
+Current `create_run` logic:
+- Scans historical runs to identify `requested`/`running` rows.
+- Determines staleness from `updated_at`, `started_at`, `created_at` (including nested JSON fallbacks). Missing or malformed timestamps are conservatively considered active.
+- Marks an old active row `failed` when its timestamp exceeds `DIRECTOR_RUN_STALE_TIMEOUT_SECONDS` (minimum 60, default 1800), then inserts a new row.
+- On insert, converts unique-index errors into `DirectorCycleAlreadyRunning` (HTTP 409 at the caller); other failures propagate.
+- **Race risk:** stale cleanup and insertion are separate operations; a long-running process without a heartbeat could be marked failed and overlapped. Keep the current conservative missing-timestamp behavior; evaluate a transactional/conditional stale claim before changing semantics.
+
+Write-result audit:
+- `ServerMemory.update_run` propagates backend errors and raises if the result is not exactly `True`.
+- `SupabaseMemoryBackend.update_run` first selects the matched row's `data_json`, merges fields client-side, then updates by `id` and selects `id`. This is a **read-modify-write race**: concurrent updates can overwrite JSON changes.
+- `ServerMemory.save_run` (non-reservation path) catches exceptions and returns `None`, unlike `create_run`. Do not accidentally use this best-effort path for durable idempotency.
+- Successful keyed cycle writes `idempotency_status="completed"` and `result` through `update_run`; failures attempt to persist `failed`, logging if that update fails. This must remain fail-closed for retries.
+
+### Revised implementation gate
+PR-B should address **both** full-history readers on the keyed Director start path: (1) lookup by key and (2) active-run detection in `create_run`. Use indexed, narrow active-run metadata queries preserving the existing partial unique active-project index, and a safe transactional stale-resolution protocol. Avoid changing stale timeout semantics without separate review. Add tests for the second read, update races, stale claims, and persistence failures.
+
+No runtime code, migrations, SQL writes or production changes authorized.
+
+## Offline characterization CI checkpoint — 2026-11-20
+
+Commit `46da23e449d50f8a8504fa47fec4adc5d4e36dbf` passed three GitHub Actions workflows. The Reliability audit workflow explicitly executed `python -m pytest -q tests/test_pr_b_idempotency_characterization.py` with **4 passed**; its general regression run reported **168 passed, 4 warnings, 11 subtests passed**. Supabase backend regression and history pagination workflows also passed.
+
+These are characterization tests of the current implementation, **not proof that the proposed indexed design is implemented or concurrency-safe**. The separate new PR-B workflow did not show as an executed run; the existing Reliability workflow is the verified execution path.
+
+Next safe implementation step, pending scope approval: create a narrow read-only backend method for indexed active-run metadata lookup and a distinct idempotency lookup interface, backed by offline fake clients and failure tests. Do not enable a new query against an unindexed production column or migrate schema without separate owner approval.
+
+## Legacy active-run compatibility gate — 2026-11-20
+
+At commit `2397221a4e6ef0a0a9124b977047a777f18d2218`, the Reliability audit workflow passed **172 repository tests** and explicitly passed **8 PR-B characterization tests**. The added test documents that `get_active_run_metadata` intentionally filters top-level `project_id` and `status` and cannot discover legacy rows where both values exist only in `data_json`.
+
+**Do not wire this method into `ServerMemory.create_run` yet.** A top-level-only query is not a drop-in replacement for the current all-history scan. The existing partial unique index protects top-level active statuses only; JSON-only legacy rows require an explicit compatibility decision. Options for owner review:
+
+1. Read-only, bounded inventory of legacy JSON-only active rows using an appropriately indexed expression predicate; assess query plan and Supabase quota before any live read.
+2. Owner-approved, idempotent backfill of missing top-level `project_id` and `status` values after validating duplicates, status semantics, and existing partial uniqueness constraints.
+3. If legacy rows cannot be safely normalized, fail closed for projects with unresolved legacy-active ambiguity; do not silently skip them.
+
+Acceptance gate before runtime integration: no unbounded history scans, project isolation, stale heartbeat conservatism, unique-violation conflict mapping, explicit failure on backend errors, and concurrency tests. No migration or production read/write is authorized by this document.
+
+## Owner-review migration and concurrency runbook (proposal only)
+
+### Preflight — no production queries without explicit approval
+
+- Verify the target environment and billing/egress state; never use `select=*` or download every `data_json` for discovery.
+- Obtain a read-only query plan for a **bounded** legacy predicate, with explicit row and byte limits. If no efficient index or safely bounded query exists, stop and request a separately approved index/backfill plan. A LIMIT alone does not guarantee a bounded database scan.
+- Count, by project and status, rows with missing top-level `project_id`/`status` but populated JSON equivalents. Capture only IDs, top-level columns, and normalized JSON scalar expressions; avoid full payloads.
+- Detect conflicting normalized projects, duplicate active runs, invalid timestamps, and any rows that would violate `director_runs_one_active_per_project_idx`. Fail closed on ambiguity; never pick an arbitrary winner.
+- Review RLS and role privileges (RLS was disabled in the prior read-only audit). Restrict migration execution to an approved privileged role and record rollback/backup strategy.
+
+### Separately approved schema/data migration
+
+1. In a controlled maintenance window, pause creation of Director runs across **all** workers, not just process-local locks. If this cannot be guaranteed, do not backfill.
+2. Backfill missing top-level `project_id` and `status` in small transactional batches after validating exact legacy-to-column mappings. Use conditional updates so reruns are idempotent; log only IDs/counts.
+3. Recheck the active-run partial unique index, legacy anomalies, and row counts. Abort and investigate on constraint violations; do not silently mark a legacy active run completed or failed.
+4. Add nullable top-level `idempotency_key`, backfill only verified nonempty JSON keys, and resolve per-project duplicates before a partial unique index. Never collapse keys across projects.
+5. Implement atomic same-project/key reservation and result persistence, preserving completed replay, in-progress/failed 409, storage failure 503, and original result integrity. The existing JSON read-modify-write path is not an atomic reservation.
+6. Keep the old read path behind an explicit compatibility gate until the post-migration checks pass; switch only with a separately approved deployment and monitored rollback plan.
+
+### Offline concurrency acceptance matrix
+
+| Case | Required result |
+| --- | --- |
+| Two workers, same project and key | Exactly one durable reservation; loser sees 409 or completed replay, never a second cycle |
+| Two workers, same project, different keys | Active-project uniqueness still prevents concurrent Director cycles |
+| Same key, different projects | Independent reservations and results |
+| Completed key, valid persisted result | Return the original persisted result, without rerunning |
+| Completed key, missing/malformed result | Fail closed; never synthesize success |
+| Failed or in-progress key | 409; no new cycle |
+| Legacy JSON-only active run | Detected or explicitly blocked; never silently ignored |
+| Missing/malformed heartbeat | Conservatively treated as active |
+| Stale run | Transactionally and safely resolved before a new reservation; no overlapping workers |
+| Backend read/update failure or Supabase 402 | 503 or propagated failure; never a fresh cycle |
+| Concurrent JSON updates | No lost fields; transactional/conditional persistence required |
+| Query budget | No `limit=None`, `select=*`, or unbounded history pagination in reservation paths |
+
+**Current status:** documentation and offline tests only; no live data changes, migrations, runtime switch, merge, or deploy.
+
+## Verified concurrency-model checkpoint — 2026-11-20
+
+Commit `6ce12c821820eec3902c33ad49fcaca74634b2e5` passed four GitHub Actions workflows. Reliability audit reported **176 passed, 4 warnings, 11 subtests passed**, and its explicit PR-B step reported **12 passed**.
+
+The final two tests simulate atomic reservations with a process-local, thread-safe fake. They verify intended outcomes for same-key races, completed replay, failed-key conflict, and project isolation **only in the model**. They do **not** validate PostgreSQL uniqueness, transaction isolation, Supabase RPC, multi-process behavior, or crash recovery. Do not claim that runtime idempotency is implemented.
+
+### Remaining implementation gates
+
+- Define the transaction boundary for reservation, completion, and failed-run state; specify how active-project uniqueness interacts with per-project/key uniqueness.
+- Implement the server-side transaction/RPC and required indexes only after explicit schema/migration approval. No production fallback to unbounded JSON history scans.
+- Test two independent database connections/processes against an isolated test database, including simultaneous reservation and crash between reservation and completion.
+- Confirm legacy-key backfill and legacy-active-run compatibility before switching reads.
+- Keep PR-B draft and unmerged until those gates and owner-approved rollout conditions are satisfied.
+
+## PostgreSQL transactional reservation design — proposal, not executable migration
+
+### Data model and immutable identity
+
+- Keep `director_runs.id` as the run identity and the existing unique active-project partial index.
+- Add nullable `idempotency_key` on `director_runs`, with unique partial index on `(project_id, idempotency_key)` where key is not null, **only after approved deduplication/backfill**. Normalize/validate key length and emptiness at the API boundary; do not silently truncate.
+- Treat `project_id` + `idempotency_key` as an immutable reservation identity. Preserve original request fingerprint (objective/parameters) so the same key cannot replay a different request. A mismatched fingerprint must return conflict.
+- Persist terminal result as an immutable, separately addressable payload or transactionally written `data_json` field; never derive a completed response from status alone.
+
+### Transaction contract
+
+A database-side reservation routine (RPC or equivalent transaction) accepts `project_id`, key, request fingerprint, and initial run metadata. Its entire decision executes in one transaction, using uniqueness constraints as the final arbiter:
+
+1. Validate nonempty project/key and authenticated project authorization.
+2. Look up the existing unique `(project_id,key)` row under appropriate row lock. If completed and its result is valid, return the original result; if running/requested/failed or fingerprint differs, return a typed conflict. If completed without a valid persisted result, return a typed storage error, never success.
+3. For a new key, enforce the existing one-active-run-per-project invariant in the **same transaction**. Insert the reserved run with `status=requested` and `idempotency_status=in_progress`; return its run ID only after commit. If a competing transaction wins, catch the uniqueness conflict and re-read the winning row by indexed project/key to classify replay vs conflict.
+4. Do not hold the database transaction open while executing the Director cycle or calling YouTube. Complete or fail the reserved run in a separate short transaction, conditionally by run ID, project ID, expected state, and ownership/fencing token.
+5. Atomically persist final result and terminal status. A crash before that commit leaves the reservation in progress, not spuriously completed. A crash after commit permits exact completed replay. Never write `completed` first and its result later.
+
+### Crash, timeout, and fencing
+
+- A lease expiry alone does **not** prove the old worker stopped. Use a monotonically increasing fencing generation/token and conditional writes; a superseded worker must be unable to commit results or overwrite the new owner's status.
+- Reclaiming a stale run requires an explicitly specified policy for in-flight external side effects. If the Director can trigger non-idempotent YouTube actions, do not automatically retry solely on elapsed heartbeat.
+- Missing/invalid heartbeat is active/ambiguous, not stale. A failed reservation retains its key and yields conflict unless an owner-approved retry protocol exists.
+- Releasing the active-project uniqueness guard and setting terminal result/status must occur together.
+
+### API and failure mapping
+
+| Database outcome | HTTP behavior |
+| --- | --- |
+| New reservation committed | Execute once using committed run ID |
+| Same key, completed, same fingerprint, valid result | 200 with exact persisted original response |
+| Same key, running/requested/failed | 409, no execution |
+| Same key, different fingerprint | 409, no execution |
+| Another key already active for project | 409, no execution |
+| Completed but result missing/malformed | 503, no execution |
+| DB timeout, quota 402, authorization/read/write failure | 503, no execution |
+| Uncertain commit outcome (connection dropped) | Reconcile by indexed key; never blindly insert/re-execute |
+
+### Offline test and later isolated-DB verification gates
+
+- Two independent clients reserve the same key concurrently; exactly one inserts, other classifies the winning row.
+- Two keys for one project cannot both execute; same key across two projects remains independent.
+- Crash before completion leaves conflict; crash after atomic completion replays exact result.
+- Lost connection after reservation commit must not trigger blind retry; query by indexed key to reconcile.
+- Fencing token rejects late completion from superseded worker.
+- Mismatched request fingerprint, invalid terminal payload, duplicate legacy keys, and legacy JSON-only active rows fail closed.
+- Query plan proves bounded/indexed lookups, without full-history or full-`data_json` scans.
+
+**Approval boundary:** This section is a design specification only. No SQL was executed, no migration was applied, and no production code path was switched. The PostgreSQL function, indexes, and isolated-DB tests require separate implementation approval.
+
+## Isolated PostgreSQL integration-test contract — not executed
+
+**Verified baseline:** commit `4c1666c067e5c3c1cd873b1399c931bb2f84c819`: four GitHub Actions workflows passed; Reliability audit reported **180 passed** and its explicit PR-B step **16 passed**. The 16 tests remain mock/model tests, not evidence of transactional database correctness.
+
+### Test environment prerequisites
+
+- Use a disposable PostgreSQL instance or isolated Supabase test project, **never** the production project `site-insight-memory`. Supply a test-only connection URL via CI secret; redact DSNs and tokens in logs.
+- Create only the minimal test schema and transactional reservation function in that disposable database, after implementation approval. Run schema setup/teardown only against an allowlisted test database identity; reject absent or production-looking DSNs.
+- Use at least two independent database connections, with synchronization barriers so conflicting transactions overlap deterministically. Do not use a single connection or Python-only lock to claim cross-process safety.
+- Add query-count and execution-plan assertions for indexed project/key and active-project lookups. No unbounded `select=*` history scan.
+- Do not invoke Director, YouTube, Render, or production Supabase during tests.
+
+### Required integration scenarios
+
+| ID | Setup and concurrent action | Expected invariant |
+| --- | --- | --- |
+| PG-01 | Two transactions reserve same project/key simultaneously | One committed reservation; loser returns typed conflict or winner's completed replay |
+| PG-02 | Same project, different keys concurrently | Existing one-active-project unique guard permits only one active run |
+| PG-03 | Same key in distinct projects | Both reserve independently |
+| PG-04 | Commit reservation, disconnect before running cycle | Retry sees in-progress conflict; no second reservation |
+| PG-05 | Commit terminal result/status, disconnect before HTTP response | Retry replays byte-equivalent persisted result |
+| PG-06 | Roll back terminal transaction after writing result but before commit | No completed status and no visible result |
+| PG-07 | Commit outcome unknown due to network disconnect | Indexed lookup reconciles; never blindly re-executes |
+| PG-08 | Older fencing generation tries to finalize after takeover | Zero rows updated; newer owner remains authoritative |
+| PG-09 | Same key, changed request fingerprint | Typed conflict; no result leak or execution |
+| PG-10 | Completed row missing/malformed result | Typed storage error; no synthesized success |
+| PG-11 | Failed key and missing/malformed heartbeat | Conflict/fail-closed; no automatic restart |
+| PG-12 | Legacy JSON-only active run and duplicate legacy keys | Migration gate blocks unsafe activation |
+| PG-13 | Simulated permission error, query timeout, quota/connection failure | Fail closed; no Director cycle starts |
+| PG-14 | Concurrent terminal updates to JSON payload | No lost updates; final result and status atomic |
+| PG-15 | Query plan on representative large fixture | Indexed bounded lookup, no sequential full-history JSON scan |
+
+### Acceptance and evidence
+
+Capture CI run URLs, PostgreSQL version, test schema migration hash, anonymized query plans, concurrency barriers, and exact passed/failed counts. Require **all** scenarios to pass and security review of RLS/privileges before any production migration request. A green unit suite alone is insufficient.
+
+**Current boundary:** contract only. No test PostgreSQL provisioned, no integration tests run, no SQL applied, and no merge/deploy authorized.

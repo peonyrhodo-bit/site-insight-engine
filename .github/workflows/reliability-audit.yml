@@ -31,3 +31,7 @@ jobs:
         env:
           PYTHONPATH: .
         run: python -m pytest -q
+      - name: Run PR-B characterization explicitly
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/test_pr_b_idempotency_characterization.py

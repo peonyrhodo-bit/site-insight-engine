@@ -73,6 +73,7 @@ class StreamingYouTubeAnalytics:
         self.topic_counts: Counter[str] = Counter()
         self.topic_view_stats: dict[str, _OnlineStats] = {}
         self.snapshot_topic_view_stats: dict[str, _OnlineStats] = {}
+        self.snapshot_topic_join_view_stats: dict[str, _OnlineStats] = {}
         self._video_topics: dict[str, tuple[str, ...]] = {}
         self.snapshot_topic_join_misses = 0
         self.snapshot_topic_join_hits = 0
@@ -164,6 +165,8 @@ class StreamingYouTubeAnalytics:
             for topic in topics:
                 if topic in self.snapshot_topic_view_stats or len(self.snapshot_topic_view_stats) < 1000:
                     self.snapshot_topic_view_stats.setdefault(topic, _OnlineStats()).add(snapshot_views)
+                    if not explicit_topic:
+                        self.snapshot_topic_join_view_stats.setdefault(topic, _OnlineStats()).add(snapshot_views)
         captured = str(row.get("created_at") or "")
         if captured:
             self.latest_snapshot_at = max(captured, self.latest_snapshot_at or captured)
@@ -197,6 +200,14 @@ class StreamingYouTubeAnalytics:
                  "source": "video_snapshots.data_json",
                  "unit": "snapshots_not_unique_videos"}
                 for topic, stats in sorted(self.snapshot_topic_view_stats.items(),
+                                           key=lambda item: item[1].count, reverse=True)[:100]
+            ],
+            "snapshot_topic_join_view_metrics": [
+                {"topic": topic, "snapshots_with_views": stats.count,
+                 "average_snapshot_views": stats.to_dict()["average"],
+                 "source": "video_snapshots.video_id_to_videos.data_json",
+                 "unit": "snapshots_not_unique_videos"}
+                for topic, stats in sorted(self.snapshot_topic_join_view_stats.items(),
                                            key=lambda item: item[1].count, reverse=True)[:100]
             ],
             "top_videos": list(self.top_videos),

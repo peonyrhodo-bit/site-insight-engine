@@ -177,7 +177,7 @@ class StreamingYouTubeAnalytics:
             "snapshot_topic_join_misses": self.snapshot_topic_join_misses,
             "snapshot_topic_join_hits": self.snapshot_topic_join_hits,
             "snapshot_explicit_topic_hits": self.snapshot_explicit_topic_hits,
-            "snapshot_topic_attribution": "partial" if self.snapshot_topic_join_misses else "complete_for_snapshots_with_views",
+            "snapshot_topic_attribution": "partial" if (self.snapshot_topic_join_misses or self.video_topic_index_overflow) else "complete_for_snapshots_with_views",
             "snapshot_video_topic_index_limit": 1000,
             "video_topic_index_overflow": self.video_topic_index_overflow,
             "unique_channel_count_observed": len(self.channel_counts),

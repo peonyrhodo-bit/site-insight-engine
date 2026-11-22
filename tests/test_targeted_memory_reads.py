@@ -553,3 +553,21 @@ async def test_director_reports_snapshot_gaps_even_without_comparable_niches():
     assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
     assert decision.metadata['snapshot_niche_unmatched_count'] == 8
     assert decision.metadata['snapshot_video_topic_index_overflow'] == 4
+
+def test_snapshot_explicit_topic_takes_priority_over_video_id_join():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Cooking', 'statistics': {'viewCount': '500'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'] == [{
+        'topic': 'Cooking', 'snapshots_with_views': 1,
+        'average_snapshot_views': 500.0,
+        'source': 'video_snapshots.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['snapshot_explicit_topic_hits'] == 1
+    assert result['snapshot_topic_join_hits'] == 0
+    assert result['snapshot_topic_join_misses'] == 0

@@ -87,6 +87,33 @@ class RecentForProjectPaginationTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in result], list(range(2305, 2055, -1)))
 
 
+
+    def test_analysis_working_set_is_bounded_without_truncating_history_scan(self):
+        from unittest.mock import patch
+        videos = [
+            {'video_id': f'v{i}', 'data_json': {'project_id': 'project-a', 'snippet': {'title': f'Video {i}'}}}
+            for i in range(150)
+        ]
+        snapshots = [
+            {'id': i, 'video_id': f'v{i % 150}', 'created_at': '2026-01-01T00:00:00Z',
+             'data_json': {'project_id': 'project-a', 'statistics': {'viewCount': str(i)}}}
+            for i in range(350)
+        ]
+        backend = SupabaseMemoryBackend(client=FakeClient(
+            {'videos': videos, 'video_snapshots': snapshots}
+        ))
+        with patch.dict('os.environ', {
+            'DIRECTOR_ANALYSIS_WORKING_VIDEOS': '100',
+            'DIRECTOR_ANALYSIS_WORKING_SNAPSHOTS': '200',
+            'DIRECTOR_ANALYSIS_PAGE_SIZE': '50',
+        }):
+            result = backend.load_youtube_analysis_data(project_id='project-a')
+        self.assertEqual(len(result['videos']), 100)
+        self.assertEqual(len(result['snapshots']), 200)
+        self.assertEqual(result['history_analytics']['video_rows_scanned'], 150)
+        self.assertEqual(result['history_analytics']['snapshot_rows_scanned'], 350)
+
+
 class ResearchAndOpportunityHistoryTests(unittest.TestCase):
     def test_research_queries_sets_and_relations_load_all_pages(self):
         tables = {

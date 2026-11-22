@@ -217,10 +217,13 @@ class SupabaseMemoryBackend:
         data_json, so filtering is done after each page is read. Stable ordering
         (with id as a tie-breaker) keeps offset pagination deterministic.
         """
-        page_size = max(1, int(page_size))
         requested_limit = (
             None if limit is None else self._limit(limit, default_limit)
         )
+        # Project filtering happens after each page (legacy IDs may be
+        # nested in JSON). Keep 50-row pages for project-specific reads:
+        # shrinking to a tiny requested limit causes excessive round trips.
+        page_size = max(1, min(int(page_size), 1000))
         rows: list[dict[str, Any]] = []
         offset = 0
         expected_project = str(project_id) if project_id is not None else None
@@ -526,7 +529,13 @@ class SupabaseMemoryBackend:
         except (TypeError, ValueError):
             video_limit, snapshot_limit, analytics_sample = 3000, 6000, 100
 
-        accumulator = StreamingYouTubeAnalytics(sample_limit=analytics_sample)
+        try:
+            topic_index_limit = max(1, min(int(os.getenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1000")), 20000))
+        except (TypeError, ValueError):
+            topic_index_limit = 1000
+        accumulator = StreamingYouTubeAnalytics(
+            sample_limit=analytics_sample, video_topic_index_limit=topic_index_limit,
+        )
         videos: list[dict[str, Any]] = []
         snapshots: list[dict[str, Any]] = []
         video_rows_scanned = 0
@@ -557,43 +566,102 @@ class SupabaseMemoryBackend:
                 source="supabase", metadata=metadata,
             )
             video_dict = video.to_dict()
-            accumulator.add_video(video_dict)
+            # Persisted YouTube metrics live in data_json.statistics, not in
+            # the normalized YouTubeVideo object. Feed them only to the
+            # streaming accumulator; do not enlarge retained working videos.
+            streaming_video = dict(video_dict)
+            statistics = self._safe_dict(data.get("statistics"))
+            radar = self._safe_dict(data.get("_radar"))
+            for key in ("viewCount", "views", "view_count"):
+                value = statistics.get(key, radar.get(key, data.get(key)))
+                if value is not None:
+                    streaming_video["views"] = value
+                    break
+            accumulator.add_video(streaming_video)
             if len(videos) < video_limit:
                 videos.append(video_dict)
 
-        for row in self._iter_paginated_rows(
+        # Snapshot pages are resolved against video metadata in bounded batches.
+        # This avoids the 20,000-ID in-memory topic index attribution ceiling.
+        from itertools import islice
+        snapshot_iterator = iter(self._iter_paginated_rows(
             "video_snapshots", order_key="id", descending=True,
             page_size=page_size, columns="id,video_id,created_at,data_json",
-        ):
-            snapshot_rows_scanned += 1
-            row_project = self._project_id_from_row(row)
-            if expected_project is not None:
-                if row_project is None:
-                    unscoped_snapshot_rows += 1
+        ))
+        topic_lookup_failures = 0
+        while True:
+            batch = list(islice(snapshot_iterator, page_size))
+            if not batch:
+                break
+            page_topics: dict[str, tuple[str, ...]] = {}
+            if accumulator.video_topic_index_overflow:
+                missing_ids = sorted({
+                    str(row["video_id"]) for row in batch
+                    if row.get("video_id") and str(row["video_id"]) not in accumulator._video_topics
+                    and (expected_project is None or self._project_id_from_row(row) == expected_project)
+                })
+                for offset in range(0, len(missing_ids), 100):
+                    try:
+                        response = (self.client.table("videos")
+                                    .select("video_id,data_json")
+                                    .in_("video_id", missing_ids[offset:offset + 100])
+                                    .execute())
+                        for video_row in self._safe_list(response):
+                            if expected_project is not None and self._project_id_from_row(video_row) != expected_project:
+                                continue
+                            metadata = self._analysis_metadata(self._safe_dict(video_row.get("data_json")))
+                            labels = set()
+                            for field in ("topic", "category", "niche", "thematic_direction"):
+                                value = metadata.get(field)
+                                if value is not None and str(value).strip():
+                                    labels.add(str(value).strip()[:160])
+                            for field in ("topics", "categories", "niches", "thematic_directions"):
+                                values = metadata.get(field)
+                                if isinstance(values, (list, tuple, set)):
+                                    labels.update(str(value).strip()[:160] for value in values if value is not None and str(value).strip())
+                            if labels:
+                                page_topics[str(video_row["video_id"])] = tuple(sorted(labels))
+                    except Exception:
+                        topic_lookup_failures += 1
+                        logger.exception("Snapshot topic lookup failed; attribution will be marked partial")
+            for row in batch:
+                snapshot_rows_scanned += 1
+                row_project = self._project_id_from_row(row)
+                if expected_project is not None:
+                    if row_project is None:
+                        unscoped_snapshot_rows += 1
+                        continue
+                    if row_project != expected_project:
+                        continue
+                accumulator.add_snapshot(row, joined_topics_override=page_topics.get(str(row.get("video_id") or "")))
+                if len(snapshots) >= snapshot_limit:
                     continue
-                if row_project != expected_project:
+                data = self._safe_dict(row.get("data_json"))
+                statistics = self._safe_dict(data.get("statistics"))
+                radar = self._safe_dict(data.get("_radar"))
+                metrics = dict(statistics)
+                for key in ("views", "age_hours", "engagement", "views_per_hour"):
+                    if key in radar:
+                        metrics[key] = radar[key]
+                snapshot_id = data.get("snapshot_id") or row.get("id")
+                video_id = row.get("video_id")
+                if snapshot_id is None or video_id is None:
                     continue
-            accumulator.add_snapshot(row)
-            if len(snapshots) >= snapshot_limit:
-                continue
-            data = self._safe_dict(row.get("data_json"))
-            statistics = self._safe_dict(data.get("statistics"))
-            radar = self._safe_dict(data.get("_radar"))
-            metrics = dict(statistics)
-            for key in ("views", "age_hours", "engagement", "views_per_hour"):
-                if key in radar:
-                    metrics[key] = radar[key]
-            snapshot_id = data.get("snapshot_id") or row.get("id")
-            video_id = row.get("video_id")
-            if snapshot_id is None or video_id is None:
-                continue
-            snapshots.append(YouTubeSnapshot(
-                snapshot_id=snapshot_id, video_id=video_id,
-                captured_at=row.get("created_at"), metrics=metrics,
-                metadata={}, source="supabase",
-            ).to_dict())
+                snapshots.append(YouTubeSnapshot(
+                    snapshot_id=snapshot_id, video_id=video_id,
+                    captured_at=row.get("created_at"), metrics=metrics,
+                    metadata={}, source="supabase",
+                ).to_dict())
+    
 
         history_analytics = accumulator.to_dict()
+        # An overflowing bounded index does not imply missing attribution when
+        # the page-scoped fallback successfully resolved every snapshot join.
+        if not accumulator.snapshot_topic_join_misses and not topic_lookup_failures and not unscoped_snapshot_rows:
+            history_analytics["snapshot_topic_attribution"] = "complete_for_snapshots_with_views"
+        if topic_lookup_failures:
+            history_analytics["status"] = "partial"
+            history_analytics["topic_lookup_failures"] = topic_lookup_failures
         if unscoped_snapshot_rows:
             history_analytics["status"] = "partial"
             history_analytics["completeness_note"] = (
@@ -1621,7 +1689,9 @@ class SupabaseMemoryBackend:
             return rows
 
         except Exception:
-            return []
+            # Never turn an incomplete protected-memory read into a
+            # successful empty recommendation list.
+            raise
 
     # ------------------------------------------------------------------
     # RECOMMENDATION FEEDBACK

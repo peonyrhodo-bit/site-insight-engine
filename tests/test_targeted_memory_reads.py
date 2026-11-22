@@ -1,0 +1,780 @@
+"""Offline regression tests for targeted Memory 2.0 collection reads."""
+
+from types import SimpleNamespace
+
+import pytest
+
+from memory.director_adapter import ServerMemory
+from memory.read_status import MemoryReadError, MemoryTableReadError
+
+
+@pytest.mark.asyncio
+async def test_recommendations_reader_only_fetches_recommendations():
+    calls = []
+
+    class Backend:
+        def get_recent_recommendations(self, *, project_id, limit):
+            calls.append(("recommendations", project_id, limit))
+            return [
+                {"id": 5, "source_data": {"director_recommendation_id": "rec-5"}},
+            ]
+
+        def get_context(self, **kwargs):
+            raise AssertionError("Full eight-table context must not be read")
+
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = Backend()
+    adapter.memory = SimpleNamespace(get_context=adapter.backend.get_context)
+
+    rows = await adapter.get_collection("recommendations", project_id="alpha", limit=3)
+
+    assert calls == [("recommendations", "alpha", 3)]
+    assert rows[0]["recommendation_id"] == "rec-5"
+
+
+@pytest.mark.asyncio
+async def test_events_reader_only_fetches_events():
+    calls = []
+
+    class Backend:
+        def get_recent_events(self, *, project_id, limit):
+            calls.append((project_id, limit))
+            return [{"id": 1, "event": "created"}]
+
+        def get_context(self, **kwargs):
+            raise AssertionError("Full context must not be read")
+
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = Backend()
+    adapter.memory = SimpleNamespace(get_context=adapter.backend.get_context)
+
+    rows = await adapter.get_collection("events", project_id="beta", limit=2)
+
+    assert calls == [("beta", 2)]
+    assert rows == [{"id": 1, "event": "created"}]
+
+
+@pytest.mark.asyncio
+async def test_targeted_read_failure_is_not_silently_empty():
+    class Backend:
+        def get_recent_events(self, **kwargs):
+            raise RuntimeError("database unavailable")
+
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = Backend()
+    adapter.memory = object()
+
+    with pytest.raises(MemoryReadError) as error:
+        await adapter.get_collection("events", project_id="alpha")
+
+    assert error.value.status == "error"
+    assert "database unavailable" in error.value.errors["events"]
+
+
+@pytest.mark.asyncio
+async def test_partial_page_failure_is_not_silently_accepted():
+    class Backend:
+        def get_recent_recommendations(self, **kwargs):
+            raise MemoryTableReadError(
+                "director_recommendations",
+                partial_rows=[{"id": 1}],
+                cause=RuntimeError("page two failed"),
+            )
+
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = Backend()
+    adapter.memory = object()
+
+    with pytest.raises(MemoryReadError) as error:
+        await adapter.get_collection("recommendations", project_id="alpha")
+
+    assert error.value.status == "partial"
+    assert error.value.context["recommendations"] == [{"id": 1}]
+    assert "page two failed" in error.value.errors["recommendations"]
+
+
+@pytest.mark.asyncio
+async def test_missing_reader_uses_full_context_fail_closed_fallback():
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = object()
+    adapter.memory = SimpleNamespace(
+        get_context=lambda **kwargs: {
+            "recommendations": [{"id": 7}],
+            "_memory_read": {"status": "complete", "tables": {}, "errors": {}},
+        },
+    )
+
+    rows = await adapter.get_collection("recommendations", project_id="alpha")
+
+    assert rows[0]["recommendation_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_unavailable_backend_fails_closed():
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = None
+    adapter.memory = None
+
+    with pytest.raises(MemoryReadError):
+        await adapter.get_collection("events")
+
+
+@pytest.mark.asyncio
+async def test_unknown_collection_is_rejected():
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = object()
+    adapter.memory = object()
+
+    with pytest.raises(ValueError):
+        await adapter.get_collection("runs")
+
+
+def test_supabase_recommendations_do_not_swallow_database_failure():
+    from memory.supabase import SupabaseMemoryBackend
+
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("supabase 402 quota exceeded")
+
+    backend._recent_for_project = fail
+
+    with pytest.raises(RuntimeError, match="402"):
+        backend.get_recent_recommendations(project_id="alpha", limit=5)
+
+
+@pytest.mark.asyncio
+async def test_supabase_read_failure_propagates_through_adapter():
+    from memory.supabase import SupabaseMemoryBackend
+
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("supabase 402 quota exceeded")
+
+    backend._recent_for_project = fail
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    with pytest.raises(MemoryReadError) as error:
+        await adapter.get_collection("recommendations", project_id="alpha", limit=5)
+
+    assert error.value.status == "error"
+    assert "402" in error.value.errors["recommendations"]
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_keeps_projects_isolated():
+    from memory.inmemory import InMemoryMemoryBackend
+
+    backend = InMemoryMemoryBackend()
+    backend._recommendations.extend([
+        {"id": 1, "project_id": "alpha", "title": "A"},
+        {"id": 2, "project_id": "beta", "title": "B"},
+    ])
+    backend._events.extend([
+        {"id": 3, "project_id": "alpha", "event": "A"},
+        {"id": 4, "project_id": "beta", "event": "B"},
+    ])
+    adapter = object.__new__(ServerMemory)
+    adapter.backend = backend
+    adapter.memory = object()
+
+    recommendations = await adapter.get_collection(
+        "recommendations", project_id="alpha",
+    )
+    events = await adapter.get_collection("events", project_id="beta")
+
+    assert [row["id"] for row in recommendations] == [1]
+    assert [row["id"] for row in events] == [4]
+
+
+@pytest.mark.asyncio
+async def test_api_routes_preserve_response_shape_without_full_context(monkeypatch):
+    import server
+
+    calls = []
+
+    class MemoryStub:
+        async def get_collection(self, name, *, project_id, limit):
+            calls.append((name, project_id, limit))
+            return [{"id": 9, "recommendation_id": "legacy-9"}] if name == "recommendations" else [{"id": 8}]
+
+        async def get_context(self, **kwargs):
+            raise AssertionError("API should not request full memory context")
+
+    monkeypatch.setattr(server.runtime, "memory", MemoryStub())
+
+    recommendations = await server.director_recommendations(
+        project_id="alpha", limit=4,
+    )
+    events = await server.events(project_id="beta", limit=6)
+
+    assert recommendations == {
+        "project_id": "alpha",
+        "recommendations": [{"id": 9, "recommendation_id": "legacy-9"}],
+    }
+    assert events == {"project_id": "beta", "events": [{"id": 8}]}
+    assert calls == [
+        ("recommendations", "alpha", 4),
+        ("events", "beta", 6),
+    ]
+
+@pytest.mark.asyncio
+async def test_director_decision_carries_history_evidence():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate YouTube topics'
+    history = {'youtube': {'video_count': 321, 'snapshot_count': 654}}
+    analysis = {
+        'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Topic 1', 'overall_score': 0.9}],
+        'history_analytics': history,
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['history_analytics'] == history
+    assert decision.metadata['opportunity_id'] == 'topic-1'
+
+@pytest.mark.asyncio
+async def test_global_history_does_not_falsely_reorder_opportunities():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [
+            {'opportunity_id': 'strong', 'overall_score': 0.9},
+            {'opportunity_id': 'weak', 'overall_score': 0.2},
+        ],
+        'history_analytics': {
+            'youtube': {'status': 'complete', 'video_count': 5000,
+                        'snapshot_count': 10000, 'top_topics': [
+                            {'topic': 'weak', 'videos': 3000}
+                        ]}
+        },
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['opportunity_id'] == 'strong'
+    assert decision.metadata['history_analytics'] == analysis['history_analytics']
+
+@pytest.mark.asyncio
+async def test_director_links_only_exact_historical_topic_to_candidate():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Garden Ideas', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {'status': 'complete', 'top_topics': [
+            {'topic': 'garden ideas', 'videos': 17},
+            {'topic': 'garden', 'videos': 900},
+        ]}},
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['matching_historical_topics'] == [
+        {'topic': 'garden ideas', 'videos': 17},
+    ]
+
+@pytest.mark.asyncio
+async def test_partial_history_cannot_validate_specific_topic():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [{'opportunity_id': 'topic-1', 'title': 'Garden Ideas', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'partial', 'top_topics': [{'topic': 'Garden Ideas', 'videos': 17}],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert 'matching_historical_topics' not in decision.metadata
+    assert decision.metadata['history_analytics']['youtube']['status'] == 'partial'
+
+def test_streaming_history_tracks_per_topic_views_only_when_observed():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}, 'views': 100})
+    stats.add_video({'video_id': 'b', 'metadata': {'topic': 'Gardening'}, 'views': 300})
+    stats.add_video({'video_id': 'c', 'metadata': {'topic': 'Gardening'}})
+    stats.add_video({'video_id': 'd', 'metadata': {'topic': 'Cooking'}, 'views': 50})
+    result = stats.to_dict()
+    by_topic = {row['topic']: row for row in result['topic_view_metrics']}
+    assert by_topic['Gardening'] == {
+        'topic': 'Gardening', 'videos_with_views': 2, 'average_views': 200.0,
+        'source': 'videos.data_json.statistics', 'snapshot_views_included': False,
+    }
+    assert by_topic['Cooking']['average_views'] == 50.0
+    assert next(row['videos'] for row in result['top_topics'] if row['topic'] == 'Gardening') == 3
+
+@pytest.mark.asyncio
+async def test_director_attaches_only_verified_topic_view_performance():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [{'opportunity_id': 'garden', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 10}],
+            'topic_view_metrics': [
+                {'topic': 'gardening', 'videos_with_views': 3, 'average_views': 200.0},
+                {'topic': 'Cooking', 'videos_with_views': 99, 'average_views': 90000.0},
+            ],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['matching_historical_view_metrics'] == [
+        {'topic': 'gardening', 'videos_with_views': 3, 'average_views': 200.0},
+    ]
+    assert decision.metadata['historical_view_coverage'] == [
+        {'topic': 'gardening', 'videos_with_views': 3, 'topic_video_count': 10, 'fraction': 0.3},
+    ]
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'limited_sample'
+
+@pytest.mark.asyncio
+async def test_sufficient_historical_sample_is_labeled_without_changing_rank():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    analysis = {
+        'opportunities': [
+            {'opportunity_id': 'gardening', 'title': 'Gardening', 'overall_score': 0.9},
+            {'opportunity_id': 'cooking', 'title': 'Cooking', 'overall_score': 0.8},
+        ],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 40}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 25, 'average_views': 200.0}],
+        }},
+    }
+    decision = await director.decide(analysis)
+    assert decision.metadata['opportunity_id'] == 'gardening'
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'
+
+def test_streaming_deduplicates_topic_labels_within_one_video():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({
+        'video_id': 'a', 'views': 100,
+        'metadata': {'topic': 'Gardening', 'niche': 'Gardening',
+                     'tags': ['Gardening', 'Gardening']},
+    })
+    result = stats.to_dict()
+    assert result['top_topics'] == [{'topic': 'Gardening', 'videos': 1}]
+    assert result['topic_view_metrics'][0]['videos_with_views'] == 1
+
+@pytest.mark.asyncio
+async def test_niche_comparison_excludes_thin_samples_without_reordering():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    decision = await director.decide({
+        'opportunities': [
+            {'opportunity_id': 'a', 'title': 'Gardening', 'overall_score': 0.9},
+            {'opportunity_id': 'b', 'title': 'Cooking', 'overall_score': 0.8},
+        ],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 7,
+            'video_topic_index_overflow': 12,
+            'top_topics': [{'topic': 'Gardening', 'videos': 40},
+                           {'topic': 'Cooking', 'videos': 100}],
+            'topic_view_metrics': [
+                {'topic': 'Gardening', 'videos_with_views': 30, 'average_views': 200.0},
+                {'topic': 'Cooking', 'videos_with_views': 2, 'average_views': 90000.0},
+            ],
+        }},
+    })
+    assert decision.metadata['opportunity_id'] == 'a'
+    assert decision.metadata['historical_niche_comparison'] == [
+        {'topic': 'Gardening', 'videos_with_views': 30,
+         'topic_video_count': 40, 'average_views': 200.0},
+    ]
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 7
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 12
+
+def test_supabase_streaming_reads_video_views_from_data_json():
+    from memory.supabase import SupabaseMemoryBackend
+    backend = object.__new__(SupabaseMemoryBackend)
+    def rows(table, **kwargs):
+        if table == 'videos':
+            yield {
+                'video_id': 'abc',
+                'data_json': {
+                    'snippet': {'title': 'Garden', 'channelId': 'c'},
+                    'topic': 'Gardening',
+                    'statistics': {'viewCount': '240'},
+                },
+            }
+    backend._iter_paginated_rows = rows
+    result = backend.load_youtube_analysis_data()
+    metrics = result['history_analytics']['topic_view_metrics']
+    assert metrics == [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 240.0,
+                        'source': 'videos.data_json.statistics', 'snapshot_views_included': False}]
+    assert 'views' not in result['videos'][0]
+
+def test_snapshot_topic_views_are_separate_and_require_explicit_topic():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Gardening', 'statistics': {'viewCount': '100'},
+    }})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Gardening', 'statistics': {'viewCount': '200'},
+    }})
+    stats.add_snapshot({'video_id': 'b', 'data_json': {
+        'statistics': {'viewCount': '9000'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'] == [{
+        'topic': 'Gardening', 'snapshots_with_views': 2,
+        'average_snapshot_views': 150.0, 'source': 'video_snapshots.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['topic_view_metrics'] == []
+
+def test_snapshot_video_id_join_uses_bounded_video_topic_index():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'statistics': {'viewCount': '400'},
+    }})
+    stats.add_snapshot({'video_id': 'unknown', 'data_json': {
+        'statistics': {'viewCount': '900'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'][0]['topic'] == 'Gardening'
+    assert result['snapshot_topic_view_metrics'][0]['average_snapshot_views'] == 400.0
+    assert result['snapshot_topic_join_misses'] == 1
+    assert result['snapshot_video_topic_index_limit'] == 1000
+    assert result['snapshot_topic_join_hits'] == 1
+    assert result['snapshot_topic_attributed_count'] == 1
+    assert result['snapshot_topic_join_view_metrics'] == [{
+        'topic': 'Gardening', 'snapshots_with_views': 1,
+        'average_snapshot_views': 400.0,
+        'source': 'video_snapshots.video_id_to_videos.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['snapshot_topic_attribution'] == 'partial'
+
+@pytest.mark.asyncio
+async def test_supabase_history_to_director_decision_end_to_end_offline():
+    from memory.supabase import SupabaseMemoryBackend
+    from director.director import Director
+    backend = object.__new__(SupabaseMemoryBackend)
+    def rows(table, **kwargs):
+        if table == 'videos':
+            for i in range(30):
+                yield {
+                    'video_id': f'garden-{i}',
+                    'data_json': {
+                        'snippet': {'title': f'Garden {i}', 'channelId': 'channel'},
+                        'topic': 'Gardening',
+                        'statistics': {'viewCount': '200'},
+                    },
+                }
+        elif table == 'video_snapshots':
+            yield {'id': 1, 'video_id': 'garden-0',
+                   'data_json': {'statistics': {'viewCount': '300'}}}
+            yield {'id': 2, 'video_id': 'unknown',
+                   'data_json': {'statistics': {'viewCount': '999'}}}
+    backend._iter_paginated_rows = rows
+    history = backend.load_youtube_analysis_data()['history_analytics']
+    assert history['video_count'] == 30
+    assert history['snapshot_topic_attribution'] == 'partial'
+    assert history['snapshot_topic_join_misses'] == 1
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    decision = await director.decide({
+        'opportunities': [
+            {'opportunity_id': 'garden', 'title': 'Gardening', 'overall_score': 0.8},
+            {'opportunity_id': 'other', 'title': 'Other', 'overall_score': 0.7},
+        ],
+        'history_analytics': {'youtube': history},
+    })
+    assert decision.metadata['opportunity_id'] == 'garden'
+    assert decision.metadata['historical_niche_comparison'][0]['average_views'] == 200.0
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 1
+
+def test_bounded_topic_index_reports_overflow_without_unbounded_growth():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    for i in range(1005):
+        stats.add_video({'video_id': f'video-{i}', 'metadata': {'topic': 'Gardening'}})
+    result = stats.to_dict()
+    assert result['video_topic_index_overflow'] == 5
+    assert result['snapshot_topic_attribution'] == 'partial'
+    assert len(stats._video_topics) == 1000
+    assert result['video_count'] == 1005
+
+def test_video_topic_index_limit_is_configurable_but_hard_capped():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics(video_topic_index_limit=2)
+    for i in range(3):
+        stats.add_video({'video_id': str(i), 'metadata': {'topic': 'Gardening'}})
+    result = stats.to_dict()
+    assert result['snapshot_video_topic_index_limit'] == 2
+    assert result['video_topic_index_overflow'] == 1
+    assert len(stats._video_topics) == 2
+    assert StreamingYouTubeAnalytics(video_topic_index_limit=999999).video_topic_index_limit == 20000
+
+def test_supabase_history_loader_honors_safe_topic_index_setting(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+    backend = object.__new__(SupabaseMemoryBackend)
+    monkeypatch.setenv('DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX', '2')
+    def rows(table, **kwargs):
+        if table == 'videos':
+            for i in range(3):
+                yield {'video_id': f'v{i}', 'data_json': {
+                    'topic': 'Gardening', 'statistics': {'viewCount': '10'},
+                }}
+        elif table == 'video_snapshots':
+            yield {'id': 1, 'video_id': 'v2',
+                   'data_json': {'statistics': {'viewCount': '20'}}}
+    backend._iter_paginated_rows = rows
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[{'video_id': 'v2', 'data_json': {'topic': 'Gardening'}}])
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data()['history_analytics']
+    assert result['snapshot_video_topic_index_limit'] == 2
+    assert result['video_topic_index_overflow'] == 1
+    assert result['snapshot_topic_join_misses'] == 0
+    assert result['snapshot_topic_join_hits'] == 1
+
+@pytest.mark.asyncio
+async def test_director_reports_snapshot_gaps_even_without_comparable_niches():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    decision = await director.decide({
+        'opportunities': [{'opportunity_id': 'one', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 2}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 100}],
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 8,
+            'video_topic_index_overflow': 4,
+        }},
+    })
+    assert 'historical_niche_comparison' not in decision.metadata
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 8
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 4
+
+def test_snapshot_explicit_topic_takes_priority_over_video_id_join():
+    from analytics.streaming import StreamingYouTubeAnalytics
+    stats = StreamingYouTubeAnalytics()
+    stats.add_video({'video_id': 'a', 'metadata': {'topic': 'Gardening'}})
+    stats.add_snapshot({'video_id': 'a', 'data_json': {
+        'topic': 'Cooking', 'statistics': {'viewCount': '500'},
+    }})
+    result = stats.to_dict()
+    assert result['snapshot_topic_view_metrics'] == [{
+        'topic': 'Cooking', 'snapshots_with_views': 1,
+        'average_snapshot_views': 500.0,
+        'source': 'video_snapshots.data_json',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['snapshot_explicit_topic_hits'] == 1
+    assert result['snapshot_topic_join_hits'] == 0
+    assert result['snapshot_topic_join_view_metrics'] == []
+    assert result['snapshot_topic_explicit_view_metrics'] == [{
+        'topic': 'Cooking', 'snapshots_with_views': 1,
+        'average_snapshot_views': 500.0,
+        'source': 'video_snapshots.data_json.explicit_topic',
+        'unit': 'snapshots_not_unique_videos',
+    }]
+    assert result['snapshot_topic_join_misses'] == 0
+
+@pytest.mark.asyncio
+async def test_director_retains_snapshot_gaps_for_partial_supabase_history():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    decision = await director.decide({
+        'opportunities': [{'opportunity_id': 'one', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'partial',
+            'top_topics': [{'topic': 'Gardening', 'videos': 40}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 40, 'average_views': 100}],
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 8,
+            'video_topic_index_overflow': 4,
+        }},
+    })
+    assert 'historical_niche_comparison' not in decision.metadata
+    assert decision.metadata['historical_scan_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 8
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 4
+
+
+def test_youtube_tags_are_not_mistaken_for_verified_niches():
+    from analytics.streaming import StreamingYouTubeAnalytics
+
+    analytics = StreamingYouTubeAnalytics()
+    analytics.add_video({
+        "video_id": "video-1",
+        "metadata": {"topic": "Engineering", "tags": ["horror", "viral"]},
+        "views": 100,
+    })
+    analytics.add_snapshot({
+        "video_id": "video-1",
+        "data_json": {"statistics": {"viewCount": "150"}},
+    })
+    summary = analytics.to_dict()
+    assert summary["top_topics"] == [{"topic": "Engineering", "videos": 1}]
+    assert summary["snapshot_topic_join_hits"] == 1
+    assert summary["snapshot_topic_view_metrics"][0]["topic"] == "Engineering"
+
+
+def test_page_scoped_snapshot_topic_join_works_after_index_overflow():
+    from analytics.streaming import StreamingYouTubeAnalytics
+
+    stats = StreamingYouTubeAnalytics(video_topic_index_limit=1)
+    stats.add_video({"video_id": "a", "metadata": {"topic": "Gardening"}})
+    stats.add_video({"video_id": "b", "metadata": {"topic": "Engineering"}})
+    assert stats.video_topic_index_overflow == 1
+    stats.add_snapshot({
+        "video_id": "b", "data_json": {"statistics": {"viewCount": "500"}},
+    }, joined_topics_override=("Engineering",))
+    result = stats.to_dict()
+    assert result["snapshot_topic_join_hits"] == 1
+    assert result["snapshot_topic_join_misses"] == 0
+    assert result["snapshot_topic_join_view_metrics"][0]["topic"] == "Engineering"
+
+
+def test_large_synthetic_history_keeps_working_sets_bounded(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_PAGE_SIZE", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_WORKING_VIDEOS", "100")
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_WORKING_SNAPSHOTS", "200")
+    backend = object.__new__(SupabaseMemoryBackend)
+    lookup_sizes = []
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            for i in range(21000):
+                yield {"video_id": f"v{i}", "data_json": {
+                    "topic": "Engineering", "statistics": {"viewCount": "100"},
+                }}
+        elif table == "video_snapshots":
+            for i in range(20999, -1, -1):
+                yield {"id": i + 1, "video_id": f"v{i}",
+                       "data_json": {"statistics": {"viewCount": "200"}}}
+
+    class Query:
+        def __init__(self):
+            self.ids = []
+        def select(self, *args):
+            return self
+        def in_(self, key, values):
+            assert key == "video_id"
+            self.ids = list(values)
+            lookup_sizes.append(len(self.ids))
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[
+                {"video_id": video_id, "data_json": {"topic": "Engineering"}}
+                for video_id in self.ids
+            ])
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    import tracemalloc
+    tracemalloc.start()
+    try:
+        result = backend.load_youtube_analysis_data()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Test fixture and result must not grow linearly with all 42k rows.
+    # This measures Python allocations, not total Render RSS.
+    assert peak_bytes < 64 * 1024 * 1024
+    history = result["history_analytics"]
+    assert history["video_count"] == 21000
+    assert history["snapshot_count"] == 21000
+    assert history["snapshot_topic_join_hits"] == 21000
+    assert history["snapshot_topic_join_misses"] == 0
+    assert history["snapshot_topic_attribution"] == "complete_for_snapshots_with_views"
+    assert history["video_topic_index_overflow"] == 20900
+    assert history["working_videos_retained"] == 100
+    assert history["working_snapshots_retained"] == 200
+    assert len(result["videos"]) == 100
+    assert len(result["snapshots"]) == 200
+    assert lookup_sizes and max(lookup_sizes) <= 100
+
+
+def test_overflow_lookup_never_joins_another_projects_video(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1")
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            yield {"video_id": "one", "data_json": {"project_id": "alpha", "topic": "Gardening"}}
+            yield {"video_id": "two", "data_json": {"project_id": "alpha", "topic": "Engineering"}}
+        elif table == "video_snapshots":
+            yield {"id": 1, "video_id": "two", "data_json": {
+                "project_id": "alpha", "statistics": {"viewCount": "100"},
+            }}
+
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[{
+                "video_id": "two", "data_json": {
+                    "project_id": "beta", "topic": "Wrong Project",
+                },
+            }])
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data(project_id="alpha")["history_analytics"]
+    assert result["snapshot_topic_join_hits"] == 0
+    assert result["snapshot_topic_join_misses"] == 1
+    assert result["snapshot_topic_view_metrics"] == []
+
+
+def test_overflow_lookup_failure_is_reported_as_partial(monkeypatch):
+    from memory.supabase import SupabaseMemoryBackend
+
+    monkeypatch.setenv("DIRECTOR_ANALYSIS_VIDEO_TOPIC_INDEX", "1")
+    backend = object.__new__(SupabaseMemoryBackend)
+
+    def rows(table, **kwargs):
+        if table == "videos":
+            for video_id in ("one", "two"):
+                yield {"video_id": video_id, "data_json": {"topic": "Engineering"}}
+        elif table == "video_snapshots":
+            yield {"id": 1, "video_id": "two", "data_json": {
+                "statistics": {"viewCount": "100"},
+            }}
+
+    class Query:
+        def select(self, *args):
+            return self
+        def in_(self, *args):
+            return self
+        def execute(self):
+            raise RuntimeError("Supabase unavailable")
+
+    backend._iter_paginated_rows = rows
+    backend.client = SimpleNamespace(table=lambda name: Query())
+    result = backend.load_youtube_analysis_data()["history_analytics"]
+    assert result["status"] == "partial"
+    assert result["topic_lookup_failures"] == 1
+    assert result["snapshot_topic_join_misses"] == 1

@@ -1507,6 +1507,113 @@ class Director:
             candidate,
             objective=self.context.objective or "",
         )
+        # Preserve compact historical evidence with the decision so its
+        # rationale can be audited without re-reading Supabase history.
+        history = analysis.get("history_analytics")
+        if isinstance(history, dict) and history:
+            decision.metadata["history_analytics"] = history
+            youtube_history = history.get("youtube", {})
+            if isinstance(youtube_history, dict) and youtube_history.get("status") == "complete":
+                candidate_labels = (
+                    (candidate.get("topic"), candidate.get("title"), candidate.get("name"))
+                    if isinstance(candidate, dict) else
+                    (getattr(candidate, "topic", None), getattr(candidate, "title", None), getattr(candidate, "name", None))
+                )
+                labels = {str(label).strip().casefold() for label in candidate_labels if label}
+                matching_topics = [
+                    {"topic": item["topic"], "videos": item.get("videos", 0)}
+                    for item in youtube_history.get("top_topics", [])
+                    if isinstance(item, dict) and isinstance(item.get("topic"), str)
+                    and item["topic"].strip().casefold() in labels
+                ]
+                if matching_topics:
+                    decision.metadata["matching_historical_topics"] = matching_topics
+                    matched_names = {item["topic"].strip().casefold() for item in matching_topics}
+                    view_metrics = youtube_history.get("topic_view_metrics", [])
+                    if isinstance(view_metrics, list):
+                        matched_views = [
+                            {"topic": item["topic"], "videos_with_views": item["videos_with_views"],
+                             "average_views": item["average_views"]}
+                            for item in view_metrics
+                            if isinstance(item, dict) and isinstance(item.get("topic"), str)
+                            and item["topic"].strip().casefold() in matched_names
+                            and isinstance(item.get("videos_with_views"), int)
+                            and item["videos_with_views"] > 0
+                            and isinstance(item.get("average_views"), (int, float))
+                        ]
+                        if matched_views:
+                            decision.metadata["matching_historical_view_metrics"] = matched_views
+                            topic_counts = {
+                                item["topic"].strip().casefold(): item["videos"]
+                                for item in matching_topics
+                                if isinstance(item.get("videos"), int) and item["videos"] > 0
+                            }
+                            decision.metadata["historical_view_coverage"] = [
+                                {
+                                    "topic": item["topic"],
+                                    "videos_with_views": item["videos_with_views"],
+                                    "topic_video_count": topic_counts[item["topic"].strip().casefold()],
+                                    "fraction": round(
+                                        min(item["videos_with_views"], topic_counts[item["topic"].strip().casefold()])
+                                        / topic_counts[item["topic"].strip().casefold()], 3
+                                    ),
+                                }
+                                for item in matched_views
+                                if item["topic"].strip().casefold() in topic_counts
+                            ]
+        coverage = decision.metadata.get("historical_view_coverage", [])
+        if isinstance(coverage, list) and coverage:
+            # Conservative evidence gate: no ranking changes based on thin samples.
+            decision.metadata["historical_evidence_quality"] = [
+                {
+                    "topic": item["topic"],
+                    "status": ("sufficient_sample" if item["videos_with_views"] >= 20
+                               and item["fraction"] >= 0.5 else "limited_sample"),
+                    "minimum_videos_with_views": 20,
+                    "minimum_coverage_fraction": 0.5,
+                }
+                for item in coverage
+            ]
+        # Compare only supported, explicitly matched niche evidence; do not
+        # alter candidate scores based on aggregate/global topic popularity.
+        if isinstance(history, dict):
+            youtube = history.get("youtube", {})
+            if isinstance(youtube, dict) and youtube.get("status") == "complete":
+                topic_counts = {
+                    str(row["topic"]).strip().casefold(): row["videos"]
+                    for row in youtube.get("top_topics", [])
+                    if isinstance(row, dict) and isinstance(row.get("topic"), str)
+                    and isinstance(row.get("videos"), int) and row["videos"] > 0
+                }
+                comparable = []
+                for opportunity in opportunities:
+                    name = (opportunity.get("topic") or opportunity.get("title") or opportunity.get("name")) if isinstance(opportunity, dict) else (getattr(opportunity, "topic", None) or getattr(opportunity, "title", None) or getattr(opportunity, "name", None))
+                    label = str(name).strip().casefold() if name else ""
+                    count = topic_counts.get(label, 0)
+                    for metric in youtube.get("topic_view_metrics", []):
+                        if not isinstance(metric, dict) or str(metric.get("topic", "")).strip().casefold() != label:
+                            continue
+                        observed = metric.get("videos_with_views")
+                        average = metric.get("average_views")
+                        if (count and isinstance(observed, int) and observed >= 20
+                                and observed / count >= 0.5
+                                and isinstance(average, (int, float)) and not isinstance(average, bool)):
+                            comparable.append({
+                                "topic": name, "videos_with_views": observed,
+                                "topic_video_count": count, "average_views": average,
+                            })
+                        break
+                if comparable:
+                    decision.metadata["historical_niche_comparison"] = comparable
+            # Report coverage even when history is partial: partial history
+            # must not qualify for niche comparisons, but gaps remain relevant.
+            if isinstance(youtube, dict):
+                attribution = youtube.get("snapshot_topic_attribution")
+                if attribution in ("partial", "complete_for_snapshots_with_views"):
+                    decision.metadata["snapshot_niche_evidence_status"] = attribution
+                    decision.metadata["snapshot_niche_unmatched_count"] = youtube.get("snapshot_topic_join_misses", 0)
+                    decision.metadata["snapshot_video_topic_index_overflow"] = youtube.get("video_topic_index_overflow", 0)
+                    decision.metadata["historical_scan_status"] = youtube.get("status")
         decision.metadata["task_key"] = self._opportunity_task_key(candidate)
         decision.metadata["opportunity_id"] = (
             candidate.get("opportunity_id")

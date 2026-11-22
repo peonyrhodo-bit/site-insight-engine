@@ -448,3 +448,44 @@ def test_snapshot_video_id_join_uses_bounded_video_topic_index():
     assert result['snapshot_video_topic_index_limit'] == 1000
     assert result['snapshot_topic_join_hits'] == 1
     assert result['snapshot_topic_attribution'] == 'partial'
+
+@pytest.mark.asyncio
+async def test_supabase_history_to_director_decision_end_to_end_offline():
+    from memory.supabase import SupabaseMemoryBackend
+    from director.director import Director
+    backend = object.__new__(SupabaseMemoryBackend)
+    def rows(table, **kwargs):
+        if table == 'videos':
+            for i in range(30):
+                yield {
+                    'video_id': f'garden-{i}',
+                    'data_json': {
+                        'snippet': {'title': f'Garden {i}', 'channelId': 'channel'},
+                        'topic': 'Gardening',
+                        'statistics': {'viewCount': '200'},
+                    },
+                }
+        elif table == 'video_snapshots':
+            yield {'id': 1, 'video_id': 'garden-0',
+                   'data_json': {'statistics': {'viewCount': '300'}}}
+            yield {'id': 2, 'video_id': 'unknown',
+                   'data_json': {'statistics': {'viewCount': '999'}}}
+    backend._iter_paginated_rows = rows
+    history = backend.load_youtube_analysis_data()['history_analytics']
+    assert history['video_count'] == 30
+    assert history['snapshot_topic_attribution'] == 'partial'
+    assert history['snapshot_topic_join_misses'] == 1
+    director = Director(project_id='alpha')
+    director.context.objective = 'Evaluate topics'
+    decision = await director.decide({
+        'opportunities': [
+            {'opportunity_id': 'garden', 'title': 'Gardening', 'overall_score': 0.8},
+            {'opportunity_id': 'other', 'title': 'Other', 'overall_score': 0.7},
+        ],
+        'history_analytics': {'youtube': history},
+    })
+    assert decision.metadata['opportunity_id'] == 'garden'
+    assert decision.metadata['historical_niche_comparison'][0]['average_views'] == 200.0
+    assert decision.metadata['historical_evidence_quality'][0]['status'] == 'sufficient_sample'
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 1

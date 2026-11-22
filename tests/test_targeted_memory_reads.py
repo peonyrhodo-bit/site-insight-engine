@@ -533,3 +533,23 @@ def test_supabase_history_loader_honors_safe_topic_index_setting(monkeypatch):
     assert result['video_topic_index_overflow'] == 1
     assert result['snapshot_topic_join_misses'] == 1
     assert result['snapshot_topic_attribution'] == 'partial'
+
+@pytest.mark.asyncio
+async def test_director_reports_snapshot_gaps_even_without_comparable_niches():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    decision = await director.decide({
+        'opportunities': [{'opportunity_id': 'one', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'complete',
+            'top_topics': [{'topic': 'Gardening', 'videos': 2}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 1, 'average_views': 100}],
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 8,
+            'video_topic_index_overflow': 4,
+        }},
+    })
+    assert 'historical_niche_comparison' not in decision.metadata
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 8
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 4

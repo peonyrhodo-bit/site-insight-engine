@@ -584,3 +584,24 @@ def test_snapshot_explicit_topic_takes_priority_over_video_id_join():
         'unit': 'snapshots_not_unique_videos',
     }]
     assert result['snapshot_topic_join_misses'] == 0
+
+@pytest.mark.asyncio
+async def test_director_retains_snapshot_gaps_for_partial_supabase_history():
+    from director.director import Director
+    director = Director(project_id='alpha')
+    decision = await director.decide({
+        'opportunities': [{'opportunity_id': 'one', 'title': 'Gardening', 'overall_score': 0.9}],
+        'history_analytics': {'youtube': {
+            'status': 'partial',
+            'top_topics': [{'topic': 'Gardening', 'videos': 40}],
+            'topic_view_metrics': [{'topic': 'Gardening', 'videos_with_views': 40, 'average_views': 100}],
+            'snapshot_topic_attribution': 'partial',
+            'snapshot_topic_join_misses': 8,
+            'video_topic_index_overflow': 4,
+        }},
+    })
+    assert 'historical_niche_comparison' not in decision.metadata
+    assert decision.metadata['historical_scan_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_evidence_status'] == 'partial'
+    assert decision.metadata['snapshot_niche_unmatched_count'] == 8
+    assert decision.metadata['snapshot_video_topic_index_overflow'] == 4
